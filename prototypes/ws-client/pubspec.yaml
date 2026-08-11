@@ -1,0 +1,5 @@
+name: ws_client_proto
+description: Throwaway logic prototype for the Harbor remote WS client state model.
+publish_to: none
+environment:
+  sdk: ^3.12.0

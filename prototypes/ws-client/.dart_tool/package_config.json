@@ -1,0 +1,14 @@
+{
+  "configVersion": 2,
+  "packages": [
+    {
+      "name": "ws_client_proto",
+      "rootUri": "../",
+      "packageUri": "lib/",
+      "languageVersion": "3.12"
+    }
+  ],
+  "generator": "pub",
+  "generatorVersion": "3.12.2",
+  "pubCache": "file:///home/menoti/.pub-cache"
+}

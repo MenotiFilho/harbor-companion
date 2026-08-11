@@ -1,0 +1,14 @@
+{
+  "roots": [
+    "ws_client_proto"
+  ],
+  "packages": [
+    {
+      "name": "ws_client_proto",
+      "version": "0.0.0",
+      "dependencies": [],
+      "devDependencies": []
+    }
+  ],
+  "configVersion": 1
+}
