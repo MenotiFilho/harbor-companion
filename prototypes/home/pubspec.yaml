@@ -1,0 +1,13 @@
+name: home_proto
+description: Throwaway perf spike for the native Home + catalog screens (wayfinder ticket Native Home + catalog screens).
+publish_to: none
+environment:
+  sdk: ^3.12.0
+dependencies:
+  flutter:
+    sdk: flutter
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+flutter:
+  uses-material-design: true
