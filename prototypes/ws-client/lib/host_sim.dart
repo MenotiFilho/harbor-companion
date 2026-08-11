@@ -47,7 +47,7 @@ class HostSim {
 
   void push() {
     updatedAt += 400;
-    outgoing.add(jsonEncode(_snapshot().toJson()));
+    outgoing.add(jsonEncode({'t': 'snapshot', 'snapshot': _snapshot().toJson()}));
   }
 
   void burst() {
@@ -58,7 +58,7 @@ class HostSim {
 
   void stale() {
     // a frame carrying an older updatedAt than the last one the client saw
-    outgoing.add(jsonEncode(_snapshotWith(updatedAt - 500).toJson()));
+    outgoing.add(jsonEncode({'t': 'snapshot', 'snapshot': _snapshotWith(updatedAt - 500).toJson()}));
   }
 
   void garbage() {

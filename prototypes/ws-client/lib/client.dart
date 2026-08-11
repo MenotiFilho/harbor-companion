@@ -478,7 +478,11 @@ ClientState _handleFrame(ClientState s, Duration now, String raw) {
 
   switch (decoded['t']) {
     case 'snapshot':
-      return _applySnapshot(s, now, Snapshot.fromJson(decoded));
+      final payload = decoded['snapshot'];
+      if (payload is! Map<String, dynamic>) {
+        return s.copy(droppedFrames: s.droppedFrames + 1, notice: 'snapshot frame with bad payload — dropped');
+      }
+      return _applySnapshot(s, now, Snapshot.fromJson(payload));
 
     case 'hello':
       return s.copy(notice: 'host hello: proto ${decoded['proto']} server ${decoded['server']}');
