@@ -1,0 +1,5 @@
+name: search_proto
+description: Throwaway logic prototype for the Search state model (debounce, source fan-out, merge/dedupe, playMeta).
+publish_to: none
+environment:
+  sdk: ^3.12.0
