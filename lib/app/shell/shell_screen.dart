@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../home/home_screen.dart';
 import '../remote/remote_screen.dart';
 import '../routes.dart';
+import '../search/search_screen.dart';
 import 'connect_first_view.dart';
 import 'shell_controller.dart';
 import 'shell_tab.dart';
@@ -57,6 +58,7 @@ class ShellScreen extends ConsumerWidget {
   Widget _tabBody(ShellTab tab) => switch (tab) {
         ShellTab.home => const HomeScreen(),
         ShellTab.remote => const RemoteScreen(),
+        ShellTab.search => const SearchScreen(),
         _ => TabPlaceholder(title: tab.meta.label, icon: tab.meta.icon),
       };
 }
