@@ -93,7 +93,7 @@ List<Meta> parseCinemetaCatalog(String raw) {
 String? tmdbPoster(String? path) => path == null ? null : '$tmdbImageBase/w342$path';
 String? tmdbBackdrop(String? path) => path == null ? null : '$tmdbImageBase/w780$path';
 
-Meta _parseTmdbMeta(Map<String, dynamic> j, String type) {
+Meta parseTmdbMeta(Map<String, dynamic> j, String type) {
   final isSeries = type == 'series';
   final name = (isSeries ? j['name'] : j['title']) as String? ?? '';
   final date = (isSeries ? j['first_air_date'] : j['release_date']) as String?;
@@ -116,7 +116,7 @@ List<Meta> parseTmdbPage(String raw, String type) {
   if (results is! List) return const [];
   return [
     for (final r in results)
-      if (r is Map<String, dynamic>) _parseTmdbMeta(r, type),
+      if (r is Map<String, dynamic>) parseTmdbMeta(r, type),
   ];
 }
 
@@ -165,7 +165,7 @@ List<Season> _seasonsFromVideos(Object? videos) {
 Meta parseTmdbDetail(String raw, String type) {
   final decoded = jsonDecode(raw);
   if (decoded is! Map<String, dynamic>) return const Meta(id: '', type: 'movie', name: '');
-  return _parseTmdbMeta(decoded, type);
+  return parseTmdbMeta(decoded, type);
 }
 
 /// Parses a TMDB `tv/{id}/season/{n}` response `{ "episodes": [...] }`.

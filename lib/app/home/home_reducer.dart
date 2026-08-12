@@ -193,9 +193,9 @@ class PlayMeta extends HomeEvent {
 // ---------------------------------------------------------------------------
 
 /// `metaType` is coerced to the host's `movie`/`series` vocabulary (there is no
-/// `anime` on the Home surface, but guard anyway) — matches `toMeta` in
-/// `remote-open-bridge.tsx`.
-String _coerceMetaType(String type) => type == 'movie' ? 'movie' : 'series';
+/// `anime` on the wire, but guard anyway) — matches `toMeta` in
+/// `remote-open-bridge.tsx`. Shared with the Search reducer (anime → series).
+String coerceMetaType(String type) => type == 'movie' ? 'movie' : 'series';
 
 HomeState homeReduce(HomeState s, HomeEvent e) {
   switch (e) {
@@ -286,7 +286,7 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
     case PlayMeta(meta: final meta, season: final season, episode: final episode):
       final command = PlayMetaCommand(
         metaId: meta.id,
-        metaType: _coerceMetaType(meta.type),
+        metaType: coerceMetaType(meta.type),
         name: meta.name,
         poster: meta.poster,
         season: season,
