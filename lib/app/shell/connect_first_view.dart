@@ -1,19 +1,22 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../connect/connect_controller.dart';
 import '../routes.dart';
 
-/// First-run / disconnected body: points the user at settings to add a host.
-///
-/// Rendered in place of every tab body while [ShellState.showConnectFirst] is
-/// true. The settings surface itself is owned by the connect ticket (03); this
-/// view only needs to lead there.
-class ConnectFirstView extends StatelessWidget {
+/// First-run / disconnected body: points the user at settings to add a host,
+/// and surfaces the cold-start "last used host unreachable — reconnect?" prompt
+/// (a launch-time auto-connect that failed drops to idle, never a spinner).
+class ConnectFirstView extends ConsumerWidget {
   const ConnectFirstView({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
+    final connect = ref.watch(connectControllerProvider);
+    final coldStartMiss = connect.notice?.contains('reconnect?') == true;
+
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 32),
@@ -29,13 +32,24 @@ class ConnectFirstView extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              'Add your PC’s LAN address in Settings to browse and control '
-              'it from your phone.',
+              coldStartMiss
+                  ? 'Your last host couldn’t be reached.'
+                  : 'Add your PC’s LAN address in Settings to browse and control '
+                      'it from your phone.',
               textAlign: TextAlign.center,
               style: text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
             ),
             const SizedBox(height: 24),
-            FilledButton.icon(
+            if (coldStartMiss) ...[
+              FilledButton.icon(
+                onPressed: () =>
+                    ref.read(connectControllerProvider.notifier).connect(),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reconnect'),
+              ),
+              const SizedBox(height: 8),
+            ],
+            FilledButton.tonalIcon(
               onPressed: () => Navigator.of(context).pushNamed(AppRoutes.settings),
               icon: const Icon(Icons.tune),
               label: const Text('Open settings'),

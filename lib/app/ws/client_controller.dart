@@ -58,6 +58,15 @@ class WsClientController extends Notifier<ClientState> {
   bool _opening = false;
   HostKeys _lastKeys = const HostKeys();
 
+  /// When false, the client stops arming its own reconnect timer: an unexpected
+  /// close still transitions `connected → reconnecting` (so the sticky window
+  /// and `effectiveStatus` hold), but the reconnect schedule is owned by an
+  /// external orchestrator — the connect layer (ticket 03), which drives
+  /// `connect()` back in. Defaults to true for standalone use.
+  bool _autoReconnect = true;
+
+  void setAutoReconnect(bool value) => _autoReconnect = value;
+
   @override
   ClientState build() {
     ref.onDispose(() {
@@ -168,7 +177,7 @@ class WsClientController extends Notifier<ClientState> {
   void _syncReconnectTimer(ClientState s) {
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
-    if (s.status != WsStatus.reconnecting || s.backgrounded) return;
+    if (!_autoReconnect || s.status != WsStatus.reconnecting || s.backgrounded) return;
     final at = s.reconnectAt;
     if (at == null) return;
     final delay = at - clock();

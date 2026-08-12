@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../connect/connect_controller.dart';
 import 'shell_reducer.dart';
 import 'shell_tab.dart';
 
@@ -26,6 +27,10 @@ final connectionStatusProvider =
 class ShellController extends Notifier<ShellState> {
   @override
   ShellState build() {
+    // Instantiate the connect controller so its `Launch` auto-connect runs at
+    // startup; it drives the connection the shell renders. One-time init, not
+    // a reactive dependency.
+    ref.read(connectControllerProvider);
     ref.listen(connectionStatusProvider, (previous, next) {
       state = shellReduce(state, ConnectionChanged(next));
     });
