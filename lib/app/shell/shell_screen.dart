@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../home/home_screen.dart';
+import '../library/library_screen.dart';
 import '../remote/remote_screen.dart';
 import '../routes.dart';
 import 'connect_first_view.dart';
@@ -57,6 +58,7 @@ class ShellScreen extends ConsumerWidget {
   Widget _tabBody(ShellTab tab) => switch (tab) {
         ShellTab.home => const HomeScreen(),
         ShellTab.remote => const RemoteScreen(),
+        ShellTab.myStuff => const LibraryScreen(),
         _ => TabPlaceholder(title: tab.meta.label, icon: tab.meta.icon),
       };
 }

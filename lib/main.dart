@@ -5,6 +5,8 @@ import 'app/connect/connect_controller.dart';
 import 'app/connect/host_registry.dart';
 import 'app/connect/lan_scan.dart';
 import 'app/home/detail_screen.dart';
+import 'app/library/library_controller.dart';
+import 'app/library/library_store.dart';
 import 'app/routes.dart';
 import 'app/shell/shell_screen.dart';
 import 'app/settings/settings_screen.dart';
@@ -71,6 +73,7 @@ void main() {
         // override these with fakes.
         hostRegistryStoreProvider.overrideWithValue(SharedPrefsHostRegistryStore()),
         subnetScannerProvider.overrideWithValue(TcpProbeScanner()),
+        libraryStoreProvider.overrideWithValue(SharedPrefsLibraryStore()),
       ],
       child: const HarborCompanionApp(),
     ),

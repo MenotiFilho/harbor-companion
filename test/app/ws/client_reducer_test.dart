@@ -406,6 +406,58 @@ void main() {
     });
   });
 
+  group('library + trackers parsing', () {
+    test('library and trackers parse from a snapshot', () {
+      final frame = snapshotFrame(updatedAt: 1000);
+      final inner = frame['snapshot'] as Map<String, dynamic>;
+      inner['library'] = {
+        'watchlist': [
+          {'id': 'tt1', 'type': 'movie', 'name': 'Matrix', 'poster': 'https://img/m.jpg'},
+        ],
+        'history': <Object>[],
+        'favorites': [
+          {'id': 'tt2', 'type': 'series', 'name': 'GoT'},
+        ],
+      };
+      inner['trackers'] = {'trakt': false, 'simkl': true, 'stremio': true, 'anilist': false, 'mal': false};
+      final s = clientReduce(connected(ClientState()), Frame(ms(0), jsonEncode(frame)));
+      final lib = s.last!.library!;
+      expect(lib.watchlist.single.id, 'tt1');
+      expect(lib.watchlist.single.poster, 'https://img/m.jpg');
+      expect(lib.favorites.single.type, 'series');
+      expect(lib.history, isEmpty);
+      expect(s.last!.trackers, ['simkl', 'stremio']);
+    });
+
+    test('a snapshot with no library field parses to null (empty, not error)', () {
+      final s = clientReduce(connected(ClientState()),
+          Frame(ms(0), jsonEncode(snapshotFrame(updatedAt: 1000))));
+      expect(s.last!.library, isNull);
+      expect(s.last!.trackers, isEmpty);
+    });
+  });
+
+  group('libraryAction encoding', () {
+    test('libraryAction encodes op and meta through the default case', () {
+      var s = connected(ClientState());
+      drain(s);
+      s = clientReduce(s, SendCommand(ms(0), 'libraryAction', {
+            'metaId': 'tt1',
+            'metaType': 'movie',
+            'name': 'Matrix',
+            'op': {'kind': 'watchlist', 'on': true},
+          }));
+      final frame = jsonDecode(drain(s).single) as Map<String, dynamic>;
+      final cmd = frame['command'] as Map<String, dynamic>;
+      expect(frame['t'], 'cmd');
+      expect(cmd['action'], 'libraryAction');
+      expect(cmd['metaId'], 'tt1');
+      expect(cmd['metaType'], 'movie');
+      expect(cmd['name'], 'Matrix');
+      expect(cmd['op'], {'kind': 'watchlist', 'on': true});
+    });
+  });
+
   group('host error frames', () {
     test('an error frame records the host message separately', () {
       final s = clientReduce(connected(ClientState()),

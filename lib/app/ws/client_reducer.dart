@@ -77,6 +77,63 @@ class TextEntry {
   const TextEntry(this.value, this.placeholder);
 }
 
+/// A single library entry (protocol.ts RemoteLibraryItem) — `{id, type, name?,
+/// poster?, background?}`. The library surface of the snapshot (§2.1).
+class LibraryItem {
+  final String id;
+  final String type; // "movie" | "series" | ...
+  final String? name;
+  final String? poster;
+  final String? background;
+  const LibraryItem(this.id, this.type, this.name, this.poster, this.background);
+
+  factory LibraryItem.fromJson(Map<String, dynamic> j) => LibraryItem(
+        j['id'] as String? ?? '',
+        j['type'] as String? ?? 'movie',
+        j['name'] as String?,
+        j['poster'] as String?,
+        j['background'] as String?,
+      );
+}
+
+/// The library section of a snapshot: `{ watchlist, history, favorites }`
+/// (protocol.ts RemoteLibrary). The host caps each section at LIBRARY_CAP=60.
+class SnapshotLibrary {
+  final List<LibraryItem> watchlist;
+  final List<LibraryItem> history;
+  final List<LibraryItem> favorites;
+  const SnapshotLibrary({
+    this.watchlist = const [],
+    this.history = const [],
+    this.favorites = const [],
+  });
+
+  bool get hasItems =>
+      watchlist.isNotEmpty || history.isNotEmpty || favorites.isNotEmpty;
+
+  factory SnapshotLibrary.fromJson(Map<String, dynamic> j) => SnapshotLibrary(
+        watchlist: _libraryItems(j['watchlist']),
+        history: _libraryItems(j['history']),
+        favorites: _libraryItems(j['favorites']),
+      );
+}
+
+List<LibraryItem> _libraryItems(Object? list) => list is List
+    ? [
+        for (final e in list)
+          if (e is Map<String, dynamic>) LibraryItem.fromJson(e),
+      ]
+    : const [];
+
+/// The `trackers` section is `{ trakt, simkl, stremio, anilist, mal }` booleans
+/// (§2.1); reduce it to the linked tracker names (display-only in v1).
+List<String> linkedTrackers(Object? trackers) => trackers is Map
+    ? ([
+        for (final e in trackers.entries)
+          if (e.value == true) '${e.key}',
+      ]..sort())
+    : const [];
+
 class Snapshot {
   final int proto;
   final bool idle;
@@ -102,6 +159,8 @@ class Snapshot {
   final String? tmdbKey;
   final String? rpdbKey;
   final String? tvdbKey;
+  final SnapshotLibrary? library;
+  final List<String> trackers;
   final int updatedAt;
 
   const Snapshot({
@@ -129,6 +188,8 @@ class Snapshot {
     this.tmdbKey,
     this.rpdbKey,
     this.tvdbKey,
+    this.library,
+    this.trackers = const [],
     required this.updatedAt,
   });
 
@@ -195,6 +256,10 @@ class Snapshot {
       tmdbKey: j['tmdbKey'] as String?,
       rpdbKey: j['rpdbKey'] as String?,
       tvdbKey: j['tvdbKey'] as String?,
+      library: j['library'] is Map<String, dynamic>
+          ? SnapshotLibrary.fromJson(j['library'] as Map<String, dynamic>)
+          : null,
+      trackers: linkedTrackers(j['trackers']),
       updatedAt: (j['updatedAt'] as num?)?.toInt() ?? 0,
     );
   }
@@ -379,7 +444,7 @@ const Set<String> _known = {
   'play', 'pause', 'seek', 'setVolume', 'setMuted', 'setTarget', 'castDiscover',
   'castStop', 'prevEpisode', 'nextEpisode', 'toggleSubtitles', 'nav', 'setText',
   'submitText', 'blurText', 'openSearch', 'openMeta', 'goView', 'playMeta',
-  'setSpeed', 'setSleep', 'setProfile', 'ping',
+  'setSpeed', 'setSleep', 'setProfile', 'ping', 'libraryAction',
 };
 
 /// Encodes a command into a wire frame, or returns null for an unknown action.
