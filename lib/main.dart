@@ -55,6 +55,8 @@ class _HarborCompanionAppState extends ConsumerState<HarborCompanionApp>
 }
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+
   // Poster-heavy screens (Home rails, detail) reuse far more images than
   // Flutter's default 1000-entry cache holds; raise the limits app-wide so a
   // long catalog scroll stays at cache-hit speed (Home perf spike #8).
