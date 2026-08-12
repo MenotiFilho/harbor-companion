@@ -437,6 +437,31 @@ void main() {
     });
   });
 
+  group('profile + profiles parsing', () {
+    test('the active profile and the full list parse from a snapshot', () {
+      final frame = snapshotFrame(updatedAt: 1000);
+      final inner = frame['snapshot'] as Map<String, dynamic>;
+      inner['profile'] = {'id': 'dad', 'name': 'Dad', 'avatar': null, 'color': '#ff0000'};
+      inner['profiles'] = [
+        {'id': 'dad', 'name': 'Dad', 'color': '#ff0000'},
+        {'id': 'kid', 'name': 'Kid', 'avatar': 'https://img/k.png', 'color': '#00ff00'},
+      ];
+      final s = clientReduce(connected(ClientState()), Frame(ms(0), jsonEncode(frame)));
+      expect(s.last!.profile!.id, 'dad');
+      expect(s.last!.profile!.name, 'Dad');
+      expect(s.last!.profile!.color, '#ff0000');
+      expect(s.last!.profiles, hasLength(2));
+      expect(s.last!.profiles[1].avatar, 'https://img/k.png');
+    });
+
+    test('a snapshot with no profile fields parses to null / empty', () {
+      final s = clientReduce(connected(ClientState()),
+          Frame(ms(0), jsonEncode(snapshotFrame(updatedAt: 1000))));
+      expect(s.last!.profile, isNull);
+      expect(s.last!.profiles, isEmpty);
+    });
+  });
+
   group('libraryAction encoding', () {
     test('libraryAction encodes op and meta through the default case', () {
       var s = connected(ClientState());

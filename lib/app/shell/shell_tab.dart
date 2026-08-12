@@ -12,8 +12,8 @@ enum ShellTab {
   profile;
 
   /// Display metadata for each tab. Single source of truth for the label and
-  /// icons the shell renders — the navigation bar and the placeholder bodies
-  /// both read from here, so a new tab is one entry, not three.
+  /// icons the shell renders — the navigation bar and the tab bodies both read
+  /// from here, so a new tab is one entry, not three.
   ShellTabMeta get meta => switch (this) {
         ShellTab.remote => const ShellTabMeta(
             label: 'Remote',

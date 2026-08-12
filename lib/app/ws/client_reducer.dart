@@ -96,6 +96,28 @@ class LibraryItem {
       );
 }
 
+/// A Harbor profile (protocol.ts RemoteProfile) — `{ id?, name, avatar, color }`.
+/// The active profile rides `snapshot.profile`; every profile rides
+/// `snapshot.profiles`. Switching is `setProfile {id}`.
+class Profile {
+  final String id;
+  final String name;
+  final String? avatar;
+  final String? color;
+  const Profile(this.id, this.name, this.avatar, this.color);
+
+  /// The name to show for this profile, falling back to its id when the host
+  /// reports no name.
+  String get displayName => name.isEmpty ? id : name;
+
+  factory Profile.fromJson(Map<String, dynamic> j) => Profile(
+        j['id'] as String? ?? '',
+        j['name'] as String? ?? '',
+        j['avatar'] as String?,
+        j['color'] as String?,
+      );
+}
+
 /// The library section of a snapshot: `{ watchlist, history, favorites }`
 /// (protocol.ts RemoteLibrary). The host caps each section at LIBRARY_CAP=60.
 class SnapshotLibrary {
@@ -134,6 +156,18 @@ List<String> linkedTrackers(Object? trackers) => trackers is Map
       ]..sort())
     : const [];
 
+/// Parses the active `profile` field (null when absent or malformed).
+Profile? _profileOrNull(Object? p) =>
+    p is Map<String, dynamic> ? Profile.fromJson(p) : null;
+
+/// Parses the `profiles` list (empty when absent/malformed).
+List<Profile> _profiles(Object? list) => list is List
+    ? [
+        for (final e in list)
+          if (e is Map<String, dynamic>) Profile.fromJson(e),
+      ]
+    : const [];
+
 class Snapshot {
   final int proto;
   final bool idle;
@@ -161,6 +195,8 @@ class Snapshot {
   final String? tvdbKey;
   final SnapshotLibrary? library;
   final List<String> trackers;
+  final Profile? profile;
+  final List<Profile> profiles;
   final int updatedAt;
 
   const Snapshot({
@@ -190,6 +226,8 @@ class Snapshot {
     this.tvdbKey,
     this.library,
     this.trackers = const [],
+    this.profile,
+    this.profiles = const [],
     required this.updatedAt,
   });
 
@@ -260,6 +298,8 @@ class Snapshot {
           ? SnapshotLibrary.fromJson(j['library'] as Map<String, dynamic>)
           : null,
       trackers: linkedTrackers(j['trackers']),
+      profile: _profileOrNull(j['profile']),
+      profiles: _profiles(j['profiles']),
       updatedAt: (j['updatedAt'] as num?)?.toInt() ?? 0,
     );
   }
