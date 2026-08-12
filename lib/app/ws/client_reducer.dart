@@ -36,7 +36,39 @@ class EpisodeRef {
 class TargetInfo {
   final String kind; // "local" | "cast"
   final String label;
-  const TargetInfo(this.kind, this.label);
+  final String? deviceId; // present when casting (protocol.ts RemoteTarget)
+  final String? castKind; // chromecast | dlna | roku | airplay
+  const TargetInfo(this.kind, this.label, {this.deviceId, this.castKind});
+
+  bool get isCasting => kind == 'cast';
+
+  @override
+  bool operator ==(Object other) =>
+      other is TargetInfo &&
+      other.kind == kind &&
+      other.label == label &&
+      other.deviceId == deviceId &&
+      other.castKind == castKind;
+
+  @override
+  int get hashCode => Object.hash(kind, label, deviceId, castKind);
+}
+
+/// `source` of a playing media (protocol.ts RemoteSourceInfo).
+class SourceInfo {
+  final String? label;
+  final String? resolution;
+  final String? quality;
+  final String? releaseGroup;
+  const SourceInfo(this.label, this.resolution, this.quality, this.releaseGroup);
+}
+
+/// A discovered cast renderer (protocol.ts RemoteCastDevice).
+class CastDevice {
+  final String id;
+  final String name;
+  final String kind; // chromecast | dlna | roku | airplay
+  const CastDevice(this.id, this.name, this.kind);
 }
 
 class TextEntry {
@@ -58,6 +90,8 @@ class Snapshot {
   final double volume;
   final bool muted;
   final TargetInfo target;
+  final List<CastDevice> castDevices;
+  final SourceInfo? source;
   final bool castDiscovering;
   final bool hasPrevEpisode;
   final bool hasNextEpisode;
@@ -83,6 +117,8 @@ class Snapshot {
     this.volume = 1,
     this.muted = false,
     required this.target,
+    this.castDevices = const [],
+    this.source,
     this.castDiscovering = false,
     this.hasPrevEpisode = false,
     this.hasNextEpisode = false,
@@ -100,6 +136,8 @@ class Snapshot {
     final ep = j['episode'];
     final tgt = j['target'];
     final te = j['textEntry'];
+    final src = j['source'];
+    final casts = j['castDevices'];
     return Snapshot(
       proto: (j['proto'] as num?)?.toInt() ?? 1,
       idle: j['idle'] as bool? ?? true,
@@ -122,8 +160,29 @@ class Snapshot {
           ? TargetInfo(
               tgt['kind'] as String? ?? 'local',
               tgt['label'] as String? ?? 'This PC',
+              deviceId: tgt['deviceId'] as String?,
+              castKind: tgt['castKind'] as String?,
             )
           : const TargetInfo('local', 'This PC'),
+      castDevices: casts is List
+          ? [
+              for (final c in casts)
+                if (c is Map<String, dynamic>)
+                  CastDevice(
+                    c['id'] as String? ?? '',
+                    c['name'] as String? ?? 'Renderer',
+                    c['kind'] as String? ?? 'chromecast',
+                  ),
+            ]
+          : const [],
+      source: src is Map<String, dynamic>
+          ? SourceInfo(
+              src['label'] as String?,
+              src['resolution'] as String?,
+              src['quality'] as String?,
+              src['releaseGroup'] as String?,
+            )
+          : null,
       castDiscovering: j['castDiscovering'] as bool? ?? false,
       hasPrevEpisode: j['hasPrevEpisode'] as bool? ?? false,
       hasNextEpisode: j['hasNextEpisode'] as bool? ?? false,
@@ -159,6 +218,7 @@ class ClientState {
   final int snapshotsSkipped;
   final int droppedFrames;
   final String? lastError;
+  final String? lastHostError; // set only on a {t:"error"} frame (host message)
   final String? lastPongAt;
   final String? lastCommand;
   final String? hostVersion;
@@ -186,6 +246,7 @@ class ClientState {
     this.snapshotsSkipped = 0,
     this.droppedFrames = 0,
     this.lastError,
+    this.lastHostError,
     this.lastPongAt,
     this.lastCommand,
     this.hostVersion,
@@ -216,6 +277,7 @@ class ClientState {
     int? droppedFrames,
     String? lastError,
     bool clearLastError = false,
+    String? lastHostError,
     String? lastPongAt,
     String? lastCommand,
     String? hostVersion,
@@ -242,6 +304,7 @@ class ClientState {
       snapshotsSkipped: snapshotsSkipped ?? this.snapshotsSkipped,
       droppedFrames: droppedFrames ?? this.droppedFrames,
       lastError: clearLastError ? null : (lastError ?? this.lastError),
+      lastHostError: lastHostError ?? this.lastHostError,
       lastPongAt: lastPongAt ?? this.lastPongAt,
       lastCommand: lastCommand ?? this.lastCommand,
       hostVersion: hostVersion ?? this.hostVersion,
@@ -332,8 +395,12 @@ String? encodeCommand(String action, Map<String, dynamic> payload) {
       command = {'action': 'setVolume', 'volume': v.clamp(0.0, 1.0)};
     case 'setTarget':
       final t = payload['target'];
-      command =
-          t == 'local' ? {'action': 'setTarget', 'target': 'local'} : {'action': 'setTarget', 'castDeviceId': t};
+      command = t == 'local'
+          ? {'action': 'setTarget', 'target': 'local'}
+          : {
+              'action': 'setTarget',
+              'target': {'castDeviceId': t},
+            };
     case 'playMeta':
       final p = Map<String, dynamic>.from(payload);
       p['resume'] = payload['resume'] ?? true;
@@ -491,7 +558,11 @@ ClientState _handleFrame(ClientState s, Duration now, String raw) {
       return s.copy(lastPongAt: '${decoded['at']}', notice: 'pong received');
 
     case 'error':
-      return s.copy(lastError: 'host error: ${decoded['message']}', notice: 'host error frame');
+      return s.copy(
+        lastError: 'host error: ${decoded['message']}',
+        lastHostError: '${decoded['message']}',
+        notice: 'host error frame',
+      );
 
     default:
       return s.copy(droppedFrames: s.droppedFrames + 1, notice: 'dropped unknown frame type "${decoded['t']}"');

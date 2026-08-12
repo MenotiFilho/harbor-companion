@@ -374,6 +374,45 @@ void main() {
       expect(frames.where((f) => f.contains('castDiscover')), isEmpty);
       expect(frames.map((f) => (jsonDecode(f) as Map)['t']), everyElement('hello'));
     });
+
+    test('setTarget encodes the wire shape: local vs castDeviceId object', () {
+      var s = connected(ClientState());
+      drain(s);
+      s = clientReduce(s, SendCommand(ms(0), 'setTarget', {'target': 'local'}));
+      final local = jsonDecode(drain(s).single) as Map<String, dynamic>;
+      expect((local['command'] as Map)['target'], 'local');
+
+      s = clientReduce(s, SendCommand(ms(0), 'setTarget', {'target': 'abc123'}));
+      final cast = jsonDecode(drain(s).single) as Map<String, dynamic>;
+      expect((cast['command'] as Map)['target'], {'castDeviceId': 'abc123'});
+    });
+  });
+
+  group('snapshot extras (source + castDevices)', () {
+    test('source and castDevices parse from a snapshot', () {
+      final frame = snapshotFrame(updatedAt: 1000, idle: false);
+      final inner = (frame['snapshot'] as Map<String, dynamic>);
+      inner['source'] = {'label': null, 'resolution': '1080p', 'quality': null, 'releaseGroup': 'WEB-DL'};
+      inner['castDevices'] = [
+        {'id': 'd1', 'name': 'Living Room TV', 'kind': 'chromecast'},
+      ];
+      inner['target'] = {'kind': 'cast', 'label': 'Living Room TV', 'deviceId': 'd1', 'castKind': 'chromecast'};
+      final s = clientReduce(connected(ClientState()), Frame(ms(0), jsonEncode(frame)));
+      expect(s.last!.source!.resolution, '1080p');
+      expect(s.last!.castDevices, hasLength(1));
+      expect(s.last!.castDevices.single.name, 'Living Room TV');
+      expect(s.last!.target.deviceId, 'd1');
+      expect(s.last!.target.isCasting, isTrue);
+    });
+  });
+
+  group('host error frames', () {
+    test('an error frame records the host message separately', () {
+      final s = clientReduce(connected(ClientState()),
+          Frame(ms(0), jsonEncode({'t': 'error', 'message': 'No stream found'})));
+      expect(s.lastHostError, 'No stream found');
+      expect(s.lastError, contains('No stream found'));
+    });
   });
 
   group('sticky window after disconnect', () {

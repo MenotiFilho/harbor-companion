@@ -12,6 +12,7 @@
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../remote/remote_controller.dart';
 import '../ws/client_controller.dart';
 import 'catalog_fetcher.dart';
 import 'home_reducer.dart';
@@ -101,9 +102,9 @@ class HomeController extends Notifier<HomeState> {
   void _sendPlayMeta() {
     final command = state.pendingPlay;
     if (command == null) return;
-    ref
-        .read(wsClientControllerProvider.notifier)
-        .sendCommand('playMeta', command.toPayload());
+    // The Remote layer owns the awaiting-start window: it records the request,
+    // sends the command, and tracks the first non-idle snapshot / timeout.
+    ref.read(remoteControllerProvider.notifier).playMeta(command);
   }
 }
 
