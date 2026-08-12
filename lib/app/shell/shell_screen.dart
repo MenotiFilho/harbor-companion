@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../home/home_screen.dart';
 import '../routes.dart';
 import 'connect_first_view.dart';
 import 'shell_controller.dart';
@@ -35,7 +36,7 @@ class ShellScreen extends ConsumerWidget {
       ),
       body: state.showConnectFirst
           ? const ConnectFirstView()
-          : TabPlaceholder(title: tab.meta.label, icon: tab.meta.icon),
+          : _tabBody(tab),
       bottomNavigationBar: NavigationBar(
         selectedIndex: tab.index,
         onDestinationSelected: (index) =>
@@ -51,4 +52,9 @@ class ShellScreen extends ConsumerWidget {
       ),
     );
   }
+
+  Widget _tabBody(ShellTab tab) => switch (tab) {
+        ShellTab.home => const HomeScreen(),
+        _ => TabPlaceholder(title: tab.meta.label, icon: tab.meta.icon),
+      };
 }

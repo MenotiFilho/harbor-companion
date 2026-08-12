@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'app/connect/connect_controller.dart';
 import 'app/connect/host_registry.dart';
 import 'app/connect/lan_scan.dart';
+import 'app/home/detail_screen.dart';
 import 'app/routes.dart';
 import 'app/shell/shell_screen.dart';
 import 'app/settings/settings_screen.dart';
@@ -47,12 +48,20 @@ class _HarborCompanionAppState extends ConsumerState<HarborCompanionApp>
       routes: {
         AppRoutes.shell: (_) => const ShellScreen(),
         AppRoutes.settings: (_) => const SettingsScreen(),
+        AppRoutes.detail: (_) => const DetailScreen(),
       },
     );
   }
 }
 
 void main() {
+  // Poster-heavy screens (Home rails, detail) reuse far more images than
+  // Flutter's default 1000-entry cache holds; raise the limits app-wide so a
+  // long catalog scroll stays at cache-hit speed (Home perf spike #8).
+  PaintingBinding.instance.imageCache
+    ..maximumSize = 20000
+    ..maximumSizeBytes = 100 << 20;
+
   runApp(
     ProviderScope(
       overrides: [
