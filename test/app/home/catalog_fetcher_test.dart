@@ -123,6 +123,21 @@ void main() {
     });
   });
 
+  group('detail source routing', () {
+    test('a keyed tmdb: id routes to TMDB', () {
+      expect(usesTmdbDetail('key', 'tmdb:603'), isTrue);
+    });
+
+    test('an imdb id routes to Cinemeta even when a key is present', () {
+      expect(usesTmdbDetail('key', 'tt0944947'), isFalse);
+    });
+
+    test('a keyless request always routes to Cinemeta', () {
+      expect(usesTmdbDetail(null, 'tmdb:603'), isFalse);
+      expect(usesTmdbDetail(null, 'tt0944947'), isFalse);
+    });
+  });
+
   group('tmdb detail + seasons', () {
     test('tv detail parses seasons and drops season 0 specials', () {
       final raw = jsonEncode({

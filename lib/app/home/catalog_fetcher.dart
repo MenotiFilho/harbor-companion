@@ -209,6 +209,13 @@ List<Season> parseTmdbSeasons(String raw) {
 // Fetcher seam + real implementation
 // ---------------------------------------------------------------------------
 
+/// True when a title's detail should come from TMDB: a key is present AND the
+/// id is `tmdb:`-prefixed. An imdb id (Cinemeta rows, library items) routes to
+/// Cinemeta even when keyed — TMDB's detail endpoints only accept numeric ids,
+/// so an imdb id there would 404 (e.g. a series opened from My Stuff).
+bool usesTmdbDetail(String? tmdbKey, String id) =>
+    tmdbKey != null && id.startsWith('tmdb:');
+
 /// Fetches home rows and detail from Cinemeta/TMDB. Injected into the home
 /// controller; tests provide a fake.
 abstract interface class CatalogFetcher {
@@ -262,16 +269,17 @@ class HttpCatalogFetcher implements CatalogFetcher {
 
   @override
   Future<DetailMeta> fetchDetail(String type, String id, String? tmdbKey) async {
-    if (tmdbKey == null) {
+    if (!usesTmdbDetail(tmdbKey, id)) {
       final raw = await _get(Uri.parse('$cinemetaBase/meta/$type/$id.json'));
       return parseCinemetaDetail(raw);
     }
-    final idNum = id.startsWith('tmdb:') ? id.substring('tmdb:'.length) : id;
+    final key = tmdbKey!;
+    final idNum = id.substring('tmdb:'.length);
     if (type == 'movie') {
-      final raw = await _get(Uri.parse('$tmdbBase/movie/$idNum?api_key=$tmdbKey'));
+      final raw = await _get(Uri.parse('$tmdbBase/movie/$idNum?api_key=$key'));
       return DetailMeta(meta: parseTmdbDetail(raw, 'movie'));
     }
-    final raw = await _get(Uri.parse('$tmdbBase/tv/$idNum?api_key=$tmdbKey'));
+    final raw = await _get(Uri.parse('$tmdbBase/tv/$idNum?api_key=$key'));
     final meta = parseTmdbDetail(raw, 'series');
     final seasons = [
       for (final season in parseTmdbSeasons(raw))
@@ -279,7 +287,7 @@ class HttpCatalogFetcher implements CatalogFetcher {
           number: season.number,
           name: season.name,
           poster: season.poster,
-          episodes: await _tmdbEpisodes(idNum, season.number, tmdbKey),
+          episodes: await _tmdbEpisodes(idNum, season.number, key),
         ),
     ];
     return DetailMeta(meta: meta, seasons: seasons);
