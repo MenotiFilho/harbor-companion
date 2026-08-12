@@ -36,6 +36,8 @@ dependencies:
   flutter_riverpod: ^3.4.2
 
 dev_dependencies:
+  clock: ^1.1.2
+  fake_async: ^1.3.3
   flutter_test:
     sdk: flutter
 
