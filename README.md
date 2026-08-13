@@ -7,6 +7,3 @@ changes to Harbor.
 
 Flutter (stable) + Riverpod. Five-tab shell (Remote / Search / Home / My Stuff /
 Profile) with a connect-first empty state on first run.
-
-See `docs/agents/` for how the repo is run, and the issue tracker (#1, #13) for
-the destination, spec, and decisions.
