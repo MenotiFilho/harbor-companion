@@ -2,20 +2,13 @@
 
 Native Android companion for [Harbor](https://github.com/harborstremio/harbor) —
 browse and control a Harbor instance over the LAN. A pure client of Harbor's
-existing beta remote surface (`ws://<ip>:11471/api/remote`, proto 1); zero
-changes to Harbor.
-
-Flutter (stable) + Riverpod. Five-tab shell (Remote / Search / Home / My Stuff /
-Profile) with a connect-first empty state on first run.
-
-See `docs/agents/` for how the repo is run, and the issue tracker (#1, #13) for
-the destination, spec, and decisions.
+existing /remote api (`ws://<ip>:11471/api/remote`);
 
 ## How it works
 
 Harbor Companion connects over your home network to a Harbor instance running on
-your PC. Once connected, it replaces Harbor's slow browser remote with a native
-Flutter app:
+your PC. Once connected, you can remote control, search for content on the app and send it to play on your harbor instance.
+Right now it has:
 
 - **Home & Search** fetch catalog data directly from public sources (Cinemeta,
   TMDB, Jikan for anime), rendered in a fast, virtualized grid that only builds
@@ -35,9 +28,7 @@ Flutter app:
   snapshots and renders native UI, so Home scrolls at 60 fps instead of janking.
 - **Zero changes to Harbor.** It only talks to the remote API Harbor already
   ships.
-- **Private by design.** No account, no credentials on your phone. The app even
-  warns you before the first connect, because Harbor's remote is unauthenticated
-  on the LAN.
+- **Private by design.** No account, no credentials on your phone.
 
 ## Screen captures
 
