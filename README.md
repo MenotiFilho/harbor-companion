@@ -21,14 +21,12 @@ Right now it has:
   command over the wire; the PC resolves streams and plays. The phone never
   resolves streams and never holds your Stremio credentials.
 
-## Why use it
-
-- **Fast.** The browser remote serves the entire desktop app to your phone and
+- The browser remote serves the entire desktop app to your phone and
   re-renders a full JSON snapshot every 400 ms. Harbor Companion coalesces those
   snapshots and renders native UI, so Home scrolls at 60 fps instead of janking.
-- **Zero changes to Harbor.** It only talks to the remote API Harbor already
+- It only talks to the remote API Harbor already
   ships.
-- **Private by design.** No account, no credentials on your phone.
+- No account, no credentials on your phone.
 
 ## Screen captures
 
