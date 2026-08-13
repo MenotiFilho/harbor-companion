@@ -187,6 +187,29 @@ List<Episode> parseTmdbSeasonEpisodes(String raw, int seasonNumber) {
   ]..sort((a, b) => a.episode.compareTo(b.episode));
 }
 
+/// Loads episodes for each season shell concurrently and returns the seasons
+/// with episodes filled, in shell order. `fetchEpisodes` never throws (a
+/// failed season yields `[]`), so a season can resolve empty — the UI skips
+/// empty seasons. Concurrent so a many-season series resolves in roughly one
+/// round-trip instead of one per season.
+Future<List<Season>> loadTmdbSeasonEpisodes(
+  List<Season> shells,
+  Future<List<Episode>> Function(int season) fetchEpisodes,
+) async {
+  final episodes = await Future.wait([
+    for (final season in shells) fetchEpisodes(season.number),
+  ]);
+  return [
+    for (var i = 0; i < shells.length; i++)
+      Season(
+        number: shells[i].number,
+        name: shells[i].name,
+        poster: shells[i].poster,
+        episodes: episodes[i],
+      ),
+  ];
+}
+
 /// Parses a TMDB `tv/{id}` response's `seasons` array into [Season] shells
 /// (episodes filled separately). Season 0 (specials) is dropped.
 List<Season> parseTmdbSeasons(String raw) {
@@ -281,15 +304,10 @@ class HttpCatalogFetcher implements CatalogFetcher {
     }
     final raw = await _get(Uri.parse('$tmdbBase/tv/$idNum?api_key=$key'));
     final meta = parseTmdbDetail(raw, 'series');
-    final seasons = [
-      for (final season in parseTmdbSeasons(raw))
-        Season(
-          number: season.number,
-          name: season.name,
-          poster: season.poster,
-          episodes: await _tmdbEpisodes(idNum, season.number, key),
-        ),
-    ];
+    final seasons = await loadTmdbSeasonEpisodes(
+      parseTmdbSeasons(raw),
+      (season) => _tmdbEpisodes(idNum, season, key),
+    );
     return DetailMeta(meta: meta, seasons: seasons);
   }
 

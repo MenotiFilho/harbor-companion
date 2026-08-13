@@ -4,11 +4,13 @@
 // Home/catalog mapping (id prefixing, poster URL building, season/episode
 // derivation) is exercised without network.
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harbor_companion/app/home/catalog_fetcher.dart';
+import 'package:harbor_companion/app/home/meta.dart';
 
 void main() {
   group('cinemeta catalog', () {
@@ -171,6 +173,53 @@ void main() {
       final meta = parseTmdbDetail(jsonEncode({'id': 603, 'title': 'The Matrix'}), 'movie');
       expect(meta.id, 'tmdb:603');
       expect(meta.type, 'movie');
+    });
+  });
+
+  group('tmdb season episode loading', () {
+    test('fills episodes in season order, preserving names and posters', () async {
+      Future<List<Episode>> fetch(int season) async => [
+            Episode(season: season, episode: 1, name: 'S${season}E1'),
+          ];
+      final shells = [
+        const Season(number: 2, name: 'Season 2', poster: '/p2.jpg'),
+        const Season(number: 1, name: 'Season 1', poster: '/p1.jpg'),
+      ];
+      final seasons = await loadTmdbSeasonEpisodes(shells, fetch);
+      expect(seasons.map((s) => s.number), [2, 1]);
+      expect(seasons[0].name, 'Season 2');
+      expect(seasons[0].poster, '/p2.jpg');
+      expect(seasons[0].episodes.single.name, 'S2E1');
+    });
+
+    test('kicks off every season fetch before any completes (parallel, not serial)',
+        () async {
+      final started = <int>[];
+      final completers = <int, Completer<List<Episode>>>{};
+      Future<List<Episode>> fetch(int season) {
+        started.add(season);
+        final c = Completer<List<Episode>>();
+        completers[season] = c;
+        return c.future;
+      }
+
+      final shells = [
+        const Season(number: 1, name: 'Season 1'),
+        const Season(number: 2, name: 'Season 2'),
+        const Season(number: 3, name: 'Season 3'),
+      ];
+      final pending = loadTmdbSeasonEpisodes(shells, fetch);
+
+      // All three fetches started before any completes — a serial await loop
+      // would have started only season 1 here.
+      expect(started, [1, 2, 3]);
+
+      completers[1]!.complete([Episode(season: 1, episode: 1, name: 'A')]);
+      completers[2]!.complete([Episode(season: 2, episode: 1, name: 'B')]);
+      completers[3]!.complete(const []);
+
+      final seasons = await pending;
+      expect(seasons.map((s) => s.episodes.length), [1, 1, 0]);
     });
   });
 }
