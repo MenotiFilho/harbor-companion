@@ -48,3 +48,8 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Android signing material (never commit)
+*.jks
+*.keystore
+key.properties
