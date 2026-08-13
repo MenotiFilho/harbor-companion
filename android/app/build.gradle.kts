@@ -24,7 +24,14 @@ fun envOrProperty(env: String, property: String): String? =
 val releaseStoreFile: java.io.File? = System.getenv("KEYSTORE_BASE64")?.let { base64 ->
     val out = layout.buildDirectory.file("keystore/harbor-release.jks").get().asFile
     out.parentFile.mkdirs()
-    out.writeBytes(Base64.getDecoder().decode(base64.replace(Regex("\\s"), "")))
+    // Accept both standard and URL-safe base64: normalize '-'/'_' to '+'/'/'
+    // and strip any line breaks/whitespace before decoding, so a secret that
+    // was round-tripped through a URL or text field still decodes.
+    val normalized = base64
+        .replace(Regex("\\s"), "")
+        .replace('-', '+')
+        .replace('_', '/')
+    out.writeBytes(Base64.getDecoder().decode(normalized))
     out
 } ?: keystoreProperties.getProperty("storeFile")?.let(::file)
 
