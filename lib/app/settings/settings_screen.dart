@@ -478,6 +478,10 @@ class _UpdatesSection extends StatelessWidget {
         return (update == null ? null : 'Update available: ${update.versionName}', Colors.green);
       case UpdateStatus.failed:
         return (state.notice ?? 'Could not check for updates', Colors.orange);
+      case UpdateStatus.installing:
+        return ('Downloading update…', scheme);
+      case UpdateStatus.installFailed:
+        return (state.notice ?? 'Update failed', Colors.orange);
     }
   }
 }

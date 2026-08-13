@@ -18,6 +18,14 @@ ReleaseInfo release(int code, {String name = '1.0.0', String? notes}) =>
       notes: notes,
     );
 
+ReleaseInfo installable(int code, {String name = '1.1.0'}) => ReleaseInfo(
+      versionCode: code,
+      versionName: name,
+      tagName: 'v$name+$code',
+      downloadUrl: 'https://example.com/harbor-companion.apk',
+      sha256: 'd6da28451a1e15cf7a75f2c3f151befad3b80ad0bb232ab15c20897e54f21478',
+    );
+
 List<String> drain(SelfUpdateState s) {
   final e = List<String>.from(s.effects);
   s.effects.clear();
@@ -202,6 +210,119 @@ void main() {
     test('parseVersionNameFromTag strips the v prefix and code', () {
       expect(parseVersionNameFromTag('v1.2.3+4'), '1.2.3');
       expect(parseVersionNameFromTag('1.2.3+4'), '1.2.3');
+    });
+  });
+
+  group('install half', () {
+    SelfUpdateState prompted({int localCode = 1}) {
+      var s = launchedAt(localCode);
+      s = updateReduce(s, RemoteResult(1, installable(2)));
+      drain(s); // consume the prompt effect
+      return s;
+    }
+
+    test('UpdateRequested closes the prompt, marks installing, emits install:1',
+        () {
+      final s = updateReduce(prompted(), const UpdateRequested());
+      expect(s.status, UpdateStatus.installing);
+      expect(s.promptVisible, isFalse);
+      expect(s.installSeq, 1);
+      expect(s.update!.versionCode, 2, reason: 'update kept for the install');
+      expect(drain(s), ['install:1']);
+    });
+
+    test('UpdateRequested with no downloadable APK fails immediately', () {
+      var s = launchedAt(1);
+      s = updateReduce(s, RemoteResult(1, release(2))); // no url/sha256
+      drain(s);
+      s = updateReduce(s, const UpdateRequested());
+      expect(s.status, UpdateStatus.installFailed);
+      expect(s.lastError, 'No downloadable APK for this release');
+      expect(drain(s), isEmpty, reason: 'nothing to download, no install');
+    });
+
+    test('a granted permission proceeds to download', () {
+      var s = updateReduce(prompted(), const UpdateRequested());
+      drain(s);
+      s = updateReduce(s, const InstallPermission(1, true));
+      expect(s.status, UpdateStatus.installing);
+      expect(drain(s), ['installApk']);
+    });
+
+    test('a denied permission opens the settings screen and awaits the grant',
+        () {
+      var s = updateReduce(prompted(), const UpdateRequested());
+      drain(s);
+      s = updateReduce(s, const InstallPermission(1, false));
+      expect(s.status, UpdateStatus.installing);
+      expect(s.awaitingInstallPermission, isTrue);
+      expect(drain(s), ['grantInstallPermission']);
+    });
+
+    test('a grant after awaiting resumes straight to download', () {
+      var s = updateReduce(prompted(), const UpdateRequested());
+      drain(s);
+      s = updateReduce(s, const InstallPermission(1, false));
+      drain(s);
+      s = updateReduce(s, const InstallPermission(1, true));
+      expect(s.awaitingInstallPermission, isFalse);
+      expect(drain(s), ['installApk']);
+    });
+
+    test('a resume still denied fails instead of re-opening settings', () {
+      var s = updateReduce(prompted(), const UpdateRequested());
+      drain(s);
+      s = updateReduce(s, const InstallPermission(1, false));
+      drain(s);
+      s = updateReduce(s, const InstallPermission(1, false));
+      expect(s.status, UpdateStatus.installFailed);
+      expect(s.lastError, 'Install permission not granted');
+      expect(drain(s), isEmpty, reason: 'no re-open, no retry');
+    });
+
+    test('InstallTriggered lands on upToDate and clears the update', () {
+      var s = updateReduce(prompted(), const UpdateRequested());
+      drain(s);
+      s = updateReduce(s, const InstallPermission(1, true));
+      drain(s);
+      s = updateReduce(s, const InstallTriggered());
+      expect(s.status, UpdateStatus.upToDate);
+      expect(s.update, isNull);
+      expect(s.promptVisible, isFalse);
+      expect(drain(s), isEmpty);
+    });
+
+    test('ChecksumMismatch never installs and surfaces verification failed', () {
+      var s = updateReduce(prompted(), const UpdateRequested());
+      drain(s);
+      s = updateReduce(s, const InstallPermission(1, true));
+      drain(s);
+      s = updateReduce(s, const ChecksumMismatch());
+      expect(s.status, UpdateStatus.installFailed);
+      expect(s.notice, contains('Verification failed'));
+      expect(s.update, isNull);
+      expect(drain(s), isEmpty, reason: 'no install effect, no retry');
+    });
+
+    test('InstallFailed surfaces the reason and does not auto-retry', () {
+      var s = updateReduce(prompted(), const UpdateRequested());
+      drain(s);
+      s = updateReduce(s, const InstallPermission(1, true));
+      drain(s);
+      s = updateReduce(s, const InstallFailed('download timed out'));
+      expect(s.status, UpdateStatus.installFailed);
+      expect(s.lastError, 'download timed out');
+      expect(drain(s), isEmpty, reason: 'no auto-retry');
+    });
+
+    test('a stale InstallPermission result is ignored', () {
+      // seq 2 supersedes seq 1; a late seq-1 permission result must not act.
+      var s = updateReduce(prompted(), const UpdateRequested()); // seq 1
+      s = updateReduce(s, const UpdateRequested()); // seq 2 supersedes
+      drain(s);
+      s = updateReduce(s, const InstallPermission(1, true));
+      expect(s.status, UpdateStatus.installing);
+      expect(drain(s), isEmpty, reason: 'stale permission result ignored');
     });
   });
 }

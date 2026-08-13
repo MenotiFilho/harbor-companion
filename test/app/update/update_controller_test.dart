@@ -5,11 +5,15 @@
 // fail (no modal, no retry), manual check reuses the same path, and a
 // foreground return never hits the client again.
 
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harbor_companion/app/update/github_releases_client.dart';
+import 'package:harbor_companion/app/update/install_permission.dart';
 import 'package:harbor_companion/app/update/update_controller.dart';
+import 'package:harbor_companion/app/update/update_installer.dart';
 import 'package:harbor_companion/app/update/update_reducer.dart';
 import 'package:harbor_companion/app/update/version_provider.dart';
 
@@ -33,8 +37,40 @@ class FakeVersionProvider implements VersionProvider {
   Future<LocalVersion> load() async => version;
 }
 
+class FakeInstaller implements UpdateInstaller {
+  final controller = StreamController<InstallStatus>.broadcast();
+  String? lastUrl;
+  String? lastSha256;
+
+  @override
+  Stream<InstallStatus> install({required String url, required String sha256}) {
+    lastUrl = url;
+    lastSha256 = sha256;
+    return controller.stream;
+  }
+}
+
+class FakeInstallPermission implements InstallPermissionAdapter {
+  bool granted = true;
+  int checkCalls = 0;
+  int openCalls = 0;
+
+  @override
+  Future<bool> canRequestPackageInstalls() async {
+    checkCalls++;
+    return granted;
+  }
+
+  @override
+  Future<void> openInstallPermissionSettings() async {
+    openCalls++;
+  }
+}
+
 void main() {
   late FakeReleasesClient client;
+  late FakeInstaller installer;
+  late FakeInstallPermission permission;
   late ProviderContainer container;
 
   ProviderContainer makeContainer({
@@ -45,17 +81,29 @@ void main() {
     client = FakeReleasesClient()
       ..result = release
       ..error = error;
+    installer = FakeInstaller();
+    permission = FakeInstallPermission();
     return ProviderContainer(
       overrides: [
         selfUpdateVersionProvider
             .overrideWithValue(FakeVersionProvider(LocalVersion(localCode, '1.0.0'))),
         releasesClientProvider.overrideWithValue(client),
+        updateInstallerProvider.overrideWithValue(installer),
+        installPermissionProvider.overrideWithValue(permission),
       ],
     );
   }
 
   ReleaseInfo release(int code, {String name = '1.0.0'}) =>
       ReleaseInfo(versionCode: code, versionName: name, tagName: 'v$name+$code');
+
+  ReleaseInfo installable(int code, {String name = '1.1.0'}) => ReleaseInfo(
+        versionCode: code,
+        versionName: name,
+        tagName: 'v$name+$code',
+        downloadUrl: 'https://example.com/harbor-companion.apk',
+        sha256: 'd6da28451a1e15cf7a75f2c3f151befad3b80ad0bb232ab15c20897e54f21478',
+      );
 
   Future<void> settle() => Future<void>.delayed(Duration.zero);
 
@@ -136,5 +184,113 @@ void main() {
 
     ctrl.dismissPrompt();
     expect(container.read(selfUpdateControllerProvider).promptVisible, isFalse);
+  });
+
+  group('install half', () {
+    Future<void> prompt() async {
+      container.read(selfUpdateControllerProvider); // trigger build + launch
+      await settle(); // the launch check folds into hasUpdate + prompt
+    }
+
+    test('a granted permission downloads via the installer with url + sha256',
+        () async {
+      container = makeContainer(localCode: 1, release: installable(2));
+      addTearDown(container.dispose);
+      await prompt();
+
+      container.read(selfUpdateControllerProvider.notifier).acceptUpdate();
+      await settle();
+
+      expect(permission.checkCalls, 1);
+      expect(installer.lastUrl, 'https://example.com/harbor-companion.apk');
+      expect(installer.lastSha256,
+          'd6da28451a1e15cf7a75f2c3f151befad3b80ad0bb232ab15c20897e54f21478');
+      expect(container.read(selfUpdateControllerProvider).status,
+          UpdateStatus.installing);
+    });
+
+    test('a denied permission opens the settings screen and awaits the grant',
+        () async {
+      container = makeContainer(localCode: 1, release: installable(2));
+      addTearDown(container.dispose);
+      permission.granted = false;
+      await prompt();
+
+      container.read(selfUpdateControllerProvider.notifier).acceptUpdate();
+      await settle();
+
+      expect(permission.openCalls, 1);
+      expect(installer.lastUrl, isNull, reason: 'no download before the grant');
+      expect(container.read(selfUpdateControllerProvider).awaitingInstallPermission,
+          isTrue);
+    });
+
+    test('returning to the foreground re-checks a parked permission grant',
+        () async {
+      container = makeContainer(localCode: 1, release: installable(2));
+      addTearDown(container.dispose);
+      permission.granted = false;
+      await prompt();
+
+      final ctrl = container.read(selfUpdateControllerProvider.notifier);
+      ctrl.acceptUpdate();
+      await settle();
+      expect(container.read(selfUpdateControllerProvider).awaitingInstallPermission,
+          isTrue);
+
+      permission.granted = true;
+      ctrl.setForegrounded(false); // resumed
+      await settle();
+
+      expect(permission.checkCalls, 2);
+      expect(installer.lastUrl, 'https://example.com/harbor-companion.apk');
+      expect(container.read(selfUpdateControllerProvider).awaitingInstallPermission,
+          isFalse);
+    });
+
+    test('a checksum mismatch folds into installFailed', () async {
+      container = makeContainer(localCode: 1, release: installable(2));
+      addTearDown(container.dispose);
+      await prompt();
+
+      container.read(selfUpdateControllerProvider.notifier).acceptUpdate();
+      await settle();
+      installer.controller.add(InstallStatus.checksumMismatch);
+      await settle();
+
+      final s = container.read(selfUpdateControllerProvider);
+      expect(s.status, UpdateStatus.installFailed);
+      expect(s.notice, contains('Verification failed'));
+    });
+
+    test('a failed download folds into installFailed with no retry', () async {
+      container = makeContainer(localCode: 1, release: installable(2));
+      addTearDown(container.dispose);
+      await prompt();
+
+      container.read(selfUpdateControllerProvider.notifier).acceptUpdate();
+      await settle();
+      installer.controller.add(InstallStatus.failed);
+      await settle();
+
+      expect(container.read(selfUpdateControllerProvider).status,
+          UpdateStatus.installFailed);
+      expect(installer.lastUrl, isNotNull);
+      expect(permission.checkCalls, 1, reason: 'no re-check, no auto-retry');
+    });
+
+    test('a triggered install lands on upToDate', () async {
+      container = makeContainer(localCode: 1, release: installable(2));
+      addTearDown(container.dispose);
+      await prompt();
+
+      container.read(selfUpdateControllerProvider.notifier).acceptUpdate();
+      await settle();
+      installer.controller.add(InstallStatus.triggered);
+      await settle();
+
+      expect(container.read(selfUpdateControllerProvider).status,
+          UpdateStatus.upToDate);
+    });
   });
 }

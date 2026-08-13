@@ -38,11 +38,20 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
     final tab = state.activeTab;
 
     // Show the update prompt whenever the self-update check finds a newer
-    // version (launch or manual). The dialog is the only "download consent"
-    // surface for now — the download/install half is a later ticket.
+    // version (launch or manual). Tapping Update begins the install half;
+    // install failures and the lazy install-permission grant surface as
+    // snackbars here in the shell.
     ref.listen(selfUpdateControllerProvider, (previous, next) {
       if (next.promptVisible && previous?.promptVisible != true) {
         _showUpdatePrompt(next.update);
+      }
+      if (next.status == UpdateStatus.installFailed &&
+          previous?.status != UpdateStatus.installFailed) {
+        _showSnack(next.notice ?? next.lastError ?? 'Update failed');
+      }
+      if (next.awaitingInstallPermission &&
+          !(previous?.awaitingInstallPermission ?? false)) {
+        _showSnack('Allow "Install unknown apps" to update Harbor Companion');
       }
     });
 
@@ -94,9 +103,22 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
             },
             child: const Text('Later'),
           ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              ref.read(selfUpdateControllerProvider.notifier).acceptUpdate();
+            },
+            child: const Text('Update'),
+          ),
         ],
       ),
     );
+  }
+
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   Widget _tabBody(ShellTab tab) => switch (tab) {

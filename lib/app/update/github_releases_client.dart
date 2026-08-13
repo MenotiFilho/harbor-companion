@@ -20,7 +20,8 @@ const String githubOwner = 'MenotiFilho';
 const String githubRepo = 'harbor-companion';
 
 /// Parses a `/releases/latest` JSON body into a [ReleaseInfo], or null when
-/// there is no usable release (a 404 body / no tag / prerelease / draft).
+/// there is no usable release (a 404 body / no tag / prerelease / draft / no
+/// downloadable APK asset with a `sha256:` digest).
 ReleaseInfo? parseLatestRelease(String raw) {
   final decoded = jsonDecode(raw);
   if (decoded is! Map<String, dynamic>) return null;
@@ -29,11 +30,38 @@ ReleaseInfo? parseLatestRelease(String raw) {
   if (tag == null) return null;
   final code = parseVersionCodeFromTag(tag);
   if (code == null) return null;
+
+  // The install half needs a downloadable APK asset: its browser_download_url
+  // (not the api.github.com URL) and its `sha256:` digest (hex for ota_update).
+  String? downloadUrl;
+  String? sha256;
+  final assets = decoded['assets'];
+  if (assets is List) {
+    for (final asset in assets) {
+      if (asset is! Map<String, dynamic>) continue;
+      final name = asset['name'];
+      final url = asset['browser_download_url'];
+      final digest = asset['digest'];
+      if (name is String &&
+          name.endsWith('.apk') &&
+          url is String &&
+          digest is String &&
+          digest.startsWith('sha256:')) {
+        downloadUrl = url;
+        sha256 = digest.substring('sha256:'.length);
+        break;
+      }
+    }
+  }
+  if (downloadUrl == null || sha256 == null) return null;
+
   return ReleaseInfo(
     versionCode: code,
     versionName: parseVersionNameFromTag(tag),
     tagName: tag,
     notes: decoded['body'] as String?,
+    downloadUrl: downloadUrl,
+    sha256: sha256,
   );
 }
 
