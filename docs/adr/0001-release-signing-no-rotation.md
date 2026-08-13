@@ -6,3 +6,8 @@ The Android companion ships outside app stores via GitHub Releases. Release APKs
 
 - Protect, don't rotate: the key is treated as immutable infrastructure. Rotation is off the table, not a recovery path.
 - Key loss is a release-ending event for all current installs (they must uninstall + reinstall). This is why an offline encrypted backup, not just the CI secret, is the source of truth.
+
+## Backup location
+
+- Keystore + passwords: Bitwarden vault (maintainer's personal vault).
+- `.jks` file: `C:\Users\Menoti\Desktop\harbor-release.jks` (Windows host).
