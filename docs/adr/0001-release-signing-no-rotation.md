@@ -11,3 +11,4 @@ The Android companion ships outside app stores via GitHub Releases. Release APKs
 
 - Keystore + passwords: Bitwarden vault (maintainer's personal vault).
 - `.jks` file: `C:\Users\Menoti\Desktop\harbor-release.jks` (Windows host).
+- `.jks` file: Google Drive (maintainer's account).
