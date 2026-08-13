@@ -1,0 +1,66 @@
+name: Release
+
+# Release publishing half of the distribution plan (ticket 29, #26).
+#
+# Triggered by a manually-pushed `v<versionName>+<versionCode>` tag. Enforces
+# version discipline (tag == pubspec version, versionCode strictly increasing),
+# builds the release-signed APK, and publishes it to GitHub Releases with its
+# SHA-256 (body line + SHA256SUMS sidecar). A bad tag fails the run before
+# anything is built or published.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Read previous release tag
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev="$(gh api "repos/${{ github.repository }}/releases/latest" --jq '.tag_name' 2>/dev/null || true)"
+          echo "tag=${prev:-}" >> "$GITHUB_OUTPUT"
+
+      - name: Version gate
+        env:
+          TAG: ${{ github.ref_name }}
+          PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
+        run: dart run tool/release/version_gate.dart
+
+      - name: Build release APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: flutter build apk --release
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd build/app/outputs/flutter-apk
+          sum_line="$(sha256sum app-release.apk)"
+          echo "$sum_line" > SHA256SUMS
+          printf 'SHA-256:\n\n```\n%s\n```\n' "$sum_line" > /tmp/release-notes.md
+          gh release create "${{ github.ref_name }}" \
+            app-release.apk SHA256SUMS \
+            --title "${{ github.ref_name }}" \
+            --notes-file /tmp/release-notes.md
