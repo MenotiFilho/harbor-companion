@@ -11,6 +11,7 @@ import 'app/routes.dart';
 import 'app/shell/shell_screen.dart';
 import 'app/settings/settings_screen.dart';
 import 'app/theme.dart';
+import 'app/update/update_controller.dart';
 
 class HarborCompanionApp extends ConsumerStatefulWidget {
   const HarborCompanionApp({super.key});
@@ -39,6 +40,12 @@ class _HarborCompanionAppState extends ConsumerState<HarborCompanionApp>
     ref
         .read(connectControllerProvider.notifier)
         .setBackgrounded(state != AppLifecycleState.resumed);
+    // Foreground/background transitions are recorded for self-update but never
+    // trigger a re-check — the launch check fires once, and a foreground
+    // return is a no-op (ticket 28).
+    ref
+        .read(selfUpdateControllerProvider.notifier)
+        .setForegrounded(state != AppLifecycleState.resumed);
   }
 
   @override

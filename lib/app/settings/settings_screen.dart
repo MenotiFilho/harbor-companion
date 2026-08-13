@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../connect/connect_controller.dart';
 import '../connect/connect_reducer.dart';
+import '../update/update_controller.dart';
+import '../update/update_reducer.dart';
 
 /// Connect/settings surface (ticket 03): the saved-host registry, the per-host
 /// open-LAN warning gate, the connection lifecycle, and candidate-only LAN
@@ -20,6 +22,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(connectControllerProvider);
     final ctrl = ref.read(connectControllerProvider.notifier);
+    final updateState = ref.watch(selfUpdateControllerProvider);
+    final updateCtrl = ref.read(selfUpdateControllerProvider.notifier);
 
     // Show the warning gate as a blocking dialog whenever the reducer holds it.
     ref.listen(connectControllerProvider, (previous, next) {
@@ -50,6 +54,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           const SizedBox(height: 24),
           _sectionHeader('Find hosts'),
           _ScanSection(state: state, onScan: ctrl.startScan, onPick: (c) => _pickCandidate(ctrl, c)),
+          const SizedBox(height: 24),
+          _sectionHeader('Updates'),
+          _UpdatesSection(state: updateState, onCheck: updateCtrl.checkNow),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
@@ -414,5 +421,63 @@ class _ScanSection extends StatelessWidget {
         ],
       ],
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Updates section (self-update check half, ticket 28)
+// ---------------------------------------------------------------------------
+
+class _UpdatesSection extends StatelessWidget {
+  final SelfUpdateState state;
+  final VoidCallback onCheck;
+  const _UpdatesSection({required this.state, required this.onCheck});
+
+  @override
+  Widget build(BuildContext context) {
+    final (label, color) = _statusPresentation(state);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        OutlinedButton.icon(
+          onPressed: state.status == UpdateStatus.checking ? null : onCheck,
+          icon: state.status == UpdateStatus.checking
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.system_update),
+          label: const Text('Check for updates'),
+        ),
+        if (label != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: color),
+            ),
+          ),
+      ],
+    );
+  }
+
+  (String?, Color?) _statusPresentation(SelfUpdateState state) {
+    final scheme = const Color(0xFFB0BEC5);
+    switch (state.status) {
+      case UpdateStatus.idle:
+        final name = state.localVersionName;
+        return (name == null ? null : 'Version $name', scheme);
+      case UpdateStatus.checking:
+        return ('Checking for updates…', scheme);
+      case UpdateStatus.upToDate:
+        return (state.notice ?? 'You’re up to date', scheme);
+      case UpdateStatus.hasUpdate:
+        final update = state.update;
+        return (update == null ? null : 'Update available: ${update.versionName}', Colors.green);
+      case UpdateStatus.failed:
+        return (state.notice ?? 'Could not check for updates', Colors.orange);
+    }
   }
 }

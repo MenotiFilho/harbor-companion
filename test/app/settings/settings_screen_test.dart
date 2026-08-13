@@ -13,6 +13,10 @@ import 'package:harbor_companion/app/connect/connect_controller.dart';
 import 'package:harbor_companion/app/connect/host_registry.dart';
 import 'package:harbor_companion/app/connect/lan_scan.dart';
 import 'package:harbor_companion/app/settings/settings_screen.dart';
+import 'package:harbor_companion/app/update/github_releases_client.dart';
+import 'package:harbor_companion/app/update/update_controller.dart';
+import 'package:harbor_companion/app/update/update_reducer.dart';
+import 'package:harbor_companion/app/update/version_provider.dart';
 import 'package:harbor_companion/app/ws/client_controller.dart';
 import 'package:harbor_companion/app/ws/host_keys.dart';
 import 'package:harbor_companion/app/ws/ws_transport.dart';
@@ -39,12 +43,24 @@ class FakeKeyStore implements HostKeyStore {
   Future<void> save(HostKeys keys) async {}
 }
 
+class FakeReleasesClient implements ReleasesClient {
+  @override
+  Future<ReleaseInfo?> fetchLatestRelease() async => null;
+}
+
+class FakeVersionProvider implements VersionProvider {
+  @override
+  Future<LocalVersion> load() async => const LocalVersion(1, '1.0.0');
+}
+
 ProviderContainer makeContainer() => ProviderContainer(
       overrides: [
         wsTransportProvider.overrideWithValue(FakeTransport()),
         wsKeyStoreProvider.overrideWithValue(FakeKeyStore()),
         hostRegistryStoreProvider.overrideWithValue(InMemoryHostRegistryStore()),
         subnetScannerProvider.overrideWithValue(const FixedSubnetScanner([])),
+        selfUpdateVersionProvider.overrideWithValue(FakeVersionProvider()),
+        releasesClientProvider.overrideWithValue(FakeReleasesClient()),
       ],
     );
 
@@ -85,5 +101,20 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('Connected'), findsWidgets);
+  });
+
+  testWidgets('"Check for updates" runs the check and reports up to date',
+      (tester) async {
+    final container = makeContainer();
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Check for updates'), findsOneWidget);
+
+    await tester.tap(find.text('Check for updates'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('No update available'), findsOneWidget);
   });
 }

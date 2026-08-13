@@ -7,6 +7,8 @@ import '../profile/profile_screen.dart';
 import '../remote/remote_screen.dart';
 import '../routes.dart';
 import '../search/search_screen.dart';
+import '../update/update_controller.dart';
+import '../update/update_reducer.dart';
 import 'connect_first_view.dart';
 import 'shell_controller.dart';
 import 'shell_tab.dart';
@@ -18,13 +20,31 @@ import 'shell_tab.dart';
 /// The app bar's settings action stays available in every state, so a host can
 /// be reconfigured after the first connect (the connect-first view alone
 /// disappears once connected).
-class ShellScreen extends ConsumerWidget {
+///
+/// The shell also hosts the app-wide self-update prompt: it listens for
+/// `promptVisible` and shows the "update available" dialog whenever the launch
+/// (or a manual) check finds a newer release.
+class ShellScreen extends ConsumerStatefulWidget {
   const ShellScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ShellScreen> createState() => _ShellScreenState();
+}
+
+class _ShellScreenState extends ConsumerState<ShellScreen> {
+  @override
+  Widget build(BuildContext context) {
     final state = ref.watch(shellControllerProvider);
     final tab = state.activeTab;
+
+    // Show the update prompt whenever the self-update check finds a newer
+    // version (launch or manual). The dialog is the only "download consent"
+    // surface for now — the download/install half is a later ticket.
+    ref.listen(selfUpdateControllerProvider, (previous, next) {
+      if (next.promptVisible && previous?.promptVisible != true) {
+        _showUpdatePrompt(next.update);
+      }
+    });
 
     return Scaffold(
       appBar: AppBar(
@@ -51,6 +71,29 @@ class ShellScreen extends ConsumerWidget {
               selectedIcon: Icon(tab.meta.selectedIcon),
               label: tab.meta.label,
             ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showUpdatePrompt(ReleaseInfo? update) {
+    if (update == null) return Future.value();
+    return showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Update available'),
+        content: Text(
+          'Harbor Companion ${update.versionName} is available.'
+          '${update.notes == null ? '' : '\n\n${update.notes}'}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              ref.read(selfUpdateControllerProvider.notifier).dismissPrompt();
+            },
+            child: const Text('Later'),
+          ),
         ],
       ),
     );

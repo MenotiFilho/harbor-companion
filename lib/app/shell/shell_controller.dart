@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../connect/connect_controller.dart';
+import '../update/update_controller.dart';
 import 'shell_reducer.dart';
 import 'shell_tab.dart';
 
@@ -29,8 +30,11 @@ class ShellController extends Notifier<ShellState> {
   ShellState build() {
     // Instantiate the connect controller so its `Launch` auto-connect runs at
     // startup; it drives the connection the shell renders. One-time init, not
-    // a reactive dependency.
+    // a reactive dependency. Same for the self-update controller, whose
+    // `Launch` check runs once at startup (its foreground-return no-op lives in
+    // main.dart's lifecycle observer).
     ref.read(connectControllerProvider);
+    ref.read(selfUpdateControllerProvider);
     ref.listen(connectionStatusProvider, (previous, next) {
       state = shellReduce(state, ConnectionChanged(next));
     });
