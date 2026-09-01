@@ -319,6 +319,38 @@ void main() {
       expect(remoteReduce(s, const SetVolume(-1)).pendingCommand!.payload['volume'], 0.0);
     });
 
+    test('restores the remembered volume once when media changes', () {
+      var s = remoteReduce(
+        connected(),
+        SnapshotArrived(snap(idle: false, mediaId: 'episode-1', volume: 0.5)),
+      );
+      expect(drain(s), isEmpty);
+
+      s = remoteReduce(
+        s,
+        SnapshotArrived(snap(idle: false, mediaId: 'episode-2', volume: 1)),
+      );
+      expect(s.pendingCommand!.action, 'setVolume');
+      expect(s.pendingCommand!.payload['volume'], 0.5);
+      expect(drain(s), ['command']);
+
+      s = remoteReduce(
+        s,
+        SnapshotArrived(snap(idle: false, mediaId: 'episode-2', volume: 1)),
+      );
+      expect(drain(s), isEmpty,
+          reason: 'the restore is only emitted on a media transition');
+    });
+
+    test('the first snapshot adopts the host volume without a command', () {
+      final s = remoteReduce(
+        connected(),
+        SnapshotArrived(snap(idle: false, volume: 0.35)),
+      );
+      expect(s.rememberedVolume, 0.35);
+      expect(drain(s), isEmpty);
+    });
+
     test('prev/next/subtitles encode their commands', () {
       final s = remoteReduce(connected(), SnapshotArrived(snap(idle: false)));
       expect(remoteReduce(s, const PrevEpisode()).pendingCommand!.action, 'prevEpisode');

@@ -10,7 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../home/poster_image.dart';
 import '../settings/settings_controller.dart';
-import '../ws/client_reducer.dart' show CastDevice;
+import '../ws/client_reducer.dart' show CastDevice, TextEntry;
 import 'remote_controller.dart';
 import 'remote_reducer.dart';
 
@@ -25,10 +25,13 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
   double? _seekDrag;
   double? _volumeDrag;
   final TextEditingController _textController = TextEditingController();
+  final FocusNode _textFocusNode = FocusNode();
+  TextEntry? _lastTextEntry;
 
   @override
   void dispose() {
     _textController.dispose();
+    _textFocusNode.dispose();
     super.dispose();
   }
 
@@ -45,6 +48,16 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
         .select((s) => s.playRequest?.name ?? s.playRequest?.metaId));
     final showPlaybackLocation = ref.watch(
         settingsControllerProvider.select((s) => s.showPlaybackLocation));
+    final textEntry =
+        ref.watch(remoteControllerProvider.select((s) => s.textEntry));
+    if (_lastTextEntry == null && textEntry != null) {
+      _lastTextEntry = textEntry;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _textFocusNode.requestFocus();
+      });
+    } else {
+      _lastTextEntry = textEntry;
+    }
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -83,6 +96,7 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
         _TextSection(
           enabled: connected,
           textController: _textController,
+          focusNode: _textFocusNode,
         ),
       ],
     );
@@ -582,7 +596,12 @@ class _NavSection extends ConsumerWidget {
 class _TextSection extends ConsumerWidget {
   final bool enabled;
   final TextEditingController textController;
-  const _TextSection({required this.enabled, required this.textController});
+  final FocusNode focusNode;
+  const _TextSection({
+    required this.enabled,
+    required this.textController,
+    required this.focusNode,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -604,6 +623,7 @@ class _TextSection extends ConsumerWidget {
           children: [
             TextField(
               controller: textController,
+              focusNode: focusNode,
               enabled: enabled,
               decoration: InputDecoration(
                 labelText: textEntry.placeholder.isEmpty

@@ -3,8 +3,7 @@
 // Renders the pure reducer's view: a section selector (Watchlist / History /
 // Favorites), each section a virtualized + incrementally-paged list so build
 // cost is O(visible), the derived empty states (needConnect / emptyLibrary),
-// the offline stale banner, display-only trackers, and the local-persistence
-// switch. Rows carry host-authoritative toggle chips and open the shared detail
+// display-only trackers. Rows carry host-authoritative toggle chips and open the shared detail
 // page on tap. Everything derives from the snapshot — the phone never
 // optimistically flips a toggle.
 
@@ -101,18 +100,6 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-          child: _PersistenceToggle(
-            enabled: state.persistEnabled,
-            onChanged: ctrl.togglePersistence,
-          ),
-        ),
-        if (view.stale)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-            child: const _StaleBanner(),
-          ),
         if (view.trackers.isNotEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
@@ -162,56 +149,6 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
           onOpen: () => _openDetail(item),
         );
       },
-    );
-  }
-}
-
-class _PersistenceToggle extends StatelessWidget {
-  final bool enabled;
-  final VoidCallback onChanged;
-  const _PersistenceToggle({required this.enabled, required this.onChanged});
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: SwitchListTile(
-        secondary: const Icon(Icons.cloud_download_outlined),
-        title: const Text('Keep a local copy'),
-        subtitle: const Text('Browse your last-synced library offline'),
-        value: enabled,
-        onChanged: (_) => onChanged(),
-      ),
-    );
-  }
-}
-
-class _StaleBanner extends StatelessWidget {
-  const _StaleBanner();
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.cloud_off, color: scheme.onSurfaceVariant),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'Offline — showing your last-synced library.',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodyMedium
-                  ?.copyWith(color: scheme.onSurfaceVariant),
-            ),
-          ),
-        ],
-      ),
     );
   }
 }

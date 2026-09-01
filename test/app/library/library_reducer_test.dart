@@ -4,8 +4,7 @@
 // 400ms tick, never `updatedAt`), host-authoritative toggles (resolve on
 // reflection, reject after 3 un-reflected snapshots or an error frame, no
 // optimistic state), the cloud-sync honest revert, the derived empty states
-// (needConnect / emptyLibrary / stale), display-only trackers, and the
-// persistence on/off round-trip.
+// (needConnect / emptyLibrary), and display-only trackers.
 
 import 'package:flutter_test/flutter_test.dart';
 
@@ -37,7 +36,6 @@ LibraryState withLibrary(LibraryState s, SnapshotLibrary library, {int updatedAt
 void main() {
   final matrix = item('tt0133093', name: 'The Matrix', poster: 'https://img/m.jpg');
   final shawshank = item('tt0111161', name: 'Shawshank');
-  final got = item('tt0944947', type: 'series', name: 'Game of Thrones');
 
   group('derive-on-change refresh model', () {
     test('pure 400ms ticks with an unchanged library never rebuild the view', () {
@@ -186,10 +184,9 @@ void main() {
   });
 
   group('derived empty states', () {
-    test('disconnected with nothing persisted → needConnect', () {
+    test('disconnected → needConnect', () {
       final s = libraryReduce(LibraryState(), const Disconnected());
       expect(s.view.emptyKind, EmptyKind.needConnect);
-      expect(s.view.stale, isFalse);
     });
 
     test('connected with all sections empty → emptyLibrary', () {
@@ -198,25 +195,8 @@ void main() {
       expect(s.view.emptyKind, EmptyKind.emptyLibrary);
     });
 
-    test('disconnected with persisted data and persistence on → stale', () {
-      final seed = lib(watchlist: [matrix]);
-      var s = libraryReduce(LibraryState(), PersistLoaded(true, seed));
-      s = libraryReduce(s, const Disconnected());
-      expect(s.view.stale, isTrue);
-      expect(s.view.watchlist, hasLength(1));
-      expect(s.view.emptyKind, EmptyKind.none);
-    });
-
-    test('persistence off → needConnect even with persisted data', () {
-      var s = libraryReduce(LibraryState(), PersistLoaded(false, lib(watchlist: [matrix])));
-      s = libraryReduce(s, const Disconnected());
-      expect(s.view.emptyKind, EmptyKind.needConnect);
-      expect(s.view.stale, isFalse);
-    });
-
-    test('connected with content → live view, not stale', () {
+    test('connected with content → live view', () {
       final s = withLibrary(connected(), lib(watchlist: [matrix]));
-      expect(s.view.stale, isFalse);
       expect(s.view.emptyKind, EmptyKind.none);
       expect(s.view.watchlist, hasLength(1));
     });
@@ -228,42 +208,6 @@ void main() {
       final after = libraryReduce(s, SnapshotArrived(lib(watchlist: [matrix]), const ['simkl', 'trakt'], 1400));
       expect(after.view.trackers, ['simkl', 'trakt']);
       expect(drain(after), isEmpty, reason: 'trackers never emit a command');
-    });
-  });
-
-  group('persistence', () {
-    test('enabling persistence with live data emits a persist write', () {
-      var s = withLibrary(connected(), lib(watchlist: [matrix]));
-      s = libraryReduce(s, const TogglePersistence());
-      expect(s.persistEnabled, isTrue);
-      expect(s.pendingPersist, isNotNull);
-      expect(drain(s), ['persist']);
-    });
-
-    test('a changed library with persistence on emits a persist write', () {
-      var s = withLibrary(connected(), lib(watchlist: [matrix]));
-      s = libraryReduce(s, const TogglePersistence());
-      drain(s);
-      s = libraryReduce(s, SnapshotArrived(lib(watchlist: [matrix, shawshank]), const [], 1400));
-      expect(drain(s), ['persist']);
-      expect(s.persisted!.watchlist, hasLength(2));
-    });
-
-    test('PersistWritten clears dirty and counts the completed write', () {
-      var s = withLibrary(connected(), lib(watchlist: [matrix]));
-      s = libraryReduce(s, const TogglePersistence());
-      s = libraryReduce(s, PersistWritten(s.liveSig));
-      expect(s.persistWrites, 1);
-      expect(s.persistDirty, isFalse);
-    });
-
-    test('disabling persistence does not emit a write', () {
-      var s = withLibrary(connected(), lib(watchlist: [matrix]));
-      s = libraryReduce(s, const TogglePersistence());
-      drain(s);
-      final off = libraryReduce(s, const TogglePersistence());
-      expect(off.persistEnabled, isFalse);
-      expect(drain(off), isEmpty);
     });
   });
 
@@ -292,19 +236,5 @@ void main() {
       expect(p.containsKey('action'), isFalse);
     });
 
-    test('encodePersisted / decodePersisted round-trip', () {
-      final seed = lib(
-        watchlist: [matrix],
-        history: [shawshank],
-        favorites: [got],
-      );
-      final decoded = decodePersisted(encodePersisted(seed))!;
-      expect(librarySignature(decoded), librarySignature(seed));
-    });
-
-    test('decodePersisted returns null on garbage', () {
-      expect(decodePersisted(''), isNull);
-      expect(decodePersisted('not json'), isNull);
-    });
   });
 }

@@ -39,7 +39,7 @@ Controllers inject a clock and I/O seams as providers; tests override them via
 `ProviderContainer(overrides: [...])`. Seams default to in-memory/real
 implementations in the provider, but the disk/network backends are wired only in
 `lib/main.dart`'s `ProviderScope(overrides: [...])` (`SharedPrefsHostRegistryStore`,
-`TcpProbeScanner`, `SharedPrefsLibraryStore`).
+`TcpProbeScanner`).
 
 Key wiring:
 

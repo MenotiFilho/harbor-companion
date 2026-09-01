@@ -1,6 +1,6 @@
 // Thin widget test for the Library screen (the reducer is the real seam).
-// Verifies the derived empty states (needConnect / emptyLibrary), the offline
-// stale banner, the section selector switching between Watchlist / History /
+// Verifies the derived empty states (needConnect / emptyLibrary), the section
+// selector switching between Watchlist / History /
 // Favorites, the host-authoritative toggle chips routing to their own kind,
 // and row tap opening the shared detail page.
 
@@ -70,18 +70,13 @@ void main() {
     expect(find.text('Your library is empty'), findsOneWidget);
   });
 
-  testWidgets('a stale view shows the offline banner and the persisted items',
-      (tester) async {
+  testWidgets('disconnected view shows the connect empty state', (tester) async {
     await tester.pumpWidget(_wrap(LibraryState(
       connected: false,
-      view: MyStuffView(
-        stale: true,
-        watchlist: [matrix],
-        watchlistIds: {matrix.id},
-      ),
+      view: const MyStuffView(emptyKind: EmptyKind.needConnect),
     )));
-    expect(find.textContaining('Offline'), findsOneWidget);
-    expect(find.text('The Matrix'), findsOneWidget);
+    expect(find.text('Connect to see My Stuff'), findsOneWidget);
+    expect(find.text('Keep a local copy'), findsNothing);
   });
 
   testWidgets('the default section renders watchlist items with toggle chips',

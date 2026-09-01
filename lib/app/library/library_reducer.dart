@@ -1,11 +1,11 @@
 // Pure Library / My Stuff state model (ticket 06).
 //
 // `(LibraryState, LibraryEvent) => LibraryState` reducer producing an effects
-// buffer the controller drains through injected side-channels (the WS client's
-// `sendCommand`, the library persistence store). No I/O, no timers.
+// buffer the controller drains through the WS client's `sendCommand`. No I/O,
+// no timers.
 //
 // Lifted from the validated library prototype (#10) with the shell's string
-// effects replaced by structured `command`/`persist` payloads. The decisions
+// effects replaced by structured command payloads. The decisions
 // this module owns, and the seam tests pin:
 //
 //   - **derive-on-change refresh model**: the view is rebuilt only when
@@ -20,22 +20,18 @@
 //   - **cloud-sync honest revert**: `watchlist/watched OFF` on Stremio-cloud
 //     items is a silent host no-op (no provenance on the wire), so those
 //     toggles are sent and reverted when never reflected — never faked.
-//   - **derived empty states**: `needConnect` (disconnected, nothing
-//     persisted), `emptyLibrary` (connected, all empty), `stale` (disconnected
-//     with persisted data and persistence on).
+//   - **derived empty states**: `needConnect` (disconnected) and
+//     `emptyLibrary` (connected, all empty).
 //   - **trackers display-only** in v1 (the simkl/anilist/mal write ops are
 //     deferred).
 //
 // Effects vocabulary (the Notifier → adapter surface):
 //   `command` → send `pendingCommand` (libraryAction) via the WS client
-//   `persist` → write `pendingPersist` (encoded library) to the store
 //
 // Wire contract: docs/wire-contract.md §2.1 (library/trackers), §2.2
 // (libraryAction).
 
 library;
-
-import 'dart:convert';
 
 import '../ws/client_reducer.dart' show LibraryItem, SnapshotLibrary;
 
@@ -46,7 +42,7 @@ const int rejectAfterSnapshots = 3;
 enum EmptyKind { none, needConnect, emptyLibrary }
 
 // ---------------------------------------------------------------------------
-// Signature + persistence encoding (pure, deterministic)
+// Signature (pure, deterministic)
 // ---------------------------------------------------------------------------
 
 /// Canonical, deterministic signature of the library — stable within and
@@ -63,47 +59,6 @@ String librarySignature(SnapshotLibrary? lib) {
     sb.write('/');
   }
   return sb.toString();
-}
-
-/// Persistence payload: JSON (unlike the signature, this must round-trip — the
-/// canonical form's separators collide with poster URLs).
-String encodePersisted(SnapshotLibrary lib) => jsonEncode({
-      'w': [for (final i in lib.watchlist) _encItem(i)],
-      'h': [for (final i in lib.history) _encItem(i)],
-      'f': [for (final i in lib.favorites) _encItem(i)],
-    });
-
-Map<String, Object?> _encItem(LibraryItem i) => {
-      'id': i.id,
-      'type': i.type,
-      if (i.name != null) 'name': i.name,
-      if (i.poster != null) 'poster': i.poster,
-      if (i.background != null) 'background': i.background,
-    };
-
-/// Inverse of [encodePersisted]. Null on empty/garbage input.
-SnapshotLibrary? decodePersisted(String json) {
-  if (json.isEmpty) return null;
-  try {
-    final m = jsonDecode(json) as Map<String, dynamic>;
-    List<LibraryItem> sec(String k) => [
-          for (final e in (m[k] as List? ?? const []))
-            LibraryItem(
-              (e as Map)['id'] as String,
-              e['type'] as String,
-              e['name'] as String?,
-              e['poster'] as String?,
-              e['background'] as String?,
-            ),
-        ];
-    return SnapshotLibrary(
-      watchlist: sec('w'),
-      history: sec('h'),
-      favorites: sec('f'),
-    );
-  } catch (_) {
-    return null;
-  }
 }
 
 bool _inSection(SnapshotLibrary lib, String kind, String id) {
@@ -138,7 +93,6 @@ class MyStuffView {
   final List<LibraryItem> watchlist;
   final List<LibraryItem> history;
   final List<LibraryItem> favorites;
-  final bool stale; // true = showing persisted data because the WS is down
   final EmptyKind emptyKind;
   final List<String> trackers; // linked trackers, display-only in v1
   final Set<String> watchlistIds;
@@ -149,7 +103,6 @@ class MyStuffView {
     this.watchlist = const [],
     this.history = const [],
     this.favorites = const [],
-    this.stale = false,
     this.emptyKind = EmptyKind.none,
     this.trackers = const [],
     this.watchlistIds = const {},
@@ -190,13 +143,6 @@ class LibraryCommand {
   const LibraryCommand(this.action, this.payload);
 }
 
-/// The persistence write the reducer wants the store to commit.
-class PersistPayload {
-  final String sig;
-  final String encoded;
-  const PersistPayload(this.sig, this.encoded);
-}
-
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -210,13 +156,6 @@ class LibraryState {
   final int snapshotsSeen;
   final int viewRebuilds; // actual re-derivations of the view (NOT per-frame)
 
-  // Persistence.
-  final bool persistEnabled;
-  final SnapshotLibrary? persisted; // last content handed to the store
-  final String persistedSig;
-  final bool persistDirty; // a write is pending (live differs from the store)
-  final int persistWrites;
-
   // Toggle ops in flight (host-authoritative; nothing optimistic).
   final Map<String, PendingOp> pending;
   final int opsResolved;
@@ -226,7 +165,6 @@ class LibraryState {
   final bool viewDirty; // internal: set when the view must be re-derived
   final String? notice;
   final LibraryCommand? pendingCommand;
-  final PersistPayload? pendingPersist;
 
   /// Effects buffer: the reducer appends effects here; the controller drains
   /// them. The one mutable field (impure by convention).
@@ -240,11 +178,6 @@ class LibraryState {
     this.liveUpdatedAt = 0,
     this.snapshotsSeen = 0,
     this.viewRebuilds = 0,
-    this.persistEnabled = false,
-    this.persisted,
-    this.persistedSig = '',
-    this.persistDirty = false,
-    this.persistWrites = 0,
     this.pending = const {},
     this.opsResolved = 0,
     this.opsRejected = 0,
@@ -252,7 +185,6 @@ class LibraryState {
     this.viewDirty = false,
     this.notice,
     this.pendingCommand,
-    this.pendingPersist,
     List<String>? effects,
   }) : effects = effects ?? <String>[];
 
@@ -264,11 +196,6 @@ class LibraryState {
     int? liveUpdatedAt,
     int? snapshotsSeen,
     int? viewRebuilds,
-    bool? persistEnabled,
-    SnapshotLibrary? persisted,
-    String? persistedSig,
-    bool? persistDirty,
-    int? persistWrites,
     Map<String, PendingOp>? pending,
     int? opsResolved,
     int? opsRejected,
@@ -277,7 +204,6 @@ class LibraryState {
     String? notice,
     bool clearNotice = false,
     LibraryCommand? pendingCommand,
-    PersistPayload? pendingPersist,
     List<String>? effects,
   }) {
     return LibraryState(
@@ -288,11 +214,6 @@ class LibraryState {
       liveUpdatedAt: liveUpdatedAt ?? this.liveUpdatedAt,
       snapshotsSeen: snapshotsSeen ?? this.snapshotsSeen,
       viewRebuilds: viewRebuilds ?? this.viewRebuilds,
-      persistEnabled: persistEnabled ?? this.persistEnabled,
-      persisted: persisted ?? this.persisted,
-      persistedSig: persistedSig ?? this.persistedSig,
-      persistDirty: persistDirty ?? this.persistDirty,
-      persistWrites: persistWrites ?? this.persistWrites,
       pending: pending ?? this.pending,
       opsResolved: opsResolved ?? this.opsResolved,
       opsRejected: opsRejected ?? this.opsRejected,
@@ -300,7 +221,6 @@ class LibraryState {
       viewDirty: viewDirty ?? this.viewDirty,
       notice: clearNotice ? null : (notice ?? this.notice),
       pendingCommand: pendingCommand ?? this.pendingCommand,
-      pendingPersist: pendingPersist ?? this.pendingPersist,
       effects: effects ?? this.effects,
     );
   }
@@ -347,25 +267,6 @@ class ErrorFrame extends LibraryEvent {
   const ErrorFrame(this.message);
 }
 
-/// The shell loaded persisted state at startup: whether persistence is enabled
-/// and the last persisted library (if any).
-class PersistLoaded extends LibraryEvent {
-  final bool enabled;
-  final SnapshotLibrary? persisted;
-  const PersistLoaded(this.enabled, this.persisted);
-}
-
-/// The store finished writing the most recent persist payload.
-class PersistWritten extends LibraryEvent {
-  final String sig;
-  const PersistWritten(this.sig);
-}
-
-/// Flip local persistence on/off.
-class TogglePersistence extends LibraryEvent {
-  const TogglePersistence();
-}
-
 // ---------------------------------------------------------------------------
 // Reducer
 // ---------------------------------------------------------------------------
@@ -375,11 +276,8 @@ LibraryState libraryReduce(LibraryState s, LibraryEvent e) {
     case Connected():
       return _maybeDerive(s.copy(connected: true, viewDirty: true));
     case Disconnected():
-      // Nothing to write while offline; a reconnect re-emits on the next
-      // changed snapshot if needed.
       return _maybeDerive(s.copy(
         connected: false,
-        persistDirty: false,
         viewDirty: true,
       ));
     case SnapshotArrived(library: final lib, trackers: final trackers, updatedAt: final updatedAt):
@@ -388,18 +286,6 @@ LibraryState libraryReduce(LibraryState s, LibraryEvent e) {
       return _onToggle(s, kind, item, on);
     case ErrorFrame(message: final message):
       return _onErrorFrame(s, message);
-    case PersistLoaded(enabled: final enabled, persisted: final p):
-      return _maybeDerive(s.copy(
-        persistEnabled: enabled,
-        persisted: p,
-        persistedSig: librarySignature(p),
-        viewDirty: true,
-      ));
-    case PersistWritten(sig: final sig):
-      final clean = sig == s.liveSig ? false : s.persistDirty;
-      return s.copy(persistDirty: clean, persistWrites: s.persistWrites + 1);
-    case TogglePersistence():
-      return _onTogglePersistence(s);
   }
 }
 
@@ -419,17 +305,6 @@ LibraryState _onSnapshot(
     // The one case that genuinely rebuilds the Library view: the host's
     // library content changed. Pure 400 ms ticks do NOT reach here.
     next = next.copy(live: library, liveSig: sig, viewDirty: true);
-    if (next.persistEnabled && library != null) {
-      // `persisted` mirrors the most recent queued write, so an offline
-      // fallback always has the latest content we asked the store to hold.
-      next = next.copy(
-        persistDirty: true,
-        persisted: library,
-        persistedSig: sig,
-        pendingPersist: PersistPayload(sig, encodePersisted(library)),
-      );
-      next.effects.add('persist');
-    }
   } else {
     next = next.copy(live: library, liveSig: sig);
   }
@@ -482,22 +357,6 @@ LibraryState _onErrorFrame(LibraryState s, String message) {
   );
 }
 
-LibraryState _onTogglePersistence(LibraryState s) {
-  final enabled = !s.persistEnabled;
-  var next = s.copy(persistEnabled: enabled, viewDirty: true);
-  if (enabled && s.live != null && !s.persistDirty) {
-    final encoded = encodePersisted(s.live!);
-    next = next.copy(
-      persistDirty: true,
-      persisted: s.live,
-      persistedSig: s.liveSig,
-      pendingPersist: PersistPayload(s.liveSig, encoded),
-    );
-    next.effects.add('persist');
-  }
-  return _maybeDerive(next);
-}
-
 // ---------------------------------------------------------------------------
 // Pending-op resolution: the host is the only writer. An op is resolved when
 // the next snapshot's membership reflects it; rejected when a few snapshots
@@ -534,8 +393,7 @@ LibraryState _resolvePending(LibraryState s) {
 
 // ---------------------------------------------------------------------------
 // View derivation — the "refresh model" in concrete form.
-//   disconnected + persisted data → show persisted, stale banner
-//   disconnected + nothing       → needConnect empty state
+//   disconnected → needConnect empty state
 //   connected + all empty        → emptyLibrary empty state
 //   connected + any content      → live view
 // ---------------------------------------------------------------------------
@@ -551,25 +409,20 @@ LibraryState _maybeDerive(LibraryState s) {
 
 MyStuffView _deriveView(LibraryState s) {
   if (!s.connected) {
-    if (s.persistEnabled && s.persisted != null && s.persisted!.hasItems) {
-      return _buildView(s.persisted!, stale: true, trackers: const []);
-    }
     return const MyStuffView(emptyKind: EmptyKind.needConnect);
   }
   final lib = s.live ?? const SnapshotLibrary();
-  return _buildView(lib, stale: false, trackers: s.trackers);
+  return _buildView(lib, trackers: s.trackers);
 }
 
 MyStuffView _buildView(
   SnapshotLibrary lib, {
-  required bool stale,
   required List<String> trackers,
 }) {
   return MyStuffView(
     watchlist: lib.watchlist,
     history: lib.history,
     favorites: lib.favorites,
-    stale: stale,
     trackers: trackers,
     emptyKind: lib.hasItems ? EmptyKind.none : EmptyKind.emptyLibrary,
     watchlistIds: {for (final i in lib.watchlist) i.id},

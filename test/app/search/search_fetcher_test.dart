@@ -170,7 +170,10 @@ void main() {
         });
         var result = <AnimeHit>[AnimeHit(malId: 9, name: 'x')];
         var threw = false;
-        queue.search('a').then((r) => result = r, onError: (_) => threw = true);
+        queue.search('a').then((r) => result = r, onError: (_) {
+          threw = true;
+          return <AnimeHit>[];
+        });
         async.elapse(const Duration(seconds: 30));
         async.flushMicrotasks();
         expect(threw, isFalse);
@@ -184,7 +187,10 @@ void main() {
         final queue = JikanQueue(fetch: (q) async => throw Exception('boom'));
         var result = <AnimeHit>[AnimeHit(malId: 1, name: 'x')];
         var threw = false;
-        queue.search('a').then((r) => result = r, onError: (_) => threw = true);
+        queue.search('a').then((r) => result = r, onError: (_) {
+          threw = true;
+          return <AnimeHit>[];
+        });
         async.elapse(const Duration(seconds: 1));
         async.flushMicrotasks();
         expect(threw, isFalse);

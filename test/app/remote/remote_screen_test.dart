@@ -12,6 +12,7 @@ import 'package:harbor_companion/app/remote/remote_controller.dart';
 import 'package:harbor_companion/app/remote/remote_reducer.dart';
 import 'package:harbor_companion/app/remote/remote_screen.dart';
 import 'package:harbor_companion/app/settings/settings_controller.dart';
+import 'package:harbor_companion/app/ws/client_reducer.dart' show TextEntry;
 
 class _StubRemoteController extends RemoteController {
   @override
@@ -144,5 +145,16 @@ void main() {
     ));
     expect(find.byIcon(Icons.cast), findsOneWidget);
     expect(find.text('This PC'), findsOneWidget);
+  });
+
+  testWidgets('text entry receives focus when it appears', (tester) async {
+    await tester.pumpWidget(_wrap(RemoteState(
+      connected: true,
+      textEntry: const TextEntry('typed', 'Search'),
+    )));
+    await tester.pump();
+
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.focusNode?.hasFocus, isTrue);
   });
 }

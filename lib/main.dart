@@ -5,8 +5,6 @@ import 'app/connect/connect_controller.dart';
 import 'app/connect/host_registry.dart';
 import 'app/connect/lan_scan.dart';
 import 'app/home/detail_screen.dart';
-import 'app/library/library_controller.dart';
-import 'app/library/library_store.dart';
 import 'app/routes.dart';
 import 'app/shell/shell_screen.dart';
 import 'app/settings/settings_controller.dart';
@@ -78,11 +76,10 @@ void main() {
   runApp(
     ProviderScope(
       overrides: [
-        // Real disk-backed persistence + subnet probing for the app; tests
+        // Real host registry + subnet probing for the app; tests
         // override these with fakes.
         hostRegistryStoreProvider.overrideWithValue(SharedPrefsHostRegistryStore()),
         subnetScannerProvider.overrideWithValue(TcpProbeScanner()),
-        libraryStoreProvider.overrideWithValue(SharedPrefsLibraryStore()),
         settingsStoreProvider.overrideWithValue(SharedPrefsSettingsStore()),
       ],
       child: const HarborCompanionApp(),

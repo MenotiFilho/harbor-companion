@@ -223,6 +223,11 @@ class RemoteState {
   final int playFailed; // awaiting → timeout/error failures
   final int commandsSent;
 
+  // The host resets volume when loading a new media item. Keep the last user
+  // choice long enough to restore it on that media transition.
+  final String? rememberedMediaId;
+  final double? rememberedVolume;
+
   /// Effects buffer: the reducer appends effects here; the controller drains
   /// them. The one mutable field (impure by convention).
   final List<String> effects;
@@ -246,6 +251,8 @@ class RemoteState {
     this.playStarted = 0,
     this.playFailed = 0,
     this.commandsSent = 0,
+    this.rememberedMediaId,
+    this.rememberedVolume,
     List<String>? effects,
   }) : effects = effects ?? <String>[];
 
@@ -273,6 +280,8 @@ class RemoteState {
     int? playStarted,
     int? playFailed,
     int? commandsSent,
+    String? rememberedMediaId,
+    double? rememberedVolume,
     List<String>? effects,
   }) {
     return RemoteState(
@@ -294,6 +303,8 @@ class RemoteState {
       playStarted: playStarted ?? this.playStarted,
       playFailed: playFailed ?? this.playFailed,
       commandsSent: commandsSent ?? this.commandsSent,
+      rememberedMediaId: rememberedMediaId ?? this.rememberedMediaId,
+      rememberedVolume: rememberedVolume ?? this.rememberedVolume,
       effects: effects ?? this.effects,
     );
   }
@@ -457,7 +468,10 @@ RemoteState remoteReduce(RemoteState s, RemoteEvent e) {
       return _transport(s, 'seek', {'positionSec': pos < 0 ? 0 : pos});
 
     case SetVolume(volume: final v):
-      return _transport(s, 'setVolume', {'volume': v.clamp(0.0, 1.0)});
+      final volume = v.clamp(0.0, 1.0).toDouble();
+      final next = _transport(s, 'setVolume', {'volume': volume});
+      if (!s.connected || s.nowPlaying == null) return next;
+      return next.copy(rememberedVolume: volume);
 
     case ToggleMute():
       final np = s.nowPlaying;
@@ -564,6 +578,23 @@ RemoteState _onSnapshot(RemoteState s, Snapshot snap) {
     final np = NowPlaying.fromSnapshot(snap);
     final started = next.phase != RemotePhase.nowPlaying;
     final mediaChanged = started || np != next.nowPlaying; // the rendered gate
+    final shouldRestoreVolume = next.rememberedMediaId != null &&
+        next.rememberedMediaId != np.mediaId &&
+        next.rememberedVolume != null &&
+        next.rememberedVolume != np.volume;
+    final sameMedia = next.rememberedMediaId == np.mediaId;
+    final volume = shouldRestoreVolume
+        ? next.rememberedVolume!
+        : (sameMedia && next.rememberedVolume != null
+            ? next.rememberedVolume!
+            : np.volume);
+    next = next.copy(
+      rememberedMediaId: np.mediaId,
+      rememberedVolume: volume,
+    );
+    if (shouldRestoreVolume) {
+      next = _emit(next, 'setVolume', {'volume': volume.clamp(0.0, 1.0)});
+    }
     final held = (next.nowPlaying != null && next.nowPlaying == np)
         ? next.nowPlaying
         : np;
