@@ -18,6 +18,7 @@
 // Usage:
 //   dart run bin/live_check.dart [--host localhost] [--port 11471]
 //                                 [--snapshots 6] [--timeout 10] [--ping]
+//                                 [--dump]
 
 import 'dart:async';
 import 'dart:convert';
@@ -38,6 +39,11 @@ Future<void> main(List<String> args) async {
   final timeout = int.parse(_arg(args, '--timeout', def: '10'));
   final doPing = args.contains('--ping');
 
+  // Dump every received frame (pretty-printed) verbatim, so a single run
+  // captures the host's real wire shape — including fields this app's reducer
+  // does not model. Read-only; sends only the hello handshake (and ping).
+  final doDump = args.contains('--dump');
+
   final url = 'ws://$host:$port/api/remote';
   stdout.writeln('live-check: connecting $url');
   final WebSocket ws;
@@ -54,7 +60,12 @@ Future<void> main(List<String> args) async {
     if (await it.moveNext()) {
       final raw = it.current as String;
       try {
-        return jsonDecode(raw) as Map<String, dynamic>;
+        final decoded = jsonDecode(raw) as Map<String, dynamic>;
+        if (doDump) {
+          stdout.writeln('=== frame t=${decoded['t']} ===');
+          stdout.writeln(const JsonEncoder.withIndent('  ').convert(decoded));
+        }
+        return decoded;
       } catch (_) {
         stdout.writeln(
             '  (unparseable frame: ${raw.length > 80 ? '${raw.substring(0, 80)}…' : raw})');
