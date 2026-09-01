@@ -9,7 +9,9 @@ import 'app/library/library_controller.dart';
 import 'app/library/library_store.dart';
 import 'app/routes.dart';
 import 'app/shell/shell_screen.dart';
+import 'app/settings/settings_controller.dart';
 import 'app/settings/settings_screen.dart';
+import 'app/settings/settings_store.dart';
 import 'app/theme.dart';
 import 'app/update/update_controller.dart';
 
@@ -81,6 +83,7 @@ void main() {
         hostRegistryStoreProvider.overrideWithValue(SharedPrefsHostRegistryStore()),
         subnetScannerProvider.overrideWithValue(TcpProbeScanner()),
         libraryStoreProvider.overrideWithValue(SharedPrefsLibraryStore()),
+        settingsStoreProvider.overrideWithValue(SharedPrefsSettingsStore()),
       ],
       child: const HarborCompanionApp(),
     ),

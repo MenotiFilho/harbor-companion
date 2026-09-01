@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../connect/connect_controller.dart';
 import '../connect/connect_reducer.dart';
+import 'settings_controller.dart';
 import '../update/update_controller.dart';
 import '../update/update_reducer.dart';
 
@@ -24,6 +25,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final ctrl = ref.read(connectControllerProvider.notifier);
     final updateState = ref.watch(selfUpdateControllerProvider);
     final updateCtrl = ref.read(selfUpdateControllerProvider.notifier);
+    final settings = ref.watch(settingsControllerProvider);
+    final settingsCtrl = ref.read(settingsControllerProvider.notifier);
 
     // Show the warning gate as a blocking dialog whenever the reducer holds it.
     ref.listen(connectControllerProvider, (previous, next) {
@@ -54,6 +57,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           const SizedBox(height: 24),
           _sectionHeader('Find hosts'),
           _ScanSection(state: state, onScan: ctrl.startScan, onPick: (c) => _pickCandidate(ctrl, c)),
+          const SizedBox(height: 24),
+          _sectionHeader('Playback'),
+          _PlaybackSection(
+            showPlaybackLocation: settings.showPlaybackLocation,
+            onShowPlaybackLocationChanged: settingsCtrl.setShowPlaybackLocation,
+          ),
           const SizedBox(height: 24),
           _sectionHeader('Updates'),
           _UpdatesSection(state: updateState, onCheck: updateCtrl.checkNow),
@@ -420,6 +429,32 @@ class _ScanSection extends StatelessWidget {
             ),
         ],
       ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Playback section (ticket 40)
+// ---------------------------------------------------------------------------
+
+class _PlaybackSection extends StatelessWidget {
+  final bool showPlaybackLocation;
+  final ValueChanged<bool> onShowPlaybackLocationChanged;
+  const _PlaybackSection({
+    required this.showPlaybackLocation,
+    required this.onShowPlaybackLocationChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      title: const Text('Show playback location'),
+      subtitle: const Text(
+        'Show the playback target ("This PC" / cast) on the Remote.',
+      ),
+      value: showPlaybackLocation,
+      onChanged: onShowPlaybackLocationChanged,
     );
   }
 }

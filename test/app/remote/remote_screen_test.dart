@@ -11,6 +11,7 @@ import 'package:harbor_companion/app/home/home_reducer.dart' show PlayMetaComman
 import 'package:harbor_companion/app/remote/remote_controller.dart';
 import 'package:harbor_companion/app/remote/remote_reducer.dart';
 import 'package:harbor_companion/app/remote/remote_screen.dart';
+import 'package:harbor_companion/app/settings/settings_controller.dart';
 
 class _StubRemoteController extends RemoteController {
   @override
@@ -20,10 +21,22 @@ class _StubRemoteController extends RemoteController {
   RemoteState build() => state;
 }
 
-Widget _wrap(RemoteState state) => ProviderScope(
+class _StubSettingsController extends SettingsController {
+  @override
+  final SettingsState state;
+  _StubSettingsController(this.state);
+  @override
+  SettingsState build() => state;
+}
+
+Widget _wrap(RemoteState state,
+        {SettingsState settings = const SettingsState()}) =>
+    ProviderScope(
       overrides: [
         remoteControllerProvider
             .overrideWith(() => _StubRemoteController(state)),
+        settingsControllerProvider
+            .overrideWith(() => _StubSettingsController(settings)),
       ],
       child: const MaterialApp(home: Scaffold(body: RemoteScreen())),
     );
@@ -115,5 +128,21 @@ void main() {
     expect(select.onPressed, isNull);
     expect(search.onPressed, isNull);
     expect(back.onPressed, isNull);
+  });
+
+  testWidgets('the playback-location section is hidden by default', (tester) async {
+    await tester.pumpWidget(_wrap(RemoteState(connected: true)));
+    expect(find.byIcon(Icons.cast), findsNothing);
+    expect(find.text('This PC'), findsNothing);
+  });
+
+  testWidgets('the playback-location section shows when the setting is on',
+      (tester) async {
+    await tester.pumpWidget(_wrap(
+      RemoteState(connected: true),
+      settings: const SettingsState(showPlaybackLocation: true),
+    ));
+    expect(find.byIcon(Icons.cast), findsOneWidget);
+    expect(find.text('This PC'), findsOneWidget);
   });
 }

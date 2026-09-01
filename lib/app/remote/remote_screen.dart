@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../home/poster_image.dart';
+import '../settings/settings_controller.dart';
 import '../ws/client_reducer.dart' show CastDevice;
 import 'remote_controller.dart';
 import 'remote_reducer.dart';
@@ -42,6 +43,8 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
         ref.watch(remoteControllerProvider.select((s) => s.lastError));
     final awaitingTitle = ref.watch(remoteControllerProvider
         .select((s) => s.playRequest?.name ?? s.playRequest?.metaId));
+    final showPlaybackLocation = ref.watch(
+        settingsControllerProvider.select((s) => s.showPlaybackLocation));
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -71,8 +74,10 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
           _TransportBar(nowPlaying: nowPlaying, enabled: connected),
         ],
         const SizedBox(height: 16),
-        _CastSection(enabled: connected),
-        const SizedBox(height: 16),
+        if (showPlaybackLocation) ...[
+          _CastSection(enabled: connected),
+          const SizedBox(height: 16),
+        ],
         _NavSection(enabled: connected),
         const SizedBox(height: 16),
         _TextSection(

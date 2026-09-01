@@ -12,7 +12,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:harbor_companion/app/connect/connect_controller.dart';
 import 'package:harbor_companion/app/connect/host_registry.dart';
 import 'package:harbor_companion/app/connect/lan_scan.dart';
+import 'package:harbor_companion/app/settings/settings_controller.dart';
 import 'package:harbor_companion/app/settings/settings_screen.dart';
+import 'package:harbor_companion/app/settings/settings_store.dart';
 import 'package:harbor_companion/app/update/github_releases_client.dart';
 import 'package:harbor_companion/app/update/update_controller.dart';
 import 'package:harbor_companion/app/update/update_reducer.dart';
@@ -58,6 +60,7 @@ ProviderContainer makeContainer() => ProviderContainer(
         wsTransportProvider.overrideWithValue(FakeTransport()),
         wsKeyStoreProvider.overrideWithValue(FakeKeyStore()),
         hostRegistryStoreProvider.overrideWithValue(InMemoryHostRegistryStore()),
+        settingsStoreProvider.overrideWithValue(InMemorySettingsStore()),
         subnetScannerProvider.overrideWithValue(const FixedSubnetScanner([])),
         selfUpdateVersionProvider.overrideWithValue(FakeVersionProvider()),
         releasesClientProvider.overrideWithValue(FakeReleasesClient()),
@@ -116,5 +119,23 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('No update available'), findsOneWidget);
+  });
+
+  testWidgets('the playback-location toggle defaults off and flips on tap',
+      (tester) async {
+    final container = makeContainer();
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    final toggle = find.byType(SwitchListTile);
+    expect(toggle, findsOneWidget);
+    expect(find.text('Show playback location'), findsOneWidget);
+    expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+
+    expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
   });
 }
