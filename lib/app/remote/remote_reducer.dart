@@ -15,7 +15,9 @@
 //   - **rendered-gate coalescing**: the now-playing view is re-derived only when
 //     its rendered fields change (the `NowPlaying ==` gate), never on
 //     `updatedAt`; `viewRebuilds` counts actual re-derivations.
-//   - **sticky hold** (~1.2s) absorbs episode-hop idle flaps while `nowPlaying`.
+//   - **sticky hold** (~1.2s; ~5s when the held media had `hasNextEpisode` —
+//     the host's auto-advance gap, ticket 31) absorbs episode-hop idle flaps
+//     while `nowPlaying`.
 //   - **host-authoritative transport**: play/pause/seek/volume/mute/prev/next
 //     derive their wire payloads from the last snapshot; rejected with a notice
 //     while disconnected; the next snapshot reflects them (no optimistic state).
@@ -33,7 +35,25 @@ import '../home/home_reducer.dart' show PlayMetaCommand;
 import '../ws/client_reducer.dart'
     show CastDevice, EpisodeRef, Snapshot, SourceInfo, TargetInfo, TextEntry;
 
+/// Sticky hold for an idle flap when the held media has no next episode: a
+/// real stop (user stopped, or the last episode just ended) — drop after the
+/// short window.
 const int stickyIdleMs = 1200;
+
+/// Sticky hold when the held media had `hasNextEpisode == true`: the flap is
+/// likely the host's auto-advance hop, whose measured gap is ~4s on beta
+/// 0.9.120 (ticket 31), so hold ~5s to bridge it. A stop that never resumes
+/// (user stopped, or auto-play is off) still falls back at ~5s — the hold is
+/// never extended by the idle stream itself.
+const int hopStickyIdleMs = 5000;
+
+/// The sticky window for a held media: `hasNextEpisode` arms the longer hop
+/// window; anything else (movie, last episode, nothing held) uses the short
+/// stop window.
+Duration stickyWindowFor(NowPlaying? held) => Duration(
+      milliseconds: (held?.hasNextEpisode ?? false) ? hopStickyIdleMs : stickyIdleMs,
+    );
+
 const Duration awaitingWindow = Duration(seconds: 20);
 
 enum RemotePhase { idle, awaitingStart, nowPlaying }

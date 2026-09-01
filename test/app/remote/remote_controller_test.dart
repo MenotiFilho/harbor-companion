@@ -59,6 +59,7 @@ Map<String, dynamic> snapshotFrame({
   int updatedAt = 1000,
   bool idle = true,
   String? mediaTitle = 'Movie',
+  bool hasNext = false,
 }) {
   return {
     't': 'snapshot',
@@ -79,7 +80,7 @@ Map<String, dynamic> snapshotFrame({
       'castDevices': <String>[],
       'castDiscovering': false,
       'hasPrevEpisode': false,
-      'hasNextEpisode': false,
+      'hasNextEpisode': hasNext,
       'subtitlesOn': false,
       'canToggleSubtitles': false,
       'textEntry': null,
@@ -225,6 +226,106 @@ void main() {
       final s = container.read(remoteControllerProvider);
       expect(s.phase, RemotePhase.idle);
       expect(s.nowPlaying, isNull);
+    });
+  });
+
+  test('a hop hold bridges the host\'s ~4s auto-advance gap', () {
+    fakeAsync((async) {
+      container = ProviderContainer(
+        overrides: [
+          wsTransportProvider.overrideWithValue(transport = FakeTransport()),
+          wsKeyStoreProvider.overrideWithValue(keyStore = FakeKeyStore()),
+          wsClockProvider.overrideWithValue(wsNow),
+        ],
+      );
+      container.read(wsClientControllerProvider.notifier).connect('192.168.1.50');
+      async.flushMicrotasks();
+      container.read(remoteControllerProvider);
+      // A series episode with a next episode armed.
+      transport.connections.single
+          .emit(jsonEncode(snapshotFrame(updatedAt: 1000, idle: false, hasNext: true)));
+      async.flushMicrotasks();
+      // The episode ends: the host goes idle and stays idle ~4s (the measured
+      // auto-advance gap on beta 0.9.120, ticket 31).
+      transport.connections.single
+          .emit(jsonEncode(snapshotFrame(updatedAt: 1400, idle: true)));
+      async.flushMicrotasks();
+      expect(container.read(remoteControllerProvider).stickyHeld, isTrue);
+
+      // Idle snapshots stream through the whole gap — the hold must NOT blink
+      // to "Nothing playing" while the host is between episodes.
+      for (var i = 1; i <= 11; i++) {
+        async.elapse(const Duration(milliseconds: 400));
+        transport.connections.single
+            .emit(jsonEncode(snapshotFrame(idle: true, updatedAt: 1400 + i * 400)));
+        async.flushMicrotasks();
+      }
+      final midGap = container.read(remoteControllerProvider);
+      expect(midGap.phase, RemotePhase.nowPlaying,
+          reason: 'still holding through the ~4s host gap');
+      expect(midGap.stickyHeld, isTrue);
+      expect(midGap.nowPlaying!.hasNextEpisode, isTrue);
+
+      // The next episode starts inside the hold — no flash, and the sticky
+      // timer is cancelled so no late drop can fire.
+      transport.connections.single.emit(jsonEncode(snapshotFrame(
+        idle: false,
+        updatedAt: 1400 + 12 * 400,
+        mediaTitle: 'Fetal Position',
+        hasNext: true,
+      )));
+      async.flushMicrotasks();
+      final resumed = container.read(remoteControllerProvider);
+      expect(resumed.phase, RemotePhase.nowPlaying);
+      expect(resumed.stickyHeld, isFalse);
+      expect(resumed.nowPlaying!.mediaTitle, 'Fetal Position');
+
+      // Settling: no late StickyExpired after the hold was cleared.
+      async.elapse(const Duration(seconds: 6));
+      async.flushMicrotasks();
+      final settled = container.read(remoteControllerProvider);
+      expect(settled.phase, RemotePhase.nowPlaying);
+      expect(settled.nowPlaying!.mediaTitle, 'Fetal Position');
+    });
+  });
+
+  test('a real stop with hasNext armed falls back to idle at ~5s', () {
+    fakeAsync((async) {
+      container = ProviderContainer(
+        overrides: [
+          wsTransportProvider.overrideWithValue(transport = FakeTransport()),
+          wsKeyStoreProvider.overrideWithValue(keyStore = FakeKeyStore()),
+          wsClockProvider.overrideWithValue(wsNow),
+        ],
+      );
+      container.read(wsClientControllerProvider.notifier).connect('192.168.1.50');
+      async.flushMicrotasks();
+      container.read(remoteControllerProvider);
+      transport.connections.single
+          .emit(jsonEncode(snapshotFrame(updatedAt: 1000, idle: false, hasNext: true)));
+      async.flushMicrotasks();
+      transport.connections.single
+          .emit(jsonEncode(snapshotFrame(updatedAt: 1400, idle: true)));
+      async.flushMicrotasks();
+      expect(container.read(remoteControllerProvider).stickyHeld, isTrue);
+
+      // The host never resumes (user stopped, or auto-play is off) — idle
+      // snapshots stream on, the hold must survive past the hop gap but drop
+      // at the ~5s window, never staying stuck in stale now-playing.
+      for (var i = 1; i <= 9; i++) {
+        async.elapse(const Duration(milliseconds: 400));
+        transport.connections.single
+            .emit(jsonEncode(snapshotFrame(idle: true, updatedAt: 1400 + i * 400)));
+        async.flushMicrotasks();
+      }
+      expect(container.read(remoteControllerProvider).phase, RemotePhase.nowPlaying,
+          reason: '3.6s in — still within the hop window');
+      async.elapse(const Duration(milliseconds: 1600)); // cross the 5s mark
+      async.flushMicrotasks();
+      final s = container.read(remoteControllerProvider);
+      expect(s.phase, RemotePhase.idle);
+      expect(s.nowPlaying, isNull);
+      expect(s.notice, 'Playback ended');
     });
   });
 

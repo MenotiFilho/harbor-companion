@@ -122,8 +122,11 @@ class RemoteController extends Notifier<RemoteState> {
     }
 
     if (s.stickyHeld && _stickyTimer == null) {
+      // The hold length depends on the held media: with `hasNextEpisode` armed
+      // the flap is an expected host auto-advance hop (~4s gap), so hold ~5s;
+      // otherwise it's a real stop and the short window applies.
       _stickyTimer = Timer(
-        const Duration(milliseconds: stickyIdleMs),
+        stickyWindowFor(s.nowPlaying),
         () => _dispatch(const StickyExpired()),
       );
     } else if (!s.stickyHeld && _stickyTimer != null) {

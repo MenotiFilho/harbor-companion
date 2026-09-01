@@ -263,6 +263,21 @@ void main() {
     });
   });
 
+  group('sticky hold window (what the controller arms)', () {
+    test('a held media with hasNextEpisode gets the ~5s hop window', () {
+      final held = NowPlaying.fromSnapshot(snap(idle: false, hasNext: true));
+      expect(stickyWindowFor(held), const Duration(milliseconds: hopStickyIdleMs));
+    });
+
+    test('no next episode — or nothing held — gets the short stop window', () {
+      expect(
+        stickyWindowFor(NowPlaying.fromSnapshot(snap(idle: false))),
+        const Duration(milliseconds: stickyIdleMs),
+      );
+      expect(stickyWindowFor(null), const Duration(milliseconds: stickyIdleMs));
+    });
+  });
+
   group('host-authoritative transport', () {
     test('togglePlay sends pause while playing, play while paused', () {
       var s = remoteReduce(
