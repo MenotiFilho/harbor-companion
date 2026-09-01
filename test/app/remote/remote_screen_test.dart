@@ -69,4 +69,51 @@ void main() {
     await tester.pumpWidget(_wrap(RemoteState()));
     expect(find.textContaining('Not connected'), findsOneWidget);
   });
+
+  testWidgets('Navigate is collapsed by default', (tester) async {
+    await tester.pumpWidget(_wrap(RemoteState(connected: true)));
+    expect(find.text('Navigate'), findsOneWidget);
+    // The d-pad + Open search + Back are hidden until expanded.
+    expect(find.text('Open search'), findsNothing);
+    expect(find.text('Back'), findsNothing);
+    expect(find.byIcon(Icons.keyboard_arrow_up), findsNothing);
+    expect(find.byIcon(Icons.check), findsNothing);
+  });
+
+  testWidgets('tapping the Navigate header expands the d-pad', (tester) async {
+    await tester.pumpWidget(_wrap(RemoteState(connected: true)));
+    await tester.tap(find.text('Navigate'));
+    await tester.pumpAndSettle();
+    expect(find.text('Open search'), findsOneWidget);
+    expect(find.text('Back'), findsOneWidget);
+    expect(find.byIcon(Icons.keyboard_arrow_up), findsOneWidget);
+    expect(find.byIcon(Icons.check), findsOneWidget);
+  });
+
+  testWidgets('tapping the Navigate header again collapses the d-pad', (tester) async {
+    await tester.pumpWidget(_wrap(RemoteState(connected: true)));
+    await tester.tap(find.text('Navigate'));
+    await tester.pumpAndSettle();
+    expect(find.text('Open search'), findsOneWidget);
+    await tester.tap(find.text('Navigate'));
+    await tester.pumpAndSettle();
+    expect(find.text('Open search'), findsNothing);
+    expect(find.byIcon(Icons.check), findsNothing);
+  });
+
+  testWidgets('the d-pad buttons stay disabled while disconnected', (tester) async {
+    await tester.pumpWidget(_wrap(RemoteState()));
+    await tester.tap(find.text('Navigate'));
+    await tester.pumpAndSettle();
+    final select = tester.widget<IconButton>(
+      find.widgetWithIcon(IconButton, Icons.check),
+    );
+    final search =
+        tester.widget<TextButton>(find.widgetWithText(TextButton, 'Open search'));
+    final back =
+        tester.widget<TextButton>(find.widgetWithText(TextButton, 'Back'));
+    expect(select.onPressed, isNull);
+    expect(search.onPressed, isNull);
+    expect(back.onPressed, isNull);
+  });
 }

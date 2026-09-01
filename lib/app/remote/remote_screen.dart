@@ -516,49 +516,59 @@ class _NavSection extends ConsumerWidget {
         );
 
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Text('Navigate', style: Theme.of(context).textTheme.titleSmall),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [key('up', Icons.keyboard_arrow_up)],
-            ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+      clipBehavior: Clip.antiAlias,
+      child: ExpansionTile(
+        // Local view state only (ticket 39): collapsed by default, header
+        // always toggles so the d-pad is reachable even while disconnected.
+        initiallyExpanded: false,
+        shape: const Border(),
+        collapsedShape: const Border(),
+        title: Text('Navigate', style: Theme.of(context).textTheme.titleSmall),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Column(
               children: [
-                key('left', Icons.keyboard_arrow_left),
-                const SizedBox(width: 8),
-                key('select', Icons.check),
-                const SizedBox(width: 8),
-                key('right', Icons.keyboard_arrow_right),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [key('up', Icons.keyboard_arrow_up)],
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    key('left', Icons.keyboard_arrow_left),
+                    const SizedBox(width: 8),
+                    key('select', Icons.check),
+                    const SizedBox(width: 8),
+                    key('right', Icons.keyboard_arrow_right),
+                  ],
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [key('down', Icons.keyboard_arrow_down)],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    TextButton.icon(
+                      icon: const Icon(Icons.search),
+                      label: const Text('Open search'),
+                      onPressed: enabled ? ctrl.openSearch : null,
+                    ),
+                    const SizedBox(width: 8),
+                    TextButton.icon(
+                      icon: const Icon(Icons.arrow_back),
+                      label: const Text('Back'),
+                      onPressed: enabled ? () => ctrl.nav('back') : null,
+                    ),
+                  ],
+                ),
               ],
             ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [key('down', Icons.keyboard_arrow_down)],
-            ),
-            const SizedBox(height: 4),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                TextButton.icon(
-                  icon: const Icon(Icons.search),
-                  label: const Text('Open search'),
-                  onPressed: enabled ? ctrl.openSearch : null,
-                ),
-                const SizedBox(width: 8),
-                TextButton.icon(
-                  icon: const Icon(Icons.arrow_back),
-                  label: const Text('Back'),
-                  onPressed: enabled ? () => ctrl.nav('back') : null,
-                ),
-              ],
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
