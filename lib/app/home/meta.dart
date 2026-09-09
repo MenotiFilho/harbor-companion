@@ -7,7 +7,7 @@
 
 /// A catalog entry: a title the user can open or play on the host.
 class Meta {
-  final String id; // imdb id "tt…" (cinemeta) or "tmdb:<id>"
+  final String id; // imdb id "tt…" (cinemeta) or "tmdb:<kind>:<id>" (tmdb)
   final String type; // "movie" | "series"
   final String name;
   final String? poster;

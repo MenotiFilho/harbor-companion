@@ -48,10 +48,10 @@ void main() {
         ],
       });
       final payload = parseTmdbSearch(raw);
-      expect(payload.movies.map((m) => m.id), ['tmdb:603', 'tmdb:99']);
-      expect(payload.series.map((m) => m.id), ['tmdb:1396']);
+      expect(payload.movies.map((m) => m.id), ['tmdb:movie:603', 'tmdb:movie:99']);
+      expect(payload.series.map((m) => m.id), ['tmdb:tv:1396']);
       // Highest popularity *with a poster* wins (the posterless 999 is skipped).
-      expect(payload.topMatch!.meta.id, 'tmdb:603');
+      expect(payload.topMatch!.meta.id, 'tmdb:movie:603');
       expect(payload.topMatch!.meta.name, 'The Matrix');
       expect(payload.topMatch!.voteAverage, 8.2);
       expect(payload.topMatch!.meta.releaseInfo, '1999');

@@ -98,7 +98,11 @@ Meta parseTmdbMeta(Map<String, dynamic> j, String type) {
   final name = (isSeries ? j['name'] : j['title']) as String? ?? '';
   final date = (isSeries ? j['first_air_date'] : j['release_date']) as String?;
   return Meta(
-    id: 'tmdb:${j['id']}',
+    // The host's wire expects the kind segment (`tmdb:tv:…` / `tmdb:movie:…`);
+    // its `fetchAdjacentEpisodes` only recognizes `tmdb:tv:` for series, so a
+    // bare `tmdb:<id>` would fall through to addon resolution and lose the
+    // next/prev episode flags.
+    id: isSeries ? 'tmdb:tv:${j['id']}' : 'tmdb:movie:${j['id']}',
     type: type,
     name: name,
     poster: tmdbPoster(j['poster_path'] as String?),
@@ -297,7 +301,8 @@ class HttpCatalogFetcher implements CatalogFetcher {
       return parseCinemetaDetail(raw);
     }
     final key = tmdbKey!;
-    final idNum = id.substring('tmdb:'.length);
+    // id is `tmdb:movie:<id>` / `tmdb:tv:<id>`; the numeric id is the last segment.
+    final idNum = id.substring(id.lastIndexOf(':') + 1);
     if (type == 'movie') {
       final raw = await _get(Uri.parse('$tmdbBase/movie/$idNum?api_key=$key'));
       return DetailMeta(meta: parseTmdbDetail(raw, 'movie'));

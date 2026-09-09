@@ -66,7 +66,7 @@ void main() {
         ],
       });
       final metas = parseTmdbPage(raw, 'movie');
-      expect(metas.single.id, 'tmdb:603');
+      expect(metas.single.id, 'tmdb:movie:603');
       expect(metas.single.name, 'The Matrix');
       expect(metas.single.poster, 'https://image.tmdb.org/t/p/w342/abc.jpg');
       expect(metas.single.background, 'https://image.tmdb.org/t/p/w780/def.jpg');
@@ -127,7 +127,7 @@ void main() {
 
   group('detail source routing', () {
     test('a keyed tmdb: id routes to TMDB', () {
-      expect(usesTmdbDetail('key', 'tmdb:603'), isTrue);
+      expect(usesTmdbDetail('key', 'tmdb:movie:603'), isTrue);
     });
 
     test('an imdb id routes to Cinemeta even when a key is present', () {
@@ -135,7 +135,7 @@ void main() {
     });
 
     test('a keyless request always routes to Cinemeta', () {
-      expect(usesTmdbDetail(null, 'tmdb:603'), isFalse);
+      expect(usesTmdbDetail(null, 'tmdb:movie:603'), isFalse);
       expect(usesTmdbDetail(null, 'tt0944947'), isFalse);
     });
   });
@@ -171,7 +171,7 @@ void main() {
 
     test('movie detail parses as a movie meta', () {
       final meta = parseTmdbDetail(jsonEncode({'id': 603, 'title': 'The Matrix'}), 'movie');
-      expect(meta.id, 'tmdb:603');
+      expect(meta.id, 'tmdb:movie:603');
       expect(meta.type, 'movie');
     });
   });
