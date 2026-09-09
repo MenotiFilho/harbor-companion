@@ -81,7 +81,7 @@ void main() {
     expect(find.text('Anime'), findsWidgets);
   });
 
-  testWidgets('series play opens detail instead of playing directly',
+  testWidgets('tapping a series result opens the shared detail page',
       (tester) async {
     tester.view.physicalSize = const Size(800, 2400);
     tester.view.devicePixelRatio = 1.0;
@@ -111,9 +111,9 @@ void main() {
 
     expect(find.text('Game of Thrones'), findsWidgets);
 
-    // The tile's play button routes a series through detail (so the host can
-    // arm next-episode auto-advance) rather than sending playMeta directly.
-    await tester.tap(find.byIcon(Icons.play_arrow).first);
+    // Search never plays directly: a tap opens the shared detail page, the
+    // single play origin (so the host gets episode context and auto-advances).
+    await tester.tap(find.text('Game of Thrones'));
     await tester.pumpAndSettle();
 
     expect(home.opened.single.id, 'tt0944947');

@@ -2,10 +2,10 @@
 //
 // Thin glue between the pure reducer (search_reducer.dart) and the outside
 // world. Drains the reducer's `effects` buffer into the search HTTP fetcher
-// (`fetch:<source>`), arms the 180ms debounce timer and the 8s per-source
-// guard, and routes `playMeta` through the WS client. Folds the host's
-// `tmdbKey` (from snapshots) into the reducer so a keyless search downgrades to
-// cinemeta and re-applies the moment a key lands (KeyChanged).
+// (`fetch:<source>`) and arms the 180ms debounce timer and the 8s per-source
+// guard. Folds the host's `tmdbKey` (from snapshots) into the reducer so a
+// keyless search downgrades to cinemeta and re-applies the moment a key lands
+// (KeyChanged).
 //
 // Jikan goes through the single shared [jikanQueueProvider] so Search and the
 // Home catalog can never hammer the API concurrently (ticket 05).
@@ -14,8 +14,6 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../home/meta.dart';
-import '../remote/remote_controller.dart';
 import '../ws/client_controller.dart';
 import 'jikan.dart';
 import 'search_fetcher.dart';
@@ -72,9 +70,6 @@ class SearchController extends Notifier<SearchState> {
 
   void toggleHideAnime() => _dispatch(const ToggleHideAnime());
 
-  void playMeta(Meta meta, {int? season, int? episode}) =>
-      _dispatch(PlayMeta(meta, season: season, episode: episode));
-
   // -- The one place state mutates -------------------------------------------
 
   void _dispatch(SearchEvent event) {
@@ -97,8 +92,6 @@ class SearchController extends Notifier<SearchState> {
           final id = int.parse(parts[2]);
           final query = parts.sublist(3).join(':');
           _fireSource(src, id, query);
-        case 'playMeta':
-          _sendPlayMeta();
       }
     }
   }
@@ -149,13 +142,6 @@ class SearchController extends Notifier<SearchState> {
     final key = state.tmdbKey;
     if (key == null) return const TmdbSearchPayload([], []);
     return fetcher.searchTmdb(query, key);
-  }
-
-  void _sendPlayMeta() {
-    final command = state.pendingPlay;
-    if (command == null) return;
-    // The Remote layer owns the awaiting-start window (ticket 07).
-    ref.read(remoteControllerProvider.notifier).playMeta(command);
   }
 }
 

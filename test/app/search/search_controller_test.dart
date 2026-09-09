@@ -1,8 +1,7 @@
 // Thin wiring tests for the Search controller (ticket 05). The reducer is the
 // decision seam; these pin the glue: debounce timer → fan-out into the fetcher
-// (TMDB only when keyed), per-source settlement → published results, tmdbKey
-// folding from the WS client's snapshots, and playMeta routed through the
-// Remote layer.
+// (TMDB only when keyed), per-source settlement → published results, and
+// tmdbKey folding from the WS client's snapshots.
 
 import 'dart:async';
 import 'dart:convert';
@@ -13,8 +12,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harbor_companion/app/home/meta.dart';
-import 'package:harbor_companion/app/remote/remote_controller.dart';
-import 'package:harbor_companion/app/remote/remote_reducer.dart';
 import 'package:harbor_companion/app/search/jikan.dart';
 import 'package:harbor_companion/app/search/search_controller.dart';
 import 'package:harbor_companion/app/search/search_fetcher.dart';
@@ -170,19 +167,5 @@ void main() {
       expect(state.results!.topMatch!.meta.id, 'tmdb:movie:1');
       addTearDown(container.dispose);
     });
-  });
-
-  test('playMeta routes through the Remote layer (awaitingStart)', () async {
-    container = makeContainer();
-    container.read(wsClientControllerProvider.notifier).connect('192.168.1.50');
-    await Future<void>.delayed(Duration.zero);
-
-    container.read(searchControllerProvider);
-    container.read(searchControllerProvider.notifier).playMeta(
-          const Meta(id: 'tt1', type: 'movie', name: 'Shawshank'),
-        );
-
-    expect(container.read(remoteControllerProvider).phase, RemotePhase.awaitingStart);
-    addTearDown(container.dispose);
   });
 }

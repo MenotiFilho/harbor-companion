@@ -1,10 +1,11 @@
 // Pure Search state model (ticket 05).
 //
 // `(SearchState, SearchEvent) => SearchState` reducer producing an effects
-// buffer the controller drains through injected side-channels (the search HTTP
-// fetcher and the WS client's playMeta). No I/O, no timers: the controller owns
-// the 180ms debounce timer and the 8s per-source guard, and folds the host's
-// `tmdbKey` (from snapshots) back in as a [KeyChanged] event.
+// buffer the controller drains through the search HTTP fetcher. No I/O, no
+// timers: the controller owns the 180ms debounce timer and the 8s per-source
+// guard, and folds the host's `tmdbKey` (from snapshots) back in as a
+// [KeyChanged] event. Playback is not a Search concern — every result opens the
+// shared Home detail page, which is the single play origin.
 //
 // Lifted from the validated search prototype (prototype/search). The decisions
 // this module owns, and the seam tests pin:
@@ -21,18 +22,15 @@
 //     `kitsu:`/`mal:`/`anilist:`).
 //   - **Keyless → cinemeta rows only, no top-match card**; the key re-applies
 //     from the snapshot and re-runs an active query the moment it changes.
-//   - **playMeta encoding**: `anime` coerced to `series`, `resume` always true.
 //
 // Effects vocabulary (the Notifier → adapter surface):
 //   `debounce:<id>`            → arm a 180ms timer, then dispatch DebounceFired
 //   `fetch:<tmdb|cinemeta|jikan>:<id>:<query>` → run the source (8s guard)
-//   `playMeta`                 → send `pendingPlay` via the WS client
 //
-// Wire contract: docs/wire-contract.md §5.1/§5.2/§5.3 (data), §4 (playMeta).
+// Wire contract: docs/wire-contract.md §5.1/§5.2/§5.3 (data).
 
 library;
 
-import '../home/home_reducer.dart' show PlayMetaCommand, coerceMetaType;
 import '../home/meta.dart';
 
 const Duration debounceDelay = Duration(milliseconds: 180);
@@ -180,7 +178,6 @@ class SearchState {
   final int sourceTimeouts; // sources that hit the 8s guard
 
   final String? notice;
-  final PlayMetaCommand? pendingPlay; // the most recent playMeta command
 
   /// Effects buffer: the reducer appends effects here; the controller drains
   /// them. The one mutable field (impure by convention).
@@ -204,7 +201,6 @@ class SearchState {
     this.requestsBumped = 0,
     this.sourceTimeouts = 0,
     this.notice,
-    this.pendingPlay,
     List<String>? effects,
   }) : effects = effects ?? <String>[];
 
@@ -230,7 +226,6 @@ class SearchState {
     int? sourceTimeouts,
     String? notice,
     bool clearNotice = false,
-    PlayMetaCommand? pendingPlay,
     List<String>? effects,
   }) {
     return SearchState(
@@ -251,7 +246,6 @@ class SearchState {
       requestsBumped: requestsBumped ?? this.requestsBumped,
       sourceTimeouts: sourceTimeouts ?? this.sourceTimeouts,
       notice: clearNotice ? null : (notice ?? this.notice),
-      pendingPlay: pendingPlay ?? this.pendingPlay,
       effects: effects ?? this.effects,
     );
   }
@@ -312,14 +306,6 @@ class Clear extends SearchEvent {
 /// Parental toggle: hide anime results (and stop anime-wins from firing).
 class ToggleHideAnime extends SearchEvent {
   const ToggleHideAnime();
-}
-
-/// The user tapped a result / pressed play: encode the playMeta command.
-class PlayMeta extends SearchEvent {
-  final Meta meta;
-  final int? season;
-  final int? episode;
-  const PlayMeta(this.meta, {this.season, this.episode});
 }
 
 // ---------------------------------------------------------------------------
@@ -453,20 +439,6 @@ SearchState searchReduce(SearchState s, SearchEvent e) {
       final next =
           s.copy(hideAnime: !s.hideAnime, notice: 'hide anime: ${!s.hideAnime}');
       return s.results == null ? next : _publish(next);
-    case PlayMeta(meta: final m, season: final season, episode: final episode):
-      final command = PlayMetaCommand(
-        metaId: m.id,
-        metaType: coerceMetaType(m.type),
-        name: m.name,
-        poster: m.poster,
-        season: season,
-        episode: episode,
-      );
-      s.effects.add('playMeta');
-      return s.copy(
-        pendingPlay: command,
-        notice: 'playMeta enqueued → ${m.name}',
-      );
   }
 }
 

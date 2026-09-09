@@ -3,8 +3,8 @@
 // Pins the ticket 05 acceptance criteria: 180ms debounce + request guard
 // (stale never overrides), parallel fan-out with incremental publish and `done`
 // only on full settle, the merge order (id dedupe → title+year dedupe →
-// anime-wins → top-match swap), keyless cinemeta-only fallback with snapshot
-// re-apply, and the playMeta encoding (anime coerced to series, resume true).
+// anime-wins → top-match swap), and keyless cinemeta-only fallback with
+// snapshot re-apply.
 
 import 'package:flutter_test/flutter_test.dart';
 
@@ -275,35 +275,6 @@ void main() {
     test('a key change with an empty query does not re-run anything', () {
       final s = searchReduce(SearchState(query: ''), KeyChanged('k'));
       expect(drain(s), isEmpty);
-    });
-  });
-
-  group('playMeta encoding', () {
-    test('a movie encodes metaType movie with resume', () {
-      final s = searchReduce(SearchState(), PlayMeta(movie()));
-      expect(drain(s), ['playMeta']);
-      expect(s.pendingPlay!.toPayload(), {
-        'metaId': 'tmdb:movie:603',
-        'metaType': 'movie',
-        'name': 'The Matrix',
-        'poster': 'http://p/tmdb:movie:603.jpg',
-        'resume': true,
-      });
-    });
-
-    test('an anime hit is coerced to series', () {
-      final s = searchReduce(SearchState(), PlayMeta(animeHit().meta));
-      expect(s.pendingPlay!.toPayload()['metaType'], 'series');
-      expect(s.pendingPlay!.toPayload()['metaId'], 'kitsu:6922');
-    });
-
-    test('a series with season/episode carries them', () {
-      final s = searchReduce(
-        SearchState(),
-        PlayMeta(series(), season: 2, episode: 3),
-      );
-      expect(s.pendingPlay!.toPayload()['season'], 2);
-      expect(s.pendingPlay!.toPayload()['episode'], 3);
     });
   });
 

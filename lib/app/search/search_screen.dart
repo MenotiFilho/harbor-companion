@@ -1,12 +1,12 @@
 // Search tab (ticket 05): debounced query field, pinned top-match card, and the
 // merged results grid (movies/series interleaved + anime).
 //
-// Everything derives from the pure reducer's `results`. Tapping a movie/series
-// opens the detail page (the Home detail screen, ticket 04); tapping an anime
-// hit plays directly (there is no anime detail page); the play button on any
-// tile plays on the host via `playMeta`. Results appear incrementally as each
-// source settles; the top-match card is pinned only when a keyed TMDB search
-// (or an anime swap) produced one.
+// Everything derives from the pure reducer's `results`. Tapping any result
+// opens the shared Home detail page (ticket 04), which is the single play
+// origin — Search never plays directly, so the host always gets episode
+// context and can auto-advance. Results appear incrementally as each source
+// settles; the top-match card is pinned only when a keyed TMDB search (or an
+// anime swap) produced one.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -185,65 +185,28 @@ class _Results extends ConsumerWidget {
   }
 }
 
-/// A result tile: tap opens detail (movie/series) or plays (anime); the play
-/// button always plays on the host.
+/// A result tile. Tap opens the shared detail page — the single play origin —
+/// so the host gets episode context and can auto-advance (no direct play here).
 class _ResultTile extends ConsumerWidget {
   final Meta meta;
   const _ResultTile({required this.meta});
 
-  bool get _isAnime => meta.type == 'anime';
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final search = ref.read(searchControllerProvider.notifier);
-
     void openDetail() {
       ref.read(homeControllerProvider.notifier).openDetail(meta);
       Navigator.of(context).pushNamed(AppRoutes.detail);
     }
 
-    // A series needs episode context (season/episode) for the host to arm
-    // next-episode auto-advance; a direct playMeta without it never advances.
-    // Route series through the detail page, same as the Home catalog.
-    void play() {
-      if (meta.isSeries) {
-        openDetail();
-        return;
-      }
-      search.playMeta(meta);
-    }
-    void open() {
-      if (_isAnime) {
-        play();
-        return;
-      }
-      openDetail();
-    }
-
     return GestureDetector(
-      onTap: open,
+      onTap: openDetail,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Expanded(
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: PosterImage(url: meta.poster),
-                ),
-                Positioned(
-                  right: 4,
-                  bottom: 4,
-                  child: IconButton.filledTonal(
-                    iconSize: 20,
-                    icon: const Icon(Icons.play_arrow),
-                    tooltip: 'Play',
-                    onPressed: play,
-                  ),
-                ),
-              ],
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: PosterImage(url: meta.poster),
             ),
           ),
           const SizedBox(height: 4),
@@ -268,20 +231,10 @@ class _TopMatchCard extends ConsumerWidget {
     final text = Theme.of(context).textTheme;
     final scheme = Theme.of(context).colorScheme;
     final meta = topMatch.meta;
-    final isAnime = meta.type == 'anime';
 
     void openDetail() {
       ref.read(homeControllerProvider.notifier).openDetail(meta);
       Navigator.of(context).pushNamed(AppRoutes.detail);
-    }
-    void play() {
-      // Same as the result tile: a series must go through detail so the host
-      // gets episode context and can auto-advance.
-      if (meta.isSeries) {
-        openDetail();
-        return;
-      }
-      ref.read(searchControllerProvider.notifier).playMeta(meta);
     }
 
     return Card(
@@ -342,17 +295,10 @@ class _TopMatchCard extends ConsumerWidget {
             Row(
               children: [
                 FilledButton.icon(
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text('Play'),
-                  onPressed: play,
+                  icon: const Icon(Icons.info_outline),
+                  label: const Text('Details'),
+                  onPressed: openDetail,
                 ),
-                if (!isAnime) ...[
-                  const SizedBox(width: 8),
-                  TextButton(
-                    onPressed: openDetail,
-                    child: const Text('Details'),
-                  ),
-                ],
               ],
             ),
           ],
