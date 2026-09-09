@@ -197,14 +197,27 @@ class _ResultTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final search = ref.read(searchControllerProvider.notifier);
 
-    void play() => search.playMeta(meta);
+    void openDetail() {
+      ref.read(homeControllerProvider.notifier).openDetail(meta);
+      Navigator.of(context).pushNamed(AppRoutes.detail);
+    }
+
+    // A series needs episode context (season/episode) for the host to arm
+    // next-episode auto-advance; a direct playMeta without it never advances.
+    // Route series through the detail page, same as the Home catalog.
+    void play() {
+      if (meta.isSeries) {
+        openDetail();
+        return;
+      }
+      search.playMeta(meta);
+    }
     void open() {
       if (_isAnime) {
         play();
         return;
       }
-      ref.read(homeControllerProvider.notifier).openDetail(meta);
-      Navigator.of(context).pushNamed(AppRoutes.detail);
+      openDetail();
     }
 
     return GestureDetector(
@@ -257,11 +270,18 @@ class _TopMatchCard extends ConsumerWidget {
     final meta = topMatch.meta;
     final isAnime = meta.type == 'anime';
 
-    void play() =>
-        ref.read(searchControllerProvider.notifier).playMeta(meta);
     void openDetail() {
       ref.read(homeControllerProvider.notifier).openDetail(meta);
       Navigator.of(context).pushNamed(AppRoutes.detail);
+    }
+    void play() {
+      // Same as the result tile: a series must go through detail so the host
+      // gets episode context and can auto-advance.
+      if (meta.isSeries) {
+        openDetail();
+        return;
+      }
+      ref.read(searchControllerProvider.notifier).playMeta(meta);
     }
 
     return Card(
