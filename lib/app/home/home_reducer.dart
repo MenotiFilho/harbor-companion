@@ -7,9 +7,9 @@
 // The three decisions this module owns, and the seam tests pin:
 //   - **TMDB-if-key-else-Cinemeta** rows, auto-upgrading the moment a `tmdbKey`
 //     lands in a snapshot (and downgrading back to Cinemeta if it is removed).
-//   - **Letterboxd rail on/off** (ticket 41): rows carry the Stremboxd config in
-//     effect, so a manifest-URL or catalog-toggle change refetches and a late
-//     fetch from the old config is dropped.
+//   - **Catalog sources on/off** (ticket 41): rows carry the [CatalogRequest] in
+//     effect — built-in rails flag + Stremboxd config — so toggling either
+//     refetches and a late fetch from a superseded request is dropped.
 //   - **Detail → playMeta**: the detail page loads seasons/episodes and the
 //     play button encodes the host-driven `playMeta` command (movie, series
 //     first episode, or a specific episode — `resume` always true).
@@ -24,6 +24,7 @@
 library;
 
 import '../letterboxd/letterboxd.dart';
+import 'catalog_request.dart';
 import 'meta.dart';
 
 enum HomeStatus { idle, loading, ready, failed }
@@ -81,8 +82,11 @@ class DetailState {
 
 class HomeState {
   final HomeStatus status;
-  final String? tmdbKey; // the key currently in effect for rows
-  final LetterboxdConfig letterboxd; // the Stremboxd config in effect for rows
+
+  /// The request the current rows were (or are being) fetched for: the TMDB key
+  /// in effect, whether built-in rails are shown, and the Letterboxd config.
+  final CatalogRequest request;
+
   final List<HomeRow> rows;
   final DetailState? detail;
   final String? lastError;
@@ -95,8 +99,7 @@ class HomeState {
 
   HomeState({
     this.status = HomeStatus.idle,
-    this.tmdbKey,
-    this.letterboxd = const LetterboxdConfig(),
+    this.request = const CatalogRequest(),
     this.rows = const [],
     this.detail,
     this.lastError,
@@ -105,11 +108,13 @@ class HomeState {
     List<String>? effects,
   }) : effects = effects ?? <String>[];
 
+  String? get tmdbKey => request.tmdbKey;
+  LetterboxdConfig get letterboxd => request.letterboxd;
+  bool get showBuiltInCatalogs => request.showBuiltInCatalogs;
+
   HomeState copy({
     HomeStatus? status,
-    String? tmdbKey,
-    bool clearTmdbKey = false,
-    LetterboxdConfig? letterboxd,
+    CatalogRequest? request,
     List<HomeRow>? rows,
     DetailState? detail,
     bool clearDetail = false,
@@ -122,8 +127,7 @@ class HomeState {
   }) {
     return HomeState(
       status: status ?? this.status,
-      tmdbKey: clearTmdbKey ? null : (tmdbKey ?? this.tmdbKey),
-      letterboxd: letterboxd ?? this.letterboxd,
+      request: request ?? this.request,
       rows: rows ?? this.rows,
       detail: clearDetail ? null : (detail ?? this.detail),
       lastError: clearLastError ? null : (lastError ?? this.lastError),
@@ -148,31 +152,36 @@ class LoadHome extends HomeEvent {
   const LoadHome();
 }
 
+/// Force a rows refetch regardless of status. The Home empty state's Refresh
+/// action uses it — `LoadHome` would no-op while ready with zero rows.
+class RefreshHome extends HomeEvent {
+  const RefreshHome();
+}
+
 /// The host's `tmdbKey` changed in a snapshot: upgrade (or downgrade) the rows.
 class KeyChanged extends HomeEvent {
   final String? tmdbKey;
   const KeyChanged(this.tmdbKey);
 }
 
-/// The user changed the Letterboxd/Stremboxd configuration (manifest URL or the
-/// enabled catalog set): refetch the rows so the rails track the choice.
-class LetterboxdChanged extends HomeEvent {
-  final LetterboxdConfig config;
-  const LetterboxdChanged(this.config);
+/// The user changed the catalog sources — Letterboxd config, which built-in
+/// rows are off, or their order. Carries the full desired request (with the key
+/// in effect), so the reducer just adopts it.
+class CatalogSourcesChanged extends HomeEvent {
+  final CatalogRequest request;
+  const CatalogSourcesChanged(this.request);
 }
 
 class RowsLoaded extends HomeEvent {
   final List<HomeRow> rows;
-  final String? tmdbKey;
-  final LetterboxdConfig letterboxd;
-  const RowsLoaded(this.rows, this.tmdbKey, {required this.letterboxd});
+  final CatalogRequest request;
+  const RowsLoaded(this.rows, this.request);
 }
 
 class RowsFailed extends HomeEvent {
   final Object error;
-  final String? tmdbKey;
-  final LetterboxdConfig letterboxd;
-  const RowsFailed(this.error, this.tmdbKey, {required this.letterboxd});
+  final CatalogRequest request;
+  const RowsFailed(this.error, this.request);
 }
 
 class OpenDetail extends HomeEvent {
@@ -214,11 +223,6 @@ class PlayMeta extends HomeEvent {
 /// `remote-open-bridge.tsx`. Shared with the Search reducer (anime → series).
 String coerceMetaType(String type) => type == 'movie' ? 'movie' : 'series';
 
-/// A rows result is stale when the key or Letterboxd config that produced it no
-/// longer matches the state — a late fetch must not overwrite fresher intent.
-bool _rowsAreStale(HomeState s, String? key, LetterboxdConfig config) =>
-    key != s.tmdbKey || config != s.letterboxd;
-
 HomeState homeReduce(HomeState s, HomeEvent e) {
   switch (e) {
     case LoadHome():
@@ -232,31 +236,36 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
         notice: 'loading home rows (${s.tmdbKey == null ? 'cinemeta' : 'tmdb'})…',
       );
 
+    case RefreshHome():
+      s.effects.add('fetch:rows');
+      return s.copy(
+        status: HomeStatus.loading,
+        clearLastError: true,
+        notice: 'refreshing home rows…',
+      );
+
     case KeyChanged(tmdbKey: final key):
       if (key == s.tmdbKey) return s.copy(notice: 'tmdbKey unchanged');
       s.effects.add('fetch:rows');
       return s.copy(
-        tmdbKey: key,
-        clearTmdbKey: key == null,
+        request: s.request.copyWith(tmdbKey: key),
         status: HomeStatus.loading,
         clearLastError: true,
         notice: 'tmdbKey ${key == null ? 'removed' : 'arrived'} → refetching rows',
       );
 
-    case LetterboxdChanged(config: final config):
-      if (config == s.letterboxd) {
-        return s.copy(notice: 'letterboxd config unchanged');
-      }
+    case CatalogSourcesChanged(request: final request):
+      if (request == s.request) return s.copy(notice: 'catalog sources unchanged');
       s.effects.add('fetch:rows');
       return s.copy(
-        letterboxd: config,
+        request: request,
         status: HomeStatus.loading,
         clearLastError: true,
-        notice: 'letterboxd config changed → refetching rows',
+        notice: 'catalog sources changed → refetching rows',
       );
 
-    case RowsLoaded(rows: final rows, tmdbKey: final key, letterboxd: final config):
-      if (_rowsAreStale(s, key, config)) {
+    case RowsLoaded(rows: final rows, request: final request):
+      if (request != s.request) {
         return s.copy(notice: 'stale rows — dropped');
       }
       return s.copy(
@@ -266,8 +275,8 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
         notice: '${rows.length} rows loaded',
       );
 
-    case RowsFailed(error: final error, tmdbKey: final key, letterboxd: final config):
-      if (_rowsAreStale(s, key, config)) {
+    case RowsFailed(error: final error, request: final request):
+      if (request != s.request) {
         return s.copy(notice: 'stale rows failure — dropped');
       }
       return s.copy(

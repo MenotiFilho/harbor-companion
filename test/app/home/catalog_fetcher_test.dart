@@ -10,6 +10,8 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harbor_companion/app/home/catalog_fetcher.dart';
+import 'package:harbor_companion/app/home/catalog_request.dart';
+import 'package:harbor_companion/app/home/home_rows.dart';
 import 'package:harbor_companion/app/letterboxd/letterboxd.dart';
 import 'package:harbor_companion/app/home/meta.dart';
 
@@ -224,39 +226,133 @@ void main() {
     });
   });
 
-  group('letterboxd row loading', () {
-    const manifest = LetterboxdManifest([
-      LetterboxdCatalog(id: 'a', type: 'movie', name: 'A'),
-      LetterboxdCatalog(id: 'b', type: 'movie', name: 'B'),
-      LetterboxdCatalog(id: 'c', type: 'movie', name: 'C'),
-    ]);
+  group('row plan', () {
+    const active = LetterboxdConfig(
+      manifestUrl: 'https://x/manifest.json',
+      enabledCatalogIds: {'letterboxd-watchlist'},
+    );
 
+    CatalogRequest request({
+      String? key,
+      LetterboxdConfig letterboxd = const LetterboxdConfig(),
+      Set<String> disabled = const {},
+      List<String> order = kDefaultHomeRowOrder,
+    }) =>
+        CatalogRequest(
+          tmdbKey: key,
+          letterboxd: letterboxd,
+          disabledBuiltInRowKeys: disabled,
+          rowOrder: order,
+        );
+
+    test('keyless plans the Cinemeta rows, not the TMDB ones', () {
+      final keys = planHomeRowKeys(request());
+      expect(keys, contains('cinemeta:top-movies'));
+      expect(keys.any((k) => k.startsWith('tmdb:')), isFalse);
+    });
+
+    test('keyed plans the TMDB rows, not the Cinemeta ones', () {
+      final keys = planHomeRowKeys(request(key: 'tmdb-key'));
+      expect(keys, contains('tmdb:trending-movies'));
+      expect(keys.any((k) => k.startsWith('cinemeta:')), isFalse);
+    });
+
+    test('disabled built-in rows are dropped', () {
+      final keys = planHomeRowKeys(
+        request(disabled: {'cinemeta:top-movies'}),
+      );
+      expect(keys, isNot(contains('cinemeta:top-movies')));
+      expect(keys, contains('cinemeta:top-series'));
+    });
+
+    test('planning preserves the configured order (Letterboxd first)', () {
+      final order = [
+        'letterboxd:letterboxd-watchlist',
+        'cinemeta:top-series',
+        'cinemeta:top-movies',
+      ];
+      final keys = planHomeRowKeys(request(letterboxd: active, order: order));
+      expect(keys, [
+        'letterboxd:letterboxd-watchlist',
+        'cinemeta:top-series',
+        'cinemeta:top-movies',
+      ]);
+    });
+
+    test('Letterboxd rows need an active config and an enabled catalog', () {
+      expect(
+        planHomeRowKeys(request(order: ['letterboxd:letterboxd-watchlist'])),
+        isEmpty,
+      );
+      expect(
+        planHomeRowKeys(request(
+          letterboxd: const LetterboxdConfig(manifestUrl: 'https://x/manifest.json'),
+          order: ['letterboxd:letterboxd-watchlist'],
+        )),
+        isEmpty,
+      );
+      expect(
+        planHomeRowKeys(request(
+          letterboxd: active,
+          order: ['letterboxd:letterboxd-watchlist'],
+        )),
+        ['letterboxd:letterboxd-watchlist'],
+      );
+    });
+  });
+
+  group('catalog request', () {
+    test('showBuiltInCatalogs tracks the source in effect', () {
+      // Keyless → Cinemeta is the active source.
+      expect(const CatalogRequest().showBuiltInCatalogs, isTrue);
+      // Disabling only TMDB rows leaves the keyless Cinemeta rows showing.
+      expect(
+        const CatalogRequest(
+          disabledBuiltInRowKeys: {'tmdb:upcoming'},
+        ).showBuiltInCatalogs,
+        isTrue,
+      );
+      // Disabling every Cinemeta row turns built-ins off for a keyless host.
+      expect(
+        CatalogRequest(
+          disabledBuiltInRowKeys: {for (final r in kCinemetaRows) r.id},
+        ).showBuiltInCatalogs,
+        isFalse,
+      );
+      // A keyed host ignores the Cinemeta toggles.
+      expect(
+        CatalogRequest(
+          tmdbKey: 'key',
+          disabledBuiltInRowKeys: {for (final r in kCinemetaRows) r.id},
+        ).showBuiltInCatalogs,
+        isTrue,
+      );
+    });
+
+    test('copyWith can clear the tmdbKey back to null', () {
+      const request = CatalogRequest(tmdbKey: 'key');
+      expect(request.copyWith().tmdbKey, 'key');
+      expect(request.copyWith(tmdbKey: null).tmdbKey, isNull);
+    });
+  });
+
+  group('concurrent row loading', () {
     Meta meta(String id) => Meta(id: id, type: 'movie', name: id);
 
-    test('keeps only enabled catalogs, in manifest order', () async {
-      final fetched = <String>[];
-      final rows = await loadLetterboxdRows(manifest, {'c', 'a'}, (catalog) async {
-        fetched.add(catalog.id);
-        return [meta('tt-${catalog.id}')];
+    test('preserves order and drops null rows', () async {
+      final rows = await fetchHomeRowsConcurrently(['a', 'b', 'c'], (key) async {
+        if (key == 'b') return null;
+        return HomeRow(key, [meta('tt-$key')]);
       });
-      expect(fetched, ['a', 'c']);
-      expect(rows.map((r) => r.title), ['A', 'C']);
-      expect(rows[0].items.single.id, 'tt-a');
+      expect(rows.map((r) => r.title), ['a', 'c']);
     });
 
-    test('a failing catalog is skipped; the others still load', () async {
-      final rows = await loadLetterboxdRows(manifest, {'a', 'b', 'c'}, (catalog) async {
-        if (catalog.id == 'b') throw Exception('boom');
-        return [meta('tt-${catalog.id}')];
+    test('a failing row is skipped; the others still load', () async {
+      final rows = await fetchHomeRowsConcurrently(['a', 'b', 'c'], (key) async {
+        if (key == 'b') throw Exception('boom');
+        return HomeRow(key, [meta('tt-$key')]);
       });
-      expect(rows.map((r) => r.title), ['A', 'C']);
-    });
-
-    test('an empty catalog yields no row (no empty rails)', () async {
-      final rows = await loadLetterboxdRows(manifest, {'a', 'b'}, (catalog) async {
-        return catalog.id == 'a' ? [meta('tt-a')] : const [];
-      });
-      expect(rows.map((r) => r.title), ['A']);
+      expect(rows.map((r) => r.title), ['a', 'c']);
     });
   });
 }

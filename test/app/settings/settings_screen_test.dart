@@ -74,6 +74,26 @@ Widget app(ProviderContainer container) => UncontrolledProviderScope(
       child: const MaterialApp(home: SettingsScreen()),
     );
 
+/// Scrolls the settings list down to the Letterboxd section (it sits below the
+/// fold, and the lazy list has not built it yet).
+Future<void> scrollToLetterboxd(WidgetTester tester) async {
+  await tester.scrollUntilVisible(
+    find.text('Letterboxd'),
+    200,
+    scrollable: find.byType(Scrollable).first,
+  );
+  await tester.pumpAndSettle();
+}
+
+Future<void> scrollTo(WidgetTester tester, Finder finder) async {
+  await tester.scrollUntilVisible(
+    finder,
+    200,
+    scrollable: find.byType(Scrollable).first,
+  );
+  await tester.pumpAndSettle();
+}
+
 void main() {
   testWidgets('an empty registry shows the add-host prompt', (tester) async {
     final container = makeContainer();
@@ -154,32 +174,31 @@ void main() {
     expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
   });
 
-  testWidgets('the Letterboxd section shows the URL and catalog toggles',
+  testWidgets('settings exposes the Home rows editor entry point',
       (tester) async {
     final container = makeContainer();
     addTearDown(container.dispose);
     await tester.pumpWidget(app(container));
     await tester.pumpAndSettle();
 
-    expect(find.text('Letterboxd'), findsOneWidget);
-    expect(find.text('Stremboxd manifest URL'), findsOneWidget);
-
-    for (final label in ['Watchlist', 'Recommended', 'Friends Activity', 'Popular This Week', 'Top 250']) {
-      expect(find.widgetWithText(SwitchListTile, label), findsOneWidget);
-    }
-
-    // Defaults: watchlist/recommended/popular on; friends/top250 off.
-    bool on(String label) =>
-        tester.widget<SwitchListTile>(find.widgetWithText(SwitchListTile, label)).value;
-    expect(on('Watchlist'), isTrue);
-    expect(on('Recommended'), isTrue);
-    expect(on('Popular This Week'), isTrue);
-    expect(on('Friends Activity'), isFalse);
-    expect(on('Top 250'), isFalse);
+    await scrollTo(tester, find.text('Home rows'));
+    expect(find.text('Home rows'), findsOneWidget);
+    expect(find.byIcon(Icons.chevron_right), findsOneWidget);
   });
 
-  testWidgets('saving a manifest URL and toggling a catalog persist',
+  testWidgets('the Letterboxd section shows the manifest URL field',
       (tester) async {
+    final container = makeContainer();
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    await scrollToLetterboxd(tester);
+    expect(find.text('Letterboxd'), findsOneWidget);
+    expect(find.text('Stremboxd manifest URL'), findsOneWidget);
+  });
+
+  testWidgets('saving a manifest URL persists it', (tester) async {
     final store = InMemorySettingsStore();
     final container = ProviderContainer(
       overrides: [
@@ -197,52 +216,36 @@ void main() {
     await tester.pumpAndSettle();
 
     final urlField = find.byType(TextField);
-    await tester.ensureVisible(urlField);
-    await tester.pumpAndSettle();
+    await scrollTo(tester, urlField);
     await tester.enterText(
       urlField,
       'https://api.stremboxd.com/stremio/abc/manifest.json',
     );
     final saveUrl = find.byTooltip('Save URL');
-    await tester.ensureVisible(saveUrl);
-    await tester.pumpAndSettle();
+    await scrollTo(tester, saveUrl);
     await tester.tap(saveUrl);
     await tester.pumpAndSettle();
     expect(
       container.read(settingsControllerProvider).letterboxdManifestUrl,
       'https://api.stremboxd.com/stremio/abc/manifest.json',
     );
-
-    final friends = find.widgetWithText(SwitchListTile, 'Friends Activity');
-    await tester.ensureVisible(friends);
-    await tester.pumpAndSettle();
-    await tester.tap(friends);
-    await tester.pumpAndSettle();
-    expect(
-      container.read(settingsControllerProvider).enabledLetterboxdCatalogs,
-      contains('letterboxd-friends'),
-    );
   });
 
-  testWidgets('an unsaved URL survives an unrelated toggle rebuild',
-      (tester) async {
+  testWidgets('an unsaved URL survives an unrelated rebuild', (tester) async {
     final container = makeContainer();
     addTearDown(container.dispose);
     await tester.pumpWidget(app(container));
     await tester.pumpAndSettle();
 
     final urlField = find.byType(TextField);
-    await tester.ensureVisible(urlField);
-    await tester.pumpAndSettle();
+    await scrollTo(tester, urlField);
     await tester.enterText(urlField, 'https://typed.but/not/saved/manifest.json');
 
-    final watchlist = find.widgetWithText(SwitchListTile, 'Watchlist');
-    await tester.ensureVisible(watchlist);
-    await tester.pumpAndSettle();
-    await tester.tap(watchlist);
+    // Any Settings state change rebuilds the screen; the field must keep the
+    // in-progress text.
+    container.read(settingsControllerProvider.notifier).setShowPlaybackLocation(true);
     await tester.pumpAndSettle();
 
-    // The rebuild from the toggle must not reset the in-progress text.
     expect(
       tester.widget<TextField>(urlField).controller!.text,
       'https://typed.but/not/saved/manifest.json',

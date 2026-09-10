@@ -2,5 +2,6 @@
 abstract final class AppRoutes {
   static const shell = '/';
   static const settings = '/settings';
+  static const homeRows = '/settings/home-rows';
   static const detail = '/detail';
 }

@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../connect/connect_controller.dart';
 import '../connect/connect_reducer.dart';
-import '../letterboxd/letterboxd.dart';
+import '../routes.dart';
 import '../shell/player_bar.dart';
 import 'settings_controller.dart';
 import '../update/update_controller.dart';
@@ -66,12 +66,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             onShowPlaybackLocationChanged: settingsCtrl.setShowPlaybackLocation,
           ),
           const SizedBox(height: 24),
+          _sectionHeader('Home'),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.view_list_outlined),
+            title: const Text('Home rows'),
+            subtitle: const Text('Choose which rails show and their order.'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).pushNamed(AppRoutes.homeRows),
+          ),
+          const SizedBox(height: 8),
           _sectionHeader('Letterboxd'),
           _LetterboxdSection(
             manifestUrl: settings.letterboxdManifestUrl,
-            enabledCatalogs: settings.enabledLetterboxdCatalogs,
             onUrlChanged: settingsCtrl.setLetterboxdManifestUrl,
-            onCatalogToggled: settingsCtrl.setLetterboxdCatalogEnabled,
           ),
           const SizedBox(height: 24),
           _sectionHeader('Updates'),
@@ -474,19 +482,15 @@ class _PlaybackSection extends StatelessWidget {
 // Letterboxd section (ticket 41)
 // ---------------------------------------------------------------------------
 
-/// The user's Stremboxd manifest URL plus one toggle per catalog the app knows.
-/// The URL is committed explicitly (check button / keyboard done) so the Home
-/// does not refetch on every keystroke.
+/// The user's Stremboxd manifest URL. The URL is committed explicitly (check
+/// button / keyboard done) so the Home does not refetch on every keystroke. The
+/// per-catalog on/off choices live in the "Home rows" editor.
 class _LetterboxdSection extends StatefulWidget {
   final String manifestUrl;
-  final Set<String> enabledCatalogs;
   final ValueChanged<String> onUrlChanged;
-  final void Function(String id, bool enabled) onCatalogToggled;
   const _LetterboxdSection({
     required this.manifestUrl,
-    required this.enabledCatalogs,
     required this.onUrlChanged,
-    required this.onCatalogToggled,
   });
 
   @override
@@ -545,19 +549,11 @@ class _LetterboxdSectionState extends State<_LetterboxdSection> {
           onSubmitted: (_) => _commit(),
         ),
         const SizedBox(height: 4),
-        for (final toggle in kLetterboxdCatalogToggles)
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            dense: true,
-            title: Text(toggle.label),
-            value: widget.enabledCatalogs.contains(toggle.id),
-            onChanged: (value) => widget.onCatalogToggled(toggle.id, value),
-          ),
         Padding(
           padding: const EdgeInsets.only(top: 4),
           child: Text(
-            'Rails appear on Home for every enabled catalog your manifest '
-            'lists. Leave the URL empty to hide Letterboxd.',
+            'Pick which Letterboxd catalogs show in Home rows. Leave the URL '
+            'empty to hide Letterboxd.',
             style: Theme.of(context)
                 .textTheme
                 .bodySmall

@@ -17,7 +17,9 @@ import '../remote/remote_controller.dart';
 import '../settings/settings_controller.dart';
 import '../ws/client_controller.dart';
 import 'catalog_fetcher.dart';
+import 'catalog_request.dart';
 import 'home_reducer.dart';
+import 'home_rows.dart';
 import 'meta.dart';
 
 /// Catalog fetch seam. Defaults to the real dart:io HTTP fetcher; tests
@@ -39,15 +41,30 @@ class HomeController extends Notifier<HomeState> {
       }
     });
     ref.listen(settingsControllerProvider, (previous, next) {
-      final before = _letterboxdOf(previous);
-      final after = _letterboxdOf(next);
-      if (after != before) _dispatch(LetterboxdChanged(after));
+      if (_requestOf(previous) != _requestOf(next)) {
+        _dispatch(CatalogSourcesChanged(
+          // Keep the key already in effect — the sources change only.
+          _requestOf(next, tmdbKey: state.tmdbKey),
+        ));
+      }
     });
     return HomeState(
-      tmdbKey: currentKey,
-      letterboxd: _letterboxdOf(ref.read(settingsControllerProvider)),
+      request: _requestOf(
+        ref.read(settingsControllerProvider),
+        tmdbKey: currentKey,
+      ),
     );
   }
+
+  /// The row request implied by [settings], with [tmdbKey] (null for the
+  /// equality check that decides whether a Settings change needs a refetch).
+  CatalogRequest _requestOf(SettingsState? settings, {String? tmdbKey}) =>
+      CatalogRequest(
+        tmdbKey: tmdbKey,
+        letterboxd: _letterboxdOf(settings),
+        disabledBuiltInRowKeys: settings?.disabledBuiltInRowKeys ?? const {},
+        rowOrder: settings?.homeRowOrder ?? kDefaultHomeRowOrder,
+      );
 
   LetterboxdConfig _letterboxdOf(SettingsState? settings) => LetterboxdConfig(
         manifestUrl: settings?.letterboxdManifestUrl ?? '',
@@ -56,6 +73,9 @@ class HomeController extends Notifier<HomeState> {
       );
 
   void load() => _dispatch(const LoadHome());
+
+  /// Force a refetch (the empty state's Refresh action).
+  void reload() => _dispatch(const RefreshHome());
 
   void openDetail(Meta meta) => _dispatch(OpenDetail(meta));
 
@@ -88,16 +108,14 @@ class HomeController extends Notifier<HomeState> {
   }
 
   Future<void> _fetchRows() async {
-    final key = state.tmdbKey;
-    final letterboxd = state.letterboxd;
+    final request = state.request;
     try {
-      final rows =
-          await ref.read(catalogFetcherProvider).fetchRows(key, letterboxd);
+      final rows = await ref.read(catalogFetcherProvider).fetchRows(request);
       if (!ref.mounted) return;
-      _dispatch(RowsLoaded(rows, key, letterboxd: letterboxd));
+      _dispatch(RowsLoaded(rows, request));
     } catch (error) {
       if (!ref.mounted) return;
-      _dispatch(RowsFailed(error, key, letterboxd: letterboxd));
+      _dispatch(RowsFailed(error, request));
     }
   }
 

@@ -7,6 +7,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:harbor_companion/app/home/home_rows.dart';
 import 'package:harbor_companion/app/letterboxd/letterboxd.dart';
 import 'package:harbor_companion/app/settings/settings_controller.dart';
 import 'package:harbor_companion/app/settings/settings_store.dart';
@@ -60,6 +61,82 @@ void main() {
     final state = container.read(settingsControllerProvider);
     expect(state.letterboxdManifestUrl, '');
     expect(state.enabledLetterboxdCatalogs, kDefaultLetterboxdCatalogIds);
+    expect(state.disabledBuiltInRowKeys, isEmpty);
+    expect(state.homeRowOrder, kDefaultHomeRowOrder);
+  });
+
+  test('setBuiltInRowEnabled updates state and persists', () async {
+    final store = InMemorySettingsStore();
+    final container = ProviderContainer(
+      overrides: [settingsStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(container.dispose);
+    final ctrl = container.read(settingsControllerProvider.notifier);
+
+    ctrl.setBuiltInRowEnabled('cinemeta:top-movies', false);
+    expect(
+      container.read(settingsControllerProvider).disabledBuiltInRowKeys,
+      contains('cinemeta:top-movies'),
+    );
+    expect(await store.loadDisabledBuiltInRowKeys(), contains('cinemeta:top-movies'));
+
+    ctrl.setBuiltInRowEnabled('cinemeta:top-movies', true);
+    expect(
+      container.read(settingsControllerProvider).disabledBuiltInRowKeys,
+      isEmpty,
+    );
+  });
+
+  test('setAllBuiltInRowsEnabled(false) disables every built-in rail', () async {
+    final store = InMemorySettingsStore();
+    final container = ProviderContainer(
+      overrides: [settingsStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(container.dispose);
+    final ctrl = container.read(settingsControllerProvider.notifier);
+
+    ctrl.setAllBuiltInRowsEnabled(false);
+    final disabled = container.read(settingsControllerProvider).disabledBuiltInRowKeys;
+    expect(disabled, hasLength(kCinemetaRows.length + kTmdbRows.length));
+    expect(disabled, contains('tmdb:upcoming'));
+
+    ctrl.setAllBuiltInRowsEnabled(true);
+    expect(container.read(settingsControllerProvider).disabledBuiltInRowKeys, isEmpty);
+  });
+
+  test('moveHomeRow reorders and persists', () async {
+    final store = InMemorySettingsStore();
+    final container = ProviderContainer(
+      overrides: [settingsStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(container.dispose);
+    final ctrl = container.read(settingsControllerProvider.notifier);
+
+    // Move the first row to index 2 (onReorderItem convention: final index).
+    ctrl.moveHomeRow(0, 2);
+    final order = container.read(settingsControllerProvider).homeRowOrder;
+    expect(order[2], 'cinemeta:top-movies');
+    expect(await store.loadHomeRowOrder(), order);
+  });
+
+  test('restores a persisted disabled row and order on startup', () async {
+    final store = InMemorySettingsStore();
+    await store.saveDisabledBuiltInRowKeys({'tmdb:upcoming'});
+    await store.saveHomeRowOrder([
+      'letterboxd:letterboxd-watchlist',
+      ...kDefaultHomeRowOrder.where((k) => k != 'letterboxd:letterboxd-watchlist'),
+    ]);
+    final container = ProviderContainer(
+      overrides: [settingsStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(container.dispose);
+
+    // Read once to build the controller (and kick off the async restore).
+    expect(container.read(settingsControllerProvider).disabledBuiltInRowKeys, isEmpty);
+    await Future<void>.delayed(Duration.zero);
+    final state = container.read(settingsControllerProvider);
+    expect(state.disabledBuiltInRowKeys, {'tmdb:upcoming'});
+    expect(state.homeRowOrder.first, 'letterboxd:letterboxd-watchlist');
   });
 
   test('setLetterboxdManifestUrl trims, updates state and persists', () async {

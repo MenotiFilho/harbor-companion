@@ -52,6 +52,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           onRetry: () => ref.read(homeControllerProvider.notifier).load(),
         );
       case HomeStatus.ready:
+        if (state.rows.isEmpty) {
+          return _EmptyCatalog(
+            onRefresh: () => ref.read(homeControllerProvider.notifier).reload(),
+          );
+        }
         return ListView.builder(
           key: const ValueKey('homeList'),
           itemCount: state.rows.length,
@@ -59,6 +64,57 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           itemBuilder: (context, i) => HomeRowRail(row: state.rows[i]),
         );
     }
+  }
+}
+
+/// Shown when the user turned the built-in rails off and has no own source
+/// (Letterboxd) rails either — an empty Home by choice, not a failure.
+class _EmptyCatalog extends StatelessWidget {
+  final VoidCallback onRefresh;
+  const _EmptyCatalog({required this.onRefresh});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.video_library_outlined, size: 48, color: scheme.onSurfaceVariant),
+            const SizedBox(height: 12),
+            Text('No catalogs to show', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text(
+              'Enable some rows under "Home rows", or check your Letterboxd '
+              'manifest URL in Settings.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 16),
+            Wrap(
+              spacing: 8,
+              alignment: WrapAlignment.center,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: onRefresh,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Refresh'),
+                ),
+                FilledButton.tonal(
+                  onPressed: () => Navigator.of(context).pushNamed(AppRoutes.settings),
+                  child: const Text('Open settings'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

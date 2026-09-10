@@ -5,6 +5,7 @@ import 'app/connect/connect_controller.dart';
 import 'app/connect/host_registry.dart';
 import 'app/connect/lan_scan.dart';
 import 'app/home/detail_screen.dart';
+import 'app/home/home_rows_screen.dart';
 import 'app/routes.dart';
 import 'app/shell/shell_screen.dart';
 import 'app/settings/settings_controller.dart';
@@ -57,6 +58,7 @@ class _HarborCompanionAppState extends ConsumerState<HarborCompanionApp>
       routes: {
         AppRoutes.shell: (_) => const ShellScreen(),
         AppRoutes.settings: (_) => const SettingsScreen(),
+        AppRoutes.homeRows: (_) => const HomeRowsScreen(),
         AppRoutes.detail: (_) => const DetailScreen(),
       },
     );

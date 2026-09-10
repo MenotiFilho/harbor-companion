@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harbor_companion/app/home/catalog_fetcher.dart';
+import 'package:harbor_companion/app/home/catalog_request.dart';
 import 'package:harbor_companion/app/home/home_controller.dart';
 import 'package:harbor_companion/app/letterboxd/letterboxd.dart';
 import 'package:harbor_companion/app/home/meta.dart';
@@ -33,16 +34,13 @@ class FakeTransport implements WsTransport {
   Future<WsConnection> open(String url) async => FakeConnection();
 }
 
-/// Records the [LetterboxdConfig] handed to each `fetchRows` call.
+/// Records the [CatalogRequest] handed to each `fetchRows` call.
 class RecordingCatalogFetcher implements CatalogFetcher {
-  final List<LetterboxdConfig> rowRequests = [];
+  final List<CatalogRequest> rowRequests = [];
 
   @override
-  Future<List<HomeRow>> fetchRows(
-    String? tmdbKey,
-    LetterboxdConfig letterboxd,
-  ) async {
-    rowRequests.add(letterboxd);
+  Future<List<HomeRow>> fetchRows(CatalogRequest request) async {
+    rowRequests.add(request);
     return [
       HomeRow('Top Movies', [Meta(id: 'tt1', type: 'movie', name: 'The Matrix')]),
     ];
@@ -76,8 +74,12 @@ void main() {
     await settle();
 
     expect(fetcher.rowRequests, hasLength(1));
-    expect(fetcher.rowRequests.single.manifestUrl, '');
-    expect(fetcher.rowRequests.single.enabledCatalogIds, kDefaultLetterboxdCatalogIds);
+    expect(fetcher.rowRequests.single.letterboxd.manifestUrl, '');
+    expect(
+      fetcher.rowRequests.single.letterboxd.enabledCatalogIds,
+      kDefaultLetterboxdCatalogIds,
+    );
+    expect(fetcher.rowRequests.single.showBuiltInCatalogs, isTrue);
   });
 
   test('setting the manifest URL refetches with the active config', () async {
@@ -94,7 +96,7 @@ void main() {
 
     expect(fetcher.rowRequests, isNotEmpty);
     expect(
-      fetcher.rowRequests.last.manifestUrl,
+      fetcher.rowRequests.last.letterboxd.manifestUrl,
       'https://api.stremboxd.com/stremio/abc/manifest.json',
     );
   });
@@ -111,7 +113,41 @@ void main() {
         .setLetterboxdCatalogEnabled('letterboxd-friends', true);
     await settle();
 
-    expect(fetcher.rowRequests.last.enabledCatalogIds, contains('letterboxd-friends'));
+    expect(
+      fetcher.rowRequests.last.letterboxd.enabledCatalogIds,
+      contains('letterboxd-friends'),
+    );
+  });
+
+  test('toggling a built-in row off refetches with it disabled', () async {
+    final fetcher = RecordingCatalogFetcher();
+    final container = make(fetcher, InMemorySettingsStore());
+    addTearDown(container.dispose);
+    container.read(homeControllerProvider);
+    await settle();
+
+    container
+        .read(settingsControllerProvider.notifier)
+        .setBuiltInRowEnabled('cinemeta:top-movies', false);
+    await settle();
+
+    expect(
+      fetcher.rowRequests.last.disabledBuiltInRowKeys,
+      contains('cinemeta:top-movies'),
+    );
+  });
+
+  test('reordering rows refetches with the new order', () async {
+    final fetcher = RecordingCatalogFetcher();
+    final container = make(fetcher, InMemorySettingsStore());
+    addTearDown(container.dispose);
+    container.read(homeControllerProvider);
+    await settle();
+
+    container.read(settingsControllerProvider.notifier).moveHomeRow(0, 2);
+    await settle();
+
+    expect(fetcher.rowRequests.last.rowOrder[2], 'cinemeta:top-movies');
   });
 
   test('an unrelated setting change does not refetch the catalog', () async {
@@ -141,7 +177,7 @@ void main() {
     await settle();
 
     expect(
-      fetcher.rowRequests.last.manifestUrl,
+      fetcher.rowRequests.last.letterboxd.manifestUrl,
       'https://api.stremboxd.com/stremio/abc/manifest.json',
     );
   });

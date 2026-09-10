@@ -19,50 +19,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../letterboxd/letterboxd.dart';
+import 'catalog_request.dart';
+import 'home_rows.dart';
 import 'meta.dart';
 
 const String cinemetaBase = 'https://v3-cinemeta.strem.io';
 const String tmdbBase = 'https://api.themoviedb.org/3';
 const String tmdbImageBase = 'https://image.tmdb.org/t/p';
-
-/// A single-row spec: endpoint path, result type, and display title.
-class _RowSpec {
-  final String path;
-  final String type;
-  final String title;
-  const _RowSpec(this.path, this.type, this.title);
-}
-
-/// Cinemeta rows: top movie/series plus genre rails. The genre rails mirror the
-/// beta mobile home's fallback (wire-contract §5.1 known genres).
-const List<_RowSpec> _cinemetaRows = [
-  _RowSpec('/catalog/movie/top.json', 'movie', 'Top Movies'),
-  _RowSpec('/catalog/series/top.json', 'series', 'Top Series'),
-  _RowSpec('/catalog/movie/top/genre=Action.json', 'movie', 'Action'),
-  _RowSpec('/catalog/movie/top/genre=Drama.json', 'movie', 'Drama'),
-  _RowSpec('/catalog/movie/top/genre=Comedy.json', 'movie', 'Comedy'),
-  _RowSpec('/catalog/movie/top/genre=Sci-Fi.json', 'movie', 'Sci-Fi'),
-  _RowSpec('/catalog/movie/top/genre=Animation.json', 'movie', 'Animation'),
-  _RowSpec('/catalog/movie/top/genre=Thriller.json', 'movie', 'Thriller'),
-  _RowSpec('/catalog/series/top/genre=Drama.json', 'series', 'Series Drama'),
-  _RowSpec('/catalog/series/top/genre=Comedy.json', 'series', 'Series Comedy'),
-];
-
-/// TMDB rows (keyed): trending, movie/tv catalog rows, discover. Mirrors the
-/// beta mobile home (`tmdb-catalogs.ts`) — wire-contract §5.2.
-const List<_RowSpec> _tmdbRows = [
-  _RowSpec('/trending/movie/week', 'movie', 'Trending Movies'),
-  _RowSpec('/trending/tv/week', 'series', 'Trending Series'),
-  _RowSpec('/movie/popular', 'movie', 'Popular Movies'),
-  _RowSpec('/movie/top_rated', 'movie', 'Top Rated Movies'),
-  _RowSpec('/movie/now_playing', 'movie', 'Now Playing'),
-  _RowSpec('/movie/upcoming', 'movie', 'Upcoming'),
-  _RowSpec('/tv/popular', 'series', 'Popular Series'),
-  _RowSpec('/tv/top_rated', 'series', 'Top Rated Series'),
-  _RowSpec('/tv/on_the_air', 'series', 'On The Air'),
-  _RowSpec('/discover/movie', 'movie', 'Discover Movies'),
-  _RowSpec('/discover/tv', 'series', 'Discover Series'),
-];
 
 // ---------------------------------------------------------------------------
 // Pure mappers (pinned to the upstream JSON shapes; tested without network)
@@ -235,38 +198,48 @@ List<Season> parseTmdbSeasons(String raw) {
   ]..sort((a, b) => a.number.compareTo(b.number));
 }
 
-/// Turns a parsed Stremboxd [manifest] into Letterboxd Home rows: the enabled
-/// catalogs (in manifest order), fetched concurrently via [fetchCatalog]. A
-/// catalog whose fetch throws is skipped, not fatal — one flaky rail never
-/// takes down the rest. Empty catalogs are dropped. Pure orchestration so tests
-/// pin the filtering/skip behavior without network.
-Future<List<HomeRow>> loadLetterboxdRows(
-  LetterboxdManifest manifest,
-  Set<String> enabledCatalogIds,
-  Future<List<Meta>> Function(LetterboxdCatalog catalog) fetchCatalog,
-) async {
-  final catalogs = [
-    for (final catalog in manifest.catalogs)
-      if (enabledCatalogIds.contains(catalog.id)) catalog,
-  ];
-  final results = await Future.wait([
-    for (final catalog in catalogs) _loadLetterboxdRow(catalog, fetchCatalog),
-  ]);
-  return [
-    for (final (catalog, metas) in results)
-      if (metas.isNotEmpty) HomeRow(catalog.name, metas),
-  ];
+/// The ordered row keys [request] should attempt: the enabled built-in rows for
+/// the source in effect (TMDB when keyed, else Cinemeta), plus the enabled
+/// Letterboxd catalogs when a manifest URL is set. Pure so tests pin the
+/// filtering + order without network. A Letterboxd key survives planning even
+/// when the manifest may not list it — the manifest is consulted at fetch time.
+List<String> planHomeRowKeys(CatalogRequest request) {
+  final activeSource = request.tmdbKey == null ? 'cinemeta' : 'tmdb';
+  final letterboxdActive = request.letterboxd.isActive;
+  final keys = <String>[];
+  for (final key in request.rowOrder) {
+    final builtIn = builtInRowById(key);
+    if (builtIn != null) {
+      if (builtIn.source != activeSource) continue;
+      if (request.disabledBuiltInRowKeys.contains(key)) continue;
+      keys.add(key);
+      continue;
+    }
+    final catalogId = letterboxdCatalogId(key);
+    if (catalogId == null || !letterboxdActive) continue;
+    if (!request.letterboxd.enabledCatalogIds.contains(catalogId)) continue;
+    keys.add(key);
+  }
+  return keys;
 }
 
-Future<(LetterboxdCatalog, List<Meta>)> _loadLetterboxdRow(
-  LetterboxdCatalog catalog,
-  Future<List<Meta>> Function(LetterboxdCatalog catalog) fetchCatalog,
+/// Fetches each planned [key] via [fetch], concurrently, preserving order. A key
+/// whose fetch throws is skipped — one flaky rail never takes down the rest; a
+/// `null` result means "no row" (empty catalog or skipped).
+Future<List<HomeRow>> fetchHomeRowsConcurrently(
+  List<String> keys,
+  Future<HomeRow?> Function(String key) fetch,
 ) async {
-  try {
-    return (catalog, await fetchCatalog(catalog));
-  } catch (_) {
-    return (catalog, const <Meta>[]);
+  Future<HomeRow?> safe(String key) async {
+    try {
+      return await fetch(key);
+    } catch (_) {
+      return null;
+    }
   }
+
+  final results = await Future.wait([for (final key in keys) safe(key)]);
+  return [for (final row in results) ?row];
 }
 
 // ---------------------------------------------------------------------------
@@ -280,14 +253,13 @@ Future<(LetterboxdCatalog, List<Meta>)> _loadLetterboxdRow(
 bool usesTmdbDetail(String? tmdbKey, String id) =>
     tmdbKey != null && id.startsWith('tmdb:');
 
-/// Fetches home rows and detail from Cinemeta/TMDB. Injected into the home
-/// controller; tests provide a fake.
+/// Fetches home rows and detail from Cinemeta/TMDB/Stremboxd. Injected into the
+/// home controller; tests provide a fake.
 abstract interface class CatalogFetcher {
-  /// Home rows: TMDB when [tmdbKey] is set, else Cinemeta, plus any enabled
-  /// Letterboxd rails from [letterboxd]. A row whose fetch fails is skipped; the
-  /// list only carries rows that loaded. An inactive [letterboxd] config adds
-  /// nothing (no manifest request).
-  Future<List<HomeRow>> fetchRows(String? tmdbKey, LetterboxdConfig letterboxd);
+  /// Home rows for [request]: TMDB when a key is set, else Cinemeta (unless the
+  /// built-in rails are switched off), plus the enabled Letterboxd rails. A row
+  /// whose fetch fails is skipped; the list only carries rows that loaded.
+  Future<List<HomeRow>> fetchRows(CatalogRequest request);
 
   /// Detail for a title: Cinemeta `meta/{type}/{id}` when keyless, TMDB detail
   /// + per-season episodes when keyed.
@@ -302,61 +274,68 @@ class HttpCatalogFetcher implements CatalogFetcher {
   HttpCatalogFetcher({this.timeout = const Duration(seconds: 8)});
 
   @override
-  Future<List<HomeRow>> fetchRows(
-    String? tmdbKey,
-    LetterboxdConfig letterboxd,
-  ) async {
-    final specs = tmdbKey == null ? _cinemetaRows : _tmdbRows;
-    final results = await Future.wait([
-      for (final spec in specs) _fetchRow(spec, tmdbKey),
-    ]);
-    final rows = [
-      for (final (spec, metas) in results)
-        if (metas.isNotEmpty) HomeRow(spec.title, metas),
-    ];
-    // Letterboxd is additive: a bad URL or a failing catalog never blocks the
-    // Cinemeta/TMDB rows above.
-    rows.addAll(await _fetchLetterboxdRows(letterboxd));
-    // Every row failed (e.g. no network): surface an error so the UI shows the
-    // retry state rather than a blank "ready" grid.
-    if (rows.isEmpty) {
+  Future<List<HomeRow>> fetchRows(CatalogRequest request) async {
+    final keys = planHomeRowKeys(request);
+
+    // Resolve the Letterboxd manifest once, up front: catalog names + types come
+    // from it, and one bad manifest must only drop the Letterboxd rails.
+    var catalogsById = const <String, LetterboxdCatalog>{};
+    if (keys.any(isLetterboxdRowKey)) {
+      try {
+        final raw = await _get(Uri.parse(request.letterboxd.manifestUrl.trim()));
+        catalogsById = {
+          for (final catalog in parseLetterboxdManifest(raw).catalogs)
+            catalog.id: catalog,
+        };
+      } catch (_) {
+        catalogsById = const {};
+      }
+    }
+
+    final attemptedBuiltIn = keys.any((key) => builtInRowById(key) != null);
+    final rows = await fetchHomeRowsConcurrently(
+      keys,
+      (key) => _fetchRowByKey(key, request, catalogsById),
+    );
+    // Built-ins were requested but every rail failed (e.g. no network): surface
+    // an error so the UI shows the retry state. With them off, an empty Home is
+    // the user's choice, not a failure.
+    if (rows.isEmpty && attemptedBuiltIn) {
       throw const HttpException('no catalog rows loaded');
     }
     return rows;
   }
 
-  Future<List<HomeRow>> _fetchLetterboxdRows(LetterboxdConfig config) async {
-    if (!config.isActive) return const [];
-    try {
-      final raw = await _get(Uri.parse(config.manifestUrl.trim()));
-      final manifest = parseLetterboxdManifest(raw);
-      return await loadLetterboxdRows(
-        manifest,
-        config.enabledCatalogIds,
-        (catalog) async {
-          final url = letterboxdCatalogUrl(config.manifestUrl, catalog);
-          if (url == null) return const <Meta>[];
-          return parseCinemetaCatalog(await _get(Uri.parse(url)));
-        },
-      );
-    } catch (_) {
-      // A manifest that does not load (bad URL, offline, non-Stremboxd host)
-      // simply contributes no Letterboxd rails.
-      return const [];
+  Future<HomeRow?> _fetchRowByKey(
+    String key,
+    CatalogRequest request,
+    Map<String, LetterboxdCatalog> catalogsById,
+  ) async {
+    final builtIn = builtInRowById(key);
+    if (builtIn != null) {
+      final metas = await _fetchBuiltInRow(builtIn, request.tmdbKey);
+      return metas.isEmpty ? null : HomeRow(builtIn.title, metas);
     }
+    final catalogId = letterboxdCatalogId(key);
+    final catalog = catalogId == null ? null : catalogsById[catalogId];
+    if (catalog == null) return null;
+    final url = letterboxdCatalogUrl(request.letterboxd.manifestUrl, catalog);
+    if (url == null) return null;
+    final metas = parseCinemetaCatalog(await _get(Uri.parse(url)));
+    return metas.isEmpty ? null : HomeRow(catalog.name, metas);
   }
 
-  Future<(_RowSpec, List<Meta>)> _fetchRow(_RowSpec spec, String? tmdbKey) async {
+  Future<List<Meta>> _fetchBuiltInRow(BuiltInRow row, String? tmdbKey) async {
     try {
       final url = tmdbKey == null
-          ? '$cinemetaBase${spec.path}'
-          : '$tmdbBase${spec.path}?api_key=$tmdbKey';
+          ? '$cinemetaBase${row.path}'
+          : '$tmdbBase${row.path}?api_key=$tmdbKey';
       final raw = await _get(Uri.parse(url));
-      final metas =
-          tmdbKey == null ? parseCinemetaCatalog(raw) : parseTmdbPage(raw, spec.type);
-      return (spec, metas);
+      return tmdbKey == null
+          ? parseCinemetaCatalog(raw)
+          : parseTmdbPage(raw, row.type);
     } catch (_) {
-      return (spec, const <Meta>[]);
+      return const [];
     }
   }
 
