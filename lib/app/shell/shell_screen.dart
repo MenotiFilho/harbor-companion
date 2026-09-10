@@ -10,6 +10,7 @@ import '../search/search_screen.dart';
 import '../update/update_controller.dart';
 import '../update/update_reducer.dart';
 import 'connect_first_view.dart';
+import 'player_bar.dart';
 import 'shell_controller.dart';
 import 'shell_tab.dart';
 
@@ -66,9 +67,16 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
           ),
         ],
       ),
-      body: state.showConnectFirst
-          ? const ConnectFirstView()
-          : _tabBody(tab),
+      body: Column(
+        children: [
+          Expanded(
+            child: state.showConnectFirst
+                ? const ConnectFirstView()
+                : _tabBody(tab),
+          ),
+          const PlayerBar(),
+        ],
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: tab.index,
         onDestinationSelected: (index) =>
