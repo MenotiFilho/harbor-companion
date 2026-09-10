@@ -15,6 +15,7 @@ import 'package:harbor_companion/app/connect/lan_scan.dart';
 import 'package:harbor_companion/app/settings/settings_controller.dart';
 import 'package:harbor_companion/app/settings/settings_screen.dart';
 import 'package:harbor_companion/app/settings/settings_store.dart';
+import 'package:harbor_companion/app/shell/player_bar.dart';
 import 'package:harbor_companion/app/update/github_releases_client.dart';
 import 'package:harbor_companion/app/update/update_controller.dart';
 import 'package:harbor_companion/app/update/update_reducer.dart';
@@ -55,7 +56,7 @@ class FakeVersionProvider implements VersionProvider {
   Future<LocalVersion> load() async => const LocalVersion(1, '1.0.0');
 }
 
-ProviderContainer makeContainer() => ProviderContainer(
+ProviderContainer makeContainer({PlayerBarView? playerBar}) => ProviderContainer(
       overrides: [
         wsTransportProvider.overrideWithValue(FakeTransport()),
         wsKeyStoreProvider.overrideWithValue(FakeKeyStore()),
@@ -64,6 +65,7 @@ ProviderContainer makeContainer() => ProviderContainer(
         subnetScannerProvider.overrideWithValue(const FixedSubnetScanner([])),
         selfUpdateVersionProvider.overrideWithValue(FakeVersionProvider()),
         releasesClientProvider.overrideWithValue(FakeReleasesClient()),
+        playerBarViewProvider.overrideWithValue(playerBar),
       ],
     );
 
@@ -137,5 +139,18 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+  });
+
+  testWidgets('renders the floating player bar when media is held',
+      (tester) async {
+    final container = makeContainer(
+      playerBar: const PlayerBarView(title: 'Shawshank', playing: true),
+    );
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(PlayerBar), findsOneWidget);
+    expect(find.text('Shawshank'), findsOneWidget);
   });
 }

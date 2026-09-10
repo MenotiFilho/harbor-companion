@@ -67,27 +67,29 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
           ),
         ],
       ),
-      body: Column(
+      body: state.showConnectFirst
+          ? const ConnectFirstView()
+          : _tabBody(tab),
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Expanded(
-            child: state.showConnectFirst
-                ? const ConnectFirstView()
-                : _tabBody(tab),
+          // The floating mini-player rides above the nav bar on every tab
+          // except Remote (where the full transport already lives).
+          if (tab != ShellTab.remote) const PlayerBar(safeArea: false),
+          NavigationBar(
+            selectedIndex: tab.index,
+            onDestinationSelected: (index) => ref
+                .read(shellControllerProvider.notifier)
+                .selectTab(ShellTab.values[index]),
+            destinations: [
+              for (final tab in ShellTab.values)
+                NavigationDestination(
+                  icon: Icon(tab.meta.icon),
+                  selectedIcon: Icon(tab.meta.selectedIcon),
+                  label: tab.meta.label,
+                ),
+            ],
           ),
-          const PlayerBar(),
-        ],
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: tab.index,
-        onDestinationSelected: (index) =>
-            ref.read(shellControllerProvider.notifier).selectTab(ShellTab.values[index]),
-        destinations: [
-          for (final tab in ShellTab.values)
-            NavigationDestination(
-              icon: Icon(tab.meta.icon),
-              selectedIcon: Icon(tab.meta.selectedIcon),
-              label: tab.meta.label,
-            ),
         ],
       ),
     );

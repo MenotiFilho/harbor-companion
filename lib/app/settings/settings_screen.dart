@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../connect/connect_controller.dart';
 import '../connect/connect_reducer.dart';
+import '../shell/player_bar.dart';
 import 'settings_controller.dart';
 import '../update/update_controller.dart';
 import '../update/update_reducer.dart';
@@ -73,6 +74,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         icon: const Icon(Icons.add),
         label: const Text('Add host'),
       ),
+      bottomNavigationBar: const PlayerBar(),
     );
   }
 

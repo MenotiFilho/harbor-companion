@@ -121,7 +121,7 @@ void main() {
     expect(find.text('Search'), findsWidgets);
   });
 
-  testWidgets('the player bar rides above the nav bar on every tab',
+  testWidgets('the player bar shows on every tab except Remote',
       (tester) async {
     final container = _connectedContainer(title: 'Shawshank');
     await tester.pumpWidget(
@@ -137,7 +137,7 @@ void main() {
       matching: find.text('Shawshank'),
     );
 
-    for (final label in ['Remote', 'Search', 'Home', 'My Stuff', 'Profile']) {
+    for (final label in ['Search', 'Home', 'My Stuff', 'Profile']) {
       await tester.tap(find.descendant(
         of: find.byType(NavigationBar),
         matching: find.text(label),
@@ -145,6 +145,13 @@ void main() {
       await tester.pumpAndSettle();
       expect(barTitle, findsOneWidget, reason: 'bar missing on $label');
     }
+
+    await tester.tap(find.descendant(
+      of: find.byType(NavigationBar),
+      matching: find.text('Remote'),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.byType(PlayerBar), findsNothing);
   });
 
   testWidgets('tapping the player bar opens the Remote tab', (tester) async {

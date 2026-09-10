@@ -14,6 +14,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../shell/player_bar.dart';
 import 'home_controller.dart';
 import 'home_reducer.dart';
 import 'meta.dart';
@@ -34,6 +35,7 @@ class DetailScreen extends ConsumerWidget {
         DetailStatus.failed => Center(child: Text(detail!.error ?? 'Could not load detail')),
         DetailStatus.ready => _DetailBody(detail: detail!.detail!, meta: detail.meta),
       },
+      bottomNavigationBar: const PlayerBar(),
     );
   }
 }

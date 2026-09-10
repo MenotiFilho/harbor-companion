@@ -12,6 +12,7 @@ import 'package:harbor_companion/app/home/detail_screen.dart';
 import 'package:harbor_companion/app/home/home_controller.dart';
 import 'package:harbor_companion/app/home/home_reducer.dart';
 import 'package:harbor_companion/app/home/meta.dart';
+import 'package:harbor_companion/app/shell/player_bar.dart';
 
 class _StubHomeController extends HomeController {
   @override
@@ -43,8 +44,11 @@ HomeState _loading(Meta meta) =>
 HomeState _ready(DetailMeta detail) => HomeState(
     detail: DetailState(status: DetailStatus.ready, meta: detail.meta, detail: detail));
 
-Widget _wrap(HomeState state) => ProviderScope(
-      overrides: [homeControllerProvider.overrideWith(() => _StubHomeController(state))],
+Widget _wrap(HomeState state, {PlayerBarView? playerBar}) => ProviderScope(
+      overrides: [
+        homeControllerProvider.overrideWith(() => _StubHomeController(state)),
+        playerBarViewProvider.overrideWithValue(playerBar),
+      ],
       child: const MaterialApp(home: DetailScreen()),
     );
 
@@ -100,5 +104,29 @@ void main() {
 
     expect(find.byType(ChoiceChip), findsNothing);
     expect(find.text('Play'), findsOneWidget);
+  });
+
+  testWidgets('renders the floating player bar when media is held',
+      (tester) async {
+    final movie = DetailMeta(
+        meta: Meta(id: 'tt1', type: 'movie', name: 'The Matrix'));
+    await tester.pumpWidget(_wrap(
+      _ready(movie),
+      playerBar: const PlayerBarView(
+        title: 'The Matrix',
+        episodeLine: 'S1 · E1  Pilot',
+        playing: true,
+      ),
+    ));
+
+    expect(find.byType(PlayerBar), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(PlayerBar),
+        matching: find.text('The Matrix'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('S1 · E1'), findsOneWidget);
   });
 }
