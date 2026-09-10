@@ -9,10 +9,13 @@
 //
 // `showPlaybackLocation` gates the Remote's playback-location ("This PC" /
 // cast) section. It defaults to off (hidden) and is restored on startup so the
-// choice survives a restart.
+// choice survives a restart. `letterboxdManifestUrl` + `enabledLetterboxdCatalogs`
+// gate the Home's Stremboxd rails (ticket 41); both are restored on startup and
+// the Home controller listens for changes.
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../letterboxd/letterboxd.dart';
 import 'settings_store.dart';
 
 /// Settings persistence seam. Defaults to an in-memory store; the
@@ -23,11 +26,30 @@ final settingsStoreProvider =
 class SettingsState {
   final bool showPlaybackLocation;
 
-  const SettingsState({this.showPlaybackLocation = false});
+  /// The Stremboxd manifest URL (`''` when unset).
+  final String letterboxdManifestUrl;
 
-  SettingsState copyWith({bool? showPlaybackLocation}) => SettingsState(
+  /// The enabled Letterboxd catalog ids.
+  final Set<String> enabledLetterboxdCatalogs;
+
+  const SettingsState({
+    this.showPlaybackLocation = false,
+    this.letterboxdManifestUrl = '',
+    this.enabledLetterboxdCatalogs = kDefaultLetterboxdCatalogIds,
+  });
+
+  SettingsState copyWith({
+    bool? showPlaybackLocation,
+    String? letterboxdManifestUrl,
+    Set<String>? enabledLetterboxdCatalogs,
+  }) =>
+      SettingsState(
         showPlaybackLocation:
             showPlaybackLocation ?? this.showPlaybackLocation,
+        letterboxdManifestUrl:
+            letterboxdManifestUrl ?? this.letterboxdManifestUrl,
+        enabledLetterboxdCatalogs:
+            enabledLetterboxdCatalogs ?? this.enabledLetterboxdCatalogs,
       );
 }
 
@@ -39,17 +61,42 @@ class SettingsController extends Notifier<SettingsState> {
   }
 
   /// Loads the persisted preferences so an opted-in user keeps the playback
-  /// location section across restarts.
+  /// location section and Letterboxd config across restarts.
   Future<void> _restore() async {
     final store = ref.read(settingsStoreProvider);
     final show = await store.loadShowPlaybackLocation();
+    final manifestUrl = await store.loadLetterboxdManifestUrl();
+    final catalogIds = await store.loadEnabledLetterboxdCatalogs();
     if (!ref.mounted) return;
-    state = state.copyWith(showPlaybackLocation: show);
+    state = state.copyWith(
+      showPlaybackLocation: show,
+      letterboxdManifestUrl: manifestUrl,
+      enabledLetterboxdCatalogs: catalogIds,
+    );
   }
 
   void setShowPlaybackLocation(bool value) {
     state = state.copyWith(showPlaybackLocation: value);
     ref.read(settingsStoreProvider).saveShowPlaybackLocation(value);
+  }
+
+  /// Sets the Stremboxd manifest URL (trimmed; `''` clears it).
+  void setLetterboxdManifestUrl(String url) {
+    final trimmed = url.trim();
+    state = state.copyWith(letterboxdManifestUrl: trimmed);
+    ref.read(settingsStoreProvider).saveLetterboxdManifestUrl(trimmed);
+  }
+
+  /// Enables/disables a single Letterboxd catalog rail.
+  void setLetterboxdCatalogEnabled(String id, bool enabled) {
+    final next = {...state.enabledLetterboxdCatalogs};
+    if (enabled) {
+      next.add(id);
+    } else {
+      next.remove(id);
+    }
+    state = state.copyWith(enabledLetterboxdCatalogs: next);
+    ref.read(settingsStoreProvider).saveEnabledLetterboxdCatalogs(next);
   }
 }
 

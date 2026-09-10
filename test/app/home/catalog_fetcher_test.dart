@@ -10,6 +10,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harbor_companion/app/home/catalog_fetcher.dart';
+import 'package:harbor_companion/app/letterboxd/letterboxd.dart';
 import 'package:harbor_companion/app/home/meta.dart';
 
 void main() {
@@ -220,6 +221,42 @@ void main() {
 
       final seasons = await pending;
       expect(seasons.map((s) => s.episodes.length), [1, 1, 0]);
+    });
+  });
+
+  group('letterboxd row loading', () {
+    const manifest = LetterboxdManifest([
+      LetterboxdCatalog(id: 'a', type: 'movie', name: 'A'),
+      LetterboxdCatalog(id: 'b', type: 'movie', name: 'B'),
+      LetterboxdCatalog(id: 'c', type: 'movie', name: 'C'),
+    ]);
+
+    Meta meta(String id) => Meta(id: id, type: 'movie', name: id);
+
+    test('keeps only enabled catalogs, in manifest order', () async {
+      final fetched = <String>[];
+      final rows = await loadLetterboxdRows(manifest, {'c', 'a'}, (catalog) async {
+        fetched.add(catalog.id);
+        return [meta('tt-${catalog.id}')];
+      });
+      expect(fetched, ['a', 'c']);
+      expect(rows.map((r) => r.title), ['A', 'C']);
+      expect(rows[0].items.single.id, 'tt-a');
+    });
+
+    test('a failing catalog is skipped; the others still load', () async {
+      final rows = await loadLetterboxdRows(manifest, {'a', 'b', 'c'}, (catalog) async {
+        if (catalog.id == 'b') throw Exception('boom');
+        return [meta('tt-${catalog.id}')];
+      });
+      expect(rows.map((r) => r.title), ['A', 'C']);
+    });
+
+    test('an empty catalog yields no row (no empty rails)', () async {
+      final rows = await loadLetterboxdRows(manifest, {'a', 'b'}, (catalog) async {
+        return catalog.id == 'a' ? [meta('tt-a')] : const [];
+      });
+      expect(rows.map((r) => r.title), ['A']);
     });
   });
 }

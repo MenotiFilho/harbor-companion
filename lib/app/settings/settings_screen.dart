@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../connect/connect_controller.dart';
 import '../connect/connect_reducer.dart';
+import '../letterboxd/letterboxd.dart';
 import '../shell/player_bar.dart';
 import 'settings_controller.dart';
 import '../update/update_controller.dart';
@@ -63,6 +64,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           _PlaybackSection(
             showPlaybackLocation: settings.showPlaybackLocation,
             onShowPlaybackLocationChanged: settingsCtrl.setShowPlaybackLocation,
+          ),
+          const SizedBox(height: 24),
+          _sectionHeader('Letterboxd'),
+          _LetterboxdSection(
+            manifestUrl: settings.letterboxdManifestUrl,
+            enabledCatalogs: settings.enabledLetterboxdCatalogs,
+            onUrlChanged: settingsCtrl.setLetterboxdManifestUrl,
+            onCatalogToggled: settingsCtrl.setLetterboxdCatalogEnabled,
           ),
           const SizedBox(height: 24),
           _sectionHeader('Updates'),
@@ -457,6 +466,105 @@ class _PlaybackSection extends StatelessWidget {
       ),
       value: showPlaybackLocation,
       onChanged: onShowPlaybackLocationChanged,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Letterboxd section (ticket 41)
+// ---------------------------------------------------------------------------
+
+/// The user's Stremboxd manifest URL plus one toggle per catalog the app knows.
+/// The URL is committed explicitly (check button / keyboard done) so the Home
+/// does not refetch on every keystroke.
+class _LetterboxdSection extends StatefulWidget {
+  final String manifestUrl;
+  final Set<String> enabledCatalogs;
+  final ValueChanged<String> onUrlChanged;
+  final void Function(String id, bool enabled) onCatalogToggled;
+  const _LetterboxdSection({
+    required this.manifestUrl,
+    required this.enabledCatalogs,
+    required this.onUrlChanged,
+    required this.onCatalogToggled,
+  });
+
+  @override
+  State<_LetterboxdSection> createState() => _LetterboxdSectionState();
+}
+
+class _LetterboxdSectionState extends State<_LetterboxdSection> {
+  late final TextEditingController _url =
+      TextEditingController(text: widget.manifestUrl);
+
+  /// The persisted URL this field last adopted. Tracking it (rather than
+  /// comparing against `_url.text`) means a parent rebuild for an unrelated
+  /// reason never discards text the user is still typing.
+  late String _syncedUrl = widget.manifestUrl;
+
+  @override
+  void didUpdateWidget(covariant _LetterboxdSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The store restore is async — adopt the loaded URL once it lands.
+    if (widget.manifestUrl != _syncedUrl) {
+      _syncedUrl = widget.manifestUrl;
+      _url.text = widget.manifestUrl;
+    }
+  }
+
+  void _commit() {
+    widget.onUrlChanged(_url.text.trim());
+    _syncedUrl = _url.text.trim();
+  }
+
+  @override
+  void dispose() {
+    _url.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          controller: _url,
+          keyboardType: TextInputType.url,
+          autocorrect: false,
+          decoration: InputDecoration(
+            labelText: 'Stremboxd manifest URL',
+            hintText: 'https://api.stremboxd.com/stremio/<token>/manifest.json',
+            suffixIcon: IconButton(
+              icon: const Icon(Icons.check),
+              tooltip: 'Save URL',
+              onPressed: _commit,
+            ),
+          ),
+          onSubmitted: (_) => _commit(),
+        ),
+        const SizedBox(height: 4),
+        for (final toggle in kLetterboxdCatalogToggles)
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            title: Text(toggle.label),
+            value: widget.enabledCatalogs.contains(toggle.id),
+            onChanged: (value) => widget.onCatalogToggled(toggle.id, value),
+          ),
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            'Rails appear on Home for every enabled catalog your manifest '
+            'lists. Leave the URL empty to hide Letterboxd.',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ),
+      ],
     );
   }
 }

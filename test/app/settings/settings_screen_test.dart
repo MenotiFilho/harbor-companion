@@ -93,8 +93,14 @@ void main() {
 
     await tester.tap(find.text('Add host'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField).first, 'desk');
-    await tester.enterText(find.byType(TextField).last, '192.168.1.50');
+    // Scope to the dialog: the screen behind it also has a TextField (the
+    // Letterboxd URL field).
+    final dialogFields = find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(dialogFields.first, 'desk');
+    await tester.enterText(dialogFields.last, '192.168.1.50');
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
 
@@ -115,9 +121,16 @@ void main() {
     await tester.pumpWidget(app(container));
     await tester.pumpAndSettle();
 
-    expect(find.text('Check for updates'), findsOneWidget);
-
-    await tester.tap(find.text('Check for updates'));
+    // The Letterboxd section pushed this button below the fold, and the list
+    // builds lazily — scroll it into the tree.
+    final checkButton = find.text('Check for updates');
+    await tester.scrollUntilVisible(
+      checkButton,
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(checkButton);
     await tester.pumpAndSettle();
 
     expect(find.text('No update available'), findsOneWidget);
@@ -130,15 +143,110 @@ void main() {
     await tester.pumpWidget(app(container));
     await tester.pumpAndSettle();
 
-    final toggle = find.byType(SwitchListTile);
+    final toggle =
+        find.widgetWithText(SwitchListTile, 'Show playback location');
     expect(toggle, findsOneWidget);
-    expect(find.text('Show playback location'), findsOneWidget);
     expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
 
     await tester.tap(toggle);
     await tester.pumpAndSettle();
 
     expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+  });
+
+  testWidgets('the Letterboxd section shows the URL and catalog toggles',
+      (tester) async {
+    final container = makeContainer();
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Letterboxd'), findsOneWidget);
+    expect(find.text('Stremboxd manifest URL'), findsOneWidget);
+
+    for (final label in ['Watchlist', 'Recommended', 'Friends Activity', 'Popular This Week', 'Top 250']) {
+      expect(find.widgetWithText(SwitchListTile, label), findsOneWidget);
+    }
+
+    // Defaults: watchlist/recommended/popular on; friends/top250 off.
+    bool on(String label) =>
+        tester.widget<SwitchListTile>(find.widgetWithText(SwitchListTile, label)).value;
+    expect(on('Watchlist'), isTrue);
+    expect(on('Recommended'), isTrue);
+    expect(on('Popular This Week'), isTrue);
+    expect(on('Friends Activity'), isFalse);
+    expect(on('Top 250'), isFalse);
+  });
+
+  testWidgets('saving a manifest URL and toggling a catalog persist',
+      (tester) async {
+    final store = InMemorySettingsStore();
+    final container = ProviderContainer(
+      overrides: [
+        wsTransportProvider.overrideWithValue(FakeTransport()),
+        wsKeyStoreProvider.overrideWithValue(FakeKeyStore()),
+        hostRegistryStoreProvider.overrideWithValue(InMemoryHostRegistryStore()),
+        settingsStoreProvider.overrideWithValue(store),
+        subnetScannerProvider.overrideWithValue(const FixedSubnetScanner([])),
+        selfUpdateVersionProvider.overrideWithValue(FakeVersionProvider()),
+        releasesClientProvider.overrideWithValue(FakeReleasesClient()),
+      ],
+    );
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    final urlField = find.byType(TextField);
+    await tester.ensureVisible(urlField);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      urlField,
+      'https://api.stremboxd.com/stremio/abc/manifest.json',
+    );
+    final saveUrl = find.byTooltip('Save URL');
+    await tester.ensureVisible(saveUrl);
+    await tester.pumpAndSettle();
+    await tester.tap(saveUrl);
+    await tester.pumpAndSettle();
+    expect(
+      container.read(settingsControllerProvider).letterboxdManifestUrl,
+      'https://api.stremboxd.com/stremio/abc/manifest.json',
+    );
+
+    final friends = find.widgetWithText(SwitchListTile, 'Friends Activity');
+    await tester.ensureVisible(friends);
+    await tester.pumpAndSettle();
+    await tester.tap(friends);
+    await tester.pumpAndSettle();
+    expect(
+      container.read(settingsControllerProvider).enabledLetterboxdCatalogs,
+      contains('letterboxd-friends'),
+    );
+  });
+
+  testWidgets('an unsaved URL survives an unrelated toggle rebuild',
+      (tester) async {
+    final container = makeContainer();
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    final urlField = find.byType(TextField);
+    await tester.ensureVisible(urlField);
+    await tester.pumpAndSettle();
+    await tester.enterText(urlField, 'https://typed.but/not/saved/manifest.json');
+
+    final watchlist = find.widgetWithText(SwitchListTile, 'Watchlist');
+    await tester.ensureVisible(watchlist);
+    await tester.pumpAndSettle();
+    await tester.tap(watchlist);
+    await tester.pumpAndSettle();
+
+    // The rebuild from the toggle must not reset the in-progress text.
+    expect(
+      tester.widget<TextField>(urlField).controller!.text,
+      'https://typed.but/not/saved/manifest.json',
+    );
   });
 
   testWidgets('renders the floating player bar when media is held',

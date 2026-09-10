@@ -7,6 +7,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:harbor_companion/app/letterboxd/letterboxd.dart';
 import 'package:harbor_companion/app/settings/settings_controller.dart';
 import 'package:harbor_companion/app/settings/settings_store.dart';
 
@@ -50,5 +51,77 @@ void main() {
     expect(container.read(settingsControllerProvider).showPlaybackLocation, isFalse);
     await Future<void>.delayed(Duration.zero);
     expect(container.read(settingsControllerProvider).showPlaybackLocation, isTrue);
+  });
+
+  test('defaults the Letterboxd config: no URL, watchlist/recommended/popular on',
+      () async {
+    final container = await make();
+    addTearDown(container.dispose);
+    final state = container.read(settingsControllerProvider);
+    expect(state.letterboxdManifestUrl, '');
+    expect(state.enabledLetterboxdCatalogs, kDefaultLetterboxdCatalogIds);
+  });
+
+  test('setLetterboxdManifestUrl trims, updates state and persists', () async {
+    final store = InMemorySettingsStore();
+    final container = ProviderContainer(
+      overrides: [settingsStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(container.dispose);
+
+    container
+        .read(settingsControllerProvider.notifier)
+        .setLetterboxdManifestUrl('  https://api.stremboxd.com/stremio/abc/manifest.json  ');
+    expect(
+      container.read(settingsControllerProvider).letterboxdManifestUrl,
+      'https://api.stremboxd.com/stremio/abc/manifest.json',
+    );
+    expect(
+      await store.loadLetterboxdManifestUrl(),
+      'https://api.stremboxd.com/stremio/abc/manifest.json',
+    );
+  });
+
+  test('setLetterboxdCatalogEnabled adds/removes and persists', () async {
+    final store = InMemorySettingsStore();
+    final container = ProviderContainer(
+      overrides: [settingsStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(container.dispose);
+    final ctrl = container.read(settingsControllerProvider.notifier);
+
+    ctrl.setLetterboxdCatalogEnabled('letterboxd-friends', true);
+    expect(
+      container.read(settingsControllerProvider).enabledLetterboxdCatalogs,
+      contains('letterboxd-friends'),
+    );
+    expect(await store.loadEnabledLetterboxdCatalogs(), contains('letterboxd-friends'));
+
+    ctrl.setLetterboxdCatalogEnabled('letterboxd-popular', false);
+    expect(
+      container.read(settingsControllerProvider).enabledLetterboxdCatalogs,
+      isNot(contains('letterboxd-popular')),
+    );
+    expect(
+      await store.loadEnabledLetterboxdCatalogs(),
+      isNot(contains('letterboxd-popular')),
+    );
+  });
+
+  test('restores a persisted Letterboxd URL and catalog set on startup', () async {
+    final store = InMemorySettingsStore();
+    await store.saveLetterboxdManifestUrl('https://x/manifest.json');
+    await store.saveEnabledLetterboxdCatalogs({'letterboxd-top250'});
+    final container = ProviderContainer(
+      overrides: [settingsStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(container.dispose);
+
+    // Defaults hold until the async restore resolves.
+    expect(container.read(settingsControllerProvider).letterboxdManifestUrl, '');
+    await Future<void>.delayed(Duration.zero);
+    final state = container.read(settingsControllerProvider);
+    expect(state.letterboxdManifestUrl, 'https://x/manifest.json');
+    expect(state.enabledLetterboxdCatalogs, {'letterboxd-top250'});
   });
 }

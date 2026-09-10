@@ -9,11 +9,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:harbor_companion/app/home/catalog_fetcher.dart';
 import 'package:harbor_companion/app/home/home_controller.dart';
 import 'package:harbor_companion/app/home/home_screen.dart';
+import 'package:harbor_companion/app/letterboxd/letterboxd.dart';
 import 'package:harbor_companion/app/home/meta.dart';
 
 class _FakeCatalogFetcher implements CatalogFetcher {
   @override
-  Future<List<HomeRow>> fetchRows(String? tmdbKey) async => [
+  Future<List<HomeRow>> fetchRows(
+    String? tmdbKey,
+    LetterboxdConfig letterboxd,
+  ) async => [
         HomeRow('Top Movies', [
           Meta(id: 'tt1', type: 'movie', name: 'The Matrix'),
           Meta(id: 'tt2', type: 'movie', name: 'Inception'),

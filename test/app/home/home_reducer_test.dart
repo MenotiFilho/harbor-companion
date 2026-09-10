@@ -9,6 +9,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harbor_companion/app/home/home_reducer.dart';
+import 'package:harbor_companion/app/letterboxd/letterboxd.dart';
 import 'package:harbor_companion/app/home/meta.dart';
 
 Meta movie({String id = 'tt0000001', String name = 'The Matrix'}) =>
@@ -37,7 +38,7 @@ void main() {
     test('LoadHome while ready is a no-op (no refetch on tab re-entry)', () {
       var s = homeReduce(HomeState(), const LoadHome());
       drain(s);
-      s = homeReduce(s, RowsLoaded([row('Top Movies')], null));
+      s = homeReduce(s, RowsLoaded([row('Top Movies')], null, letterboxd: const LetterboxdConfig()));
       drain(s);
       final after = homeReduce(s, const LoadHome());
       expect(after.status, HomeStatus.ready);
@@ -54,7 +55,7 @@ void main() {
     test('LoadHome after a failure retries', () {
       var s = homeReduce(HomeState(), const LoadHome());
       drain(s);
-      s = homeReduce(s, RowsFailed(Exception('boom'), null));
+      s = homeReduce(s, RowsFailed(Exception('boom'), null, letterboxd: const LetterboxdConfig()));
       drain(s);
       expect(s.status, HomeStatus.failed);
       final after = homeReduce(s, const LoadHome());
@@ -65,7 +66,7 @@ void main() {
     test('RowsLoaded with the current key publishes rows', () {
       var s = homeReduce(HomeState(), const LoadHome());
       drain(s);
-      s = homeReduce(s, RowsLoaded([row('Top Movies')], null));
+      s = homeReduce(s, RowsLoaded([row('Top Movies')], null, letterboxd: const LetterboxdConfig()));
       expect(s.status, HomeStatus.ready);
       expect(s.rows.single.title, 'Top Movies');
       expect(drain(s), isEmpty);
@@ -74,7 +75,7 @@ void main() {
     test('RowsFailed with the current key enters failed', () {
       var s = homeReduce(HomeState(), const LoadHome());
       drain(s);
-      s = homeReduce(s, RowsFailed(Exception('down'), null));
+      s = homeReduce(s, RowsFailed(Exception('down'), null, letterboxd: const LetterboxdConfig()));
       expect(s.status, HomeStatus.failed);
       expect(s.rows, isEmpty);
       expect(s.lastError, contains('down'));
@@ -85,7 +86,7 @@ void main() {
     test('a keyless host fetches cinemeta (no key in state)', () {
       var s = homeReduce(HomeState(), const LoadHome());
       drain(s);
-      s = homeReduce(s, RowsLoaded([row('Action'), row('Drama')], null));
+      s = homeReduce(s, RowsLoaded([row('Action'), row('Drama')], null, letterboxd: const LetterboxdConfig()));
       expect(s.tmdbKey, isNull);
       expect(s.rows, hasLength(2));
     });
@@ -93,7 +94,7 @@ void main() {
     test('a key arriving upgrades the rows (refetch keyed)', () {
       var s = homeReduce(HomeState(), const LoadHome());
       drain(s);
-      s = homeReduce(s, RowsLoaded([row('Top Movies')], null)); // cinemeta rows
+      s = homeReduce(s, RowsLoaded([row('Top Movies')], null, letterboxd: const LetterboxdConfig())); // cinemeta rows
       drain(s);
       final after = homeReduce(s, KeyChanged('tmdb-key'));
       expect(after.tmdbKey, 'tmdb-key');
@@ -104,7 +105,7 @@ void main() {
     test('a key leaving downgrades back to cinemeta', () {
       var s = homeReduce(HomeState(tmdbKey: 'tmdb-key'), const LoadHome());
       drain(s);
-      s = homeReduce(s, RowsLoaded([row('Trending')], 'tmdb-key'));
+      s = homeReduce(s, RowsLoaded([row('Trending')], 'tmdb-key', letterboxd: const LetterboxdConfig()));
       drain(s);
       final after = homeReduce(s, KeyChanged(null));
       expect(after.tmdbKey, isNull);
@@ -122,7 +123,7 @@ void main() {
       drain(s);
       s = homeReduce(s, KeyChanged('tmdb-key')); // upgrade
       drain(s);
-      final stale = homeReduce(s, RowsLoaded([row('Top Movies')], null));
+      final stale = homeReduce(s, RowsLoaded([row('Top Movies')], null, letterboxd: const LetterboxdConfig()));
       expect(stale.status, HomeStatus.loading); // still awaiting the keyed fetch
       expect(drain(stale), isEmpty);
     });
@@ -132,7 +133,7 @@ void main() {
       drain(s);
       s = homeReduce(s, KeyChanged('tmdb-key'));
       drain(s);
-      s = homeReduce(s, RowsLoaded([row('Trending Movies')], 'tmdb-key'));
+      s = homeReduce(s, RowsLoaded([row('Trending Movies')], 'tmdb-key', letterboxd: const LetterboxdConfig()));
       expect(s.status, HomeStatus.ready);
       expect(s.rows.single.title, 'Trending Movies');
     });
@@ -238,6 +239,57 @@ void main() {
 
     test('a movie detail has no first episode', () {
       expect(DetailMeta(meta: movie()).firstEpisode, isNull);
+    });
+  });
+
+  group('letterboxd rows', () {
+    const active = LetterboxdConfig(
+      manifestUrl: 'https://x/manifest.json',
+      enabledCatalogIds: {'letterboxd-watchlist'},
+    );
+
+    test('a fresh state has an inactive (empty) Letterboxd config', () {
+      expect(HomeState().letterboxd.isActive, isFalse);
+    });
+
+    test('LetterboxdChanged updates the config and refetches', () {
+      final s = homeReduce(HomeState(), const LetterboxdChanged(active));
+      expect(s.letterboxd, active);
+      expect(s.status, HomeStatus.loading);
+      expect(drain(s), ['fetch:rows']);
+    });
+
+    test('an unchanged Letterboxd config is a no-op', () {
+      final s = homeReduce(HomeState(letterboxd: active), const LetterboxdChanged(active));
+      expect(drain(s), isEmpty);
+    });
+
+    test('RowsLoaded with the current config publishes', () {
+      var s = homeReduce(HomeState(), const LetterboxdChanged(active));
+      drain(s);
+      s = homeReduce(s, RowsLoaded([row('Watchlist')], null, letterboxd: active));
+      expect(s.status, HomeStatus.ready);
+      expect(s.rows.single.title, 'Watchlist');
+    });
+
+    test('RowsLoaded for a stale config is dropped', () {
+      var s = homeReduce(HomeState(), const LoadHome());
+      drain(s);
+      // The user changes the config mid-flight; the old fetch returns.
+      s = homeReduce(s, const LetterboxdChanged(active));
+      drain(s);
+      final stale = homeReduce(s, RowsLoaded([row('Old')], null, letterboxd: const LetterboxdConfig()));
+      expect(stale.status, HomeStatus.loading);
+      expect(drain(stale), isEmpty);
+    });
+
+    test('KeyChanged preserves the Letterboxd config', () {
+      final s = homeReduce(
+        HomeState(letterboxd: active),
+        const KeyChanged('tmdb-key'),
+      );
+      expect(s.tmdbKey, 'tmdb-key');
+      expect(s.letterboxd, active);
     });
   });
 }

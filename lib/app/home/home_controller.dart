@@ -12,7 +12,9 @@
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../letterboxd/letterboxd.dart';
 import '../remote/remote_controller.dart';
+import '../settings/settings_controller.dart';
 import '../ws/client_controller.dart';
 import 'catalog_fetcher.dart';
 import 'home_reducer.dart';
@@ -26,16 +28,32 @@ final catalogFetcherProvider =
 class HomeController extends Notifier<HomeState> {
   @override
   HomeState build() {
-    // Seed the current key, then upgrade/downgrade rows whenever the host's
-    // key changes in a snapshot (the WS client persists + re-applies it).
+    // Seed the current key + Letterboxd config, then upgrade/refetch the rows
+    // whenever either changes: the host's `tmdbKey` arrives in a snapshot (the
+    // WS client persists + re-applies it), and the Letterboxd manifest URL /
+    // enabled catalogs change in Settings.
     final currentKey = ref.read(wsClientControllerProvider).tmdbKey;
     ref.listen(wsClientControllerProvider, (previous, next) {
       if (next.tmdbKey != previous?.tmdbKey) {
         _dispatch(KeyChanged(next.tmdbKey));
       }
     });
-    return HomeState(tmdbKey: currentKey);
+    ref.listen(settingsControllerProvider, (previous, next) {
+      final before = _letterboxdOf(previous);
+      final after = _letterboxdOf(next);
+      if (after != before) _dispatch(LetterboxdChanged(after));
+    });
+    return HomeState(
+      tmdbKey: currentKey,
+      letterboxd: _letterboxdOf(ref.read(settingsControllerProvider)),
+    );
   }
+
+  LetterboxdConfig _letterboxdOf(SettingsState? settings) => LetterboxdConfig(
+        manifestUrl: settings?.letterboxdManifestUrl ?? '',
+        enabledCatalogIds:
+            settings?.enabledLetterboxdCatalogs ?? kDefaultLetterboxdCatalogIds,
+      );
 
   void load() => _dispatch(const LoadHome());
 
@@ -71,13 +89,15 @@ class HomeController extends Notifier<HomeState> {
 
   Future<void> _fetchRows() async {
     final key = state.tmdbKey;
+    final letterboxd = state.letterboxd;
     try {
-      final rows = await ref.read(catalogFetcherProvider).fetchRows(key);
+      final rows =
+          await ref.read(catalogFetcherProvider).fetchRows(key, letterboxd);
       if (!ref.mounted) return;
-      _dispatch(RowsLoaded(rows, key));
+      _dispatch(RowsLoaded(rows, key, letterboxd: letterboxd));
     } catch (error) {
       if (!ref.mounted) return;
-      _dispatch(RowsFailed(error, key));
+      _dispatch(RowsFailed(error, key, letterboxd: letterboxd));
     }
   }
 
