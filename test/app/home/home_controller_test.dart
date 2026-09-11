@@ -113,6 +113,12 @@ class LoggingCacheStore extends InMemoryHomeCacheStore {
   }
 
   @override
+  Future<void> saveRail(HomeCacheIdentity identity, CachedRail rail) {
+    log.add('save:${identity.rowKey}');
+    return super.saveRail(identity, rail);
+  }
+
+  @override
   Future<void> sweep(Iterable<HomeCacheIdentity> live) {
     log.add('sweep');
     return super.sweep(live);
@@ -531,6 +537,39 @@ void main() {
       expect(summary.manual, isTrue);
       expect(summary.allFailed, isTrue);
       expect(summary.notifyFailure, isTrue);
+    });
+  });
+
+  group('rail grid (ticket 76)', () {
+    const firstKey = 'cinemeta:top-movies';
+
+    test('opening a grid snapshots the rail without fetching or caching',
+        () async {
+      final log = <String>[];
+      final cache = LoggingCacheStore(log);
+      final fetcher = RecordingCatalogFetcher();
+      final container =
+          make(fetcher, InMemorySettingsStore(), cacheStore: cache);
+      addTearDown(container.dispose);
+      final notifier = container.read(homeControllerProvider.notifier);
+
+      notifier.load();
+      await settle();
+      await settle();
+      final fetchesAfterLoad = fetcher.rowRequests.length;
+      log.clear();
+
+      notifier.openRailGrid(firstKey);
+      await settle();
+
+      final state = container.read(homeControllerProvider);
+      expect(state.activeRailGrid!.rowKey, firstKey);
+      expect(state.activeRailGrid!.items, isNotEmpty);
+      expect(fetcher.rowRequests.length, fetchesAfterLoad,
+          reason: 'the grid opens on what was already downloaded');
+      expect(log.where((entry) => entry.startsWith('save:')), isEmpty,
+          reason: 'nothing is written to the rail cache by opening the grid');
+      expect(log, isEmpty, reason: 'no cache read either');
     });
   });
 

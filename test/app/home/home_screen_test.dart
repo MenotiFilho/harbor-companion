@@ -16,6 +16,7 @@ import 'package:harbor_companion/app/home/home_rail.dart';
 import 'package:harbor_companion/app/home/home_reducer.dart';
 import 'package:harbor_companion/app/home/home_screen.dart';
 import 'package:harbor_companion/app/home/meta.dart';
+import 'package:harbor_companion/app/routes.dart';
 
 class _StubHomeController extends HomeController {
   @override
@@ -77,7 +78,12 @@ Widget _app(HomeState state, {_StubHomeController? controller}) {
   controller ??= _StubHomeController(state);
   return ProviderScope(
     overrides: [homeControllerProvider.overrideWith(() => controller!)],
-    child: const MaterialApp(home: Scaffold(body: HomeScreen())),
+    child: MaterialApp(
+      routes: {
+        AppRoutes.railGrid: (_) => const Scaffold(body: Text('RAIL GRID')),
+      },
+      home: const Scaffold(body: HomeScreen()),
+    ),
   );
 }
 
@@ -431,9 +437,11 @@ void main() {
 
       expect(find.text('See more'), findsNothing);
       await tester.tap(find.text('Top Movies'));
-      await tester.pump();
+      await tester.pumpAndSettle();
 
       expect(controller.openedRails, ['cinemeta:top-movies']);
+      expect(find.text('RAIL GRID'), findsOneWidget,
+          reason: 'the title pushes the dedicated grid route');
     });
 
     testWidgets('tapping the See more card opens the rail', (tester) async {
@@ -441,9 +449,11 @@ void main() {
       await tester.pumpWidget(_app(controller.state, controller: controller));
 
       await tester.tap(find.text('See more'));
-      await tester.pump();
+      await tester.pumpAndSettle();
 
       expect(controller.openedRails, ['cinemeta:top-movies']);
+      expect(find.text('RAIL GRID'), findsOneWidget,
+          reason: 'the See more card pushes the dedicated grid route');
     });
   });
 

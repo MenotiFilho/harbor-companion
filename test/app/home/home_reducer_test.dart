@@ -671,4 +671,120 @@ void main() {
       expect(s.notice, contains(firstKey));
     });
   });
+
+  group('rail grid snapshot (ticket 76)', () {
+    const trendingKey = 'tmdb:trending-movies';
+    const letterboxdKey = 'letterboxd:letterboxd-watchlist';
+
+    CatalogRequest letterboxdReq() => req(
+          letterboxd: const LetterboxdConfig(
+            manifestUrl: 'https://api.stremboxd.com/stremio/tok/manifest.json',
+            enabledCatalogIds: {'letterboxd-watchlist'},
+          ),
+        );
+
+    test('opens by capturing the full rail, source, request and cursor', () {
+      final request = req();
+      var s = homeReduce(HomeState(request: request), const LoadHome());
+      drain(s);
+      s = fold(
+        s,
+        HomeRailLoaded(firstKey, 'Top Movies', items('x', 50), hasMore: true),
+      );
+
+      final opened = homeReduce(s, const OpenRailGrid(firstKey));
+      expect(drain(opened), isEmpty, reason: 'instant open — no network effect');
+
+      final grid = opened.activeRailGrid!;
+      expect(grid.rowKey, firstKey);
+      expect(grid.title, 'Top Movies');
+      expect(grid.items, hasLength(50), reason: 'the whole downloaded page, uncapped');
+      expect(grid.items.first.id, 'x:0');
+      expect(grid.source, RailGridSource.cinemeta);
+      expect(grid.request, request);
+      expect(grid.cursor, 50, reason: 'skip-based sources resume at the loaded count');
+      expect(grid.hasMore, isTrue);
+    });
+
+    test('a 20-only rail opens with exactly its 20 items', () {
+      var s = homeReduce(HomeState(request: req(key: 'k')), const LoadHome());
+      drain(s);
+      s = fold(s, HomeRailLoaded(trendingKey, 'Trending Movies', items('t', 20)));
+
+      final grid = homeReduce(s, const OpenRailGrid(trendingKey)).activeRailGrid!;
+      expect(grid.items, hasLength(20));
+      expect(grid.source, RailGridSource.tmdb);
+      expect(grid.cursor, 1, reason: 'TMDB resumes at the loaded page');
+    });
+
+    test('a Letterboxd rail captures its source and skip cursor', () {
+      var s = homeReduce(HomeState(request: letterboxdReq()), const LoadHome());
+      drain(s);
+      s = fold(
+        s,
+        HomeRailLoaded(letterboxdKey, 'Watchlist', items('l', 100), hasMore: true),
+      );
+
+      final grid =
+          homeReduce(s, const OpenRailGrid(letterboxdKey)).activeRailGrid!;
+      expect(grid.source, RailGridSource.letterboxd);
+      expect(grid.cursor, 100);
+      expect(grid.hasMore, isTrue);
+    });
+
+    test('a Home round while the grid is open never mutates the snapshot', () {
+      var s = started();
+      s = fold(
+        s,
+        HomeRailLoaded(firstKey, 'Top Movies', items('old', 30), hasMore: true),
+      );
+      s = homeReduce(s, const OpenRailGrid(firstKey));
+      final before = s.activeRailGrid!;
+
+      // A fresh round lands while the grid is open.
+      s = homeReduce(s, const RefreshHome());
+      s = fold(s, HomeRailLoaded(firstKey, 'Renamed', items('new', 5)));
+
+      final after = s.activeRailGrid!;
+      expect(identical(after, before), isTrue);
+      expect(after.items.first.id, 'old:0');
+      expect(after.items, hasLength(30));
+      expect(after.source, RailGridSource.cinemeta);
+      expect(after.cursor, 30);
+      expect(after.title, 'Top Movies');
+      expect(after.hasMore, isTrue);
+      expect(after.request, before.request);
+      // The rail itself did take the fresh round.
+      expect(s.rails[firstKey]!.title, 'Renamed');
+      expect(s.rails[firstKey]!.items, hasLength(5));
+    });
+
+    test('opening the grid leaves the rail cache age untouched', () {
+      var s = started();
+      s = homeReduce(s, CacheLoaded(s.request, {
+        firstKey: CachedRail(items: items('c'), updatedAt: 900, hasMore: true),
+      }));
+      final cachedRail = s.rails[firstKey]!;
+      final opened = homeReduce(s, const OpenRailGrid(firstKey));
+      final after = opened.rails[firstKey]!;
+      expect(after.fromCache, isTrue);
+      expect(after.updatedAt, 900);
+      expect(after.items, hasLength(3));
+      expect(identical(after, cachedRail), isTrue,
+          reason: 'the rail state is not rewritten by opening the grid');
+    });
+
+    test('snapshots are keyed per row and the last opened is active', () {
+      var s = started();
+      s = fold(s, HomeRailLoaded(firstKey, 'Top Movies', items('a')));
+      s = fold(s, HomeRailLoaded('cinemeta:top-series', 'Top Series', items('b')));
+      s = homeReduce(s, const OpenRailGrid(firstKey));
+      s = homeReduce(s, const OpenRailGrid('cinemeta:top-series'));
+
+      expect(s.railGrids.keys, containsAll([firstKey, 'cinemeta:top-series']));
+      expect(s.activeRailGrid!.rowKey, 'cinemeta:top-series');
+      expect(s.railGrids[firstKey]!.items.first.id, 'a:0');
+      expect(s.railGrids['cinemeta:top-series']!.items.first.id, 'b:0');
+    });
+  });
 }

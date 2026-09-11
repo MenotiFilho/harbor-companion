@@ -94,6 +94,50 @@ class DetailState {
   });
 }
 
+/// The source a rail's dedicated grid paginates against (ticket 76, ADR-0009).
+/// Captured in the grid snapshot so a later Home round can never change where
+/// the grid resumes. The per-source cursor rules live in #77.
+enum RailGridSource { cinemeta, tmdb, letterboxd }
+
+/// The [RailGridSource] that serves [rowKey]: a built-in row's source
+/// (`cinemeta`/`tmdb`), or `letterboxd` for a `letterboxd:` key.
+RailGridSource railGridSourceFor(String rowKey) {
+  final builtIn = builtInRowById(rowKey);
+  if (builtIn == null) return RailGridSource.letterboxd;
+  return builtIn.source == 'tmdb' ? RailGridSource.tmdb : RailGridSource.cinemeta;
+}
+
+/// The ephemeral, in-memory state of one rail's dedicated grid (ticket 76,
+/// ADR-0009). Captured at [OpenRailGrid] from the rail as it is *at that
+/// moment*: the full downloaded [items] (never the 20-item render cap), the
+/// [source], the [request] in effect, and the [cursor] the grid will resume
+/// from. It is a snapshot — Home rounds while the grid is open never touch it —
+/// and it is never written to the per-rail cache nor allowed to change the
+/// rail's age.
+///
+/// [cursor] means, per [source]: for Cinemeta/Stremboxd the number of items
+/// already loaded (the `skip` the next page requests), and for TMDB the page
+/// already loaded (1 at open — the rail fetch is page 1). #77 advances it.
+class RailGridSnapshot {
+  final String rowKey;
+  final String title;
+  final List<Meta> items;
+  final RailGridSource source;
+  final CatalogRequest request;
+  final int cursor;
+  final bool hasMore;
+
+  const RailGridSnapshot({
+    required this.rowKey,
+    required this.title,
+    required this.items,
+    required this.source,
+    required this.request,
+    required this.cursor,
+    this.hasMore = false,
+  });
+}
+
 /// The outcome of a settled rail round (ticket 74, ADR-0008). The widget shows
 /// at most one short snackbar, and only when [notifyFailure] holds: the round
 /// was started by a manual pull and the whole round failed. A partial failure,
@@ -150,6 +194,17 @@ class HomeState {
   final RoundSummary? roundSummary;
 
   final DetailState? detail;
+
+  /// Per-`rowKey` rail grid snapshots (ticket 76). Session-only, never
+  /// persisted; a fresh open overwrites the entry. Home rounds never mutate
+  /// these — that is what makes an open grid immune to a refresh.
+  final Map<String, RailGridSnapshot> railGrids;
+
+  /// The `rowKey` of the grid on screen (its snapshot lives in [railGrids]);
+  /// null before any grid opened. The route reads [activeRailGrid] and never
+  /// re-fetches.
+  final String? activeRailGridKey;
+
   final String? notice;
   final PlayMetaCommand? pendingPlay; // the most recent playMeta command
 
@@ -167,6 +222,8 @@ class HomeState {
     this.roundPending = const {},
     this.roundSummary,
     this.detail,
+    this.railGrids = const {},
+    this.activeRailGridKey,
     this.notice,
     this.pendingPlay,
     List<String>? effects,
@@ -175,6 +232,11 @@ class HomeState {
   String? get tmdbKey => request.tmdbKey;
   LetterboxdConfig get letterboxd => request.letterboxd;
   bool get showBuiltInCatalogs => request.showBuiltInCatalogs;
+
+  /// The snapshot of the grid on screen, if any. The grid route reads this
+  /// instead of re-fetching; a null means no grid has been opened (yet).
+  RailGridSnapshot? get activeRailGrid =>
+      activeRailGridKey == null ? null : railGrids[activeRailGridKey];
 
   /// The rails to render, in the user's chosen order. Pure — the same plan the
   /// fetcher resolves, so a pending rail is known before its outcome arrives.
@@ -248,6 +310,8 @@ class HomeState {
     bool clearRoundSummary = false,
     DetailState? detail,
     bool clearDetail = false,
+    Map<String, RailGridSnapshot>? railGrids,
+    String? activeRailGridKey,
     String? notice,
     bool clearNotice = false,
     PlayMetaCommand? pendingPlay,
@@ -264,6 +328,8 @@ class HomeState {
       roundSummary:
           clearRoundSummary ? null : (roundSummary ?? this.roundSummary),
       detail: clearDetail ? null : (detail ?? this.detail),
+      railGrids: railGrids ?? this.railGrids,
+      activeRailGridKey: activeRailGridKey ?? this.activeRailGridKey,
       notice: clearNotice ? null : (notice ?? this.notice),
       pendingPlay: pendingPlay ?? this.pendingPlay,
       effects: effects ?? this.effects,
@@ -342,9 +408,10 @@ class RetryRail extends HomeEvent {
   const RetryRail(this.rowKey);
 }
 
-/// A rail's title or its "See more" card was tapped (ticket 75). The dedicated
-/// grid route and its snapshot state arrive in #76; this event is the seam they
-/// hook into, so the rail is tappable (and testable) before the grid exists.
+/// A rail's title or its "See more" card was tapped (tickets 75, 76): capture
+/// the rail's current items + source + request + cursor as an ephemeral,
+/// in-memory [RailGridSnapshot] and make it the active grid. The widget pushes
+/// `AppRoutes.railGrid` after this, like the detail route.
 class OpenRailGrid extends HomeEvent {
   final String rowKey;
   const OpenRailGrid(this.rowKey);
@@ -618,9 +685,30 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
       );
 
     case OpenRailGrid(rowKey: final key):
-      // Ticket 75 seam: the grid state + route land in #76. No fetch effect —
-      // the grid opens on what the rail already holds.
-      return s.copy(notice: 'open rail grid $key (#76)');
+      // Ticket 76: snapshot the rail as it is right now and open instantly.
+      // No fetch effect (the grid opens on the already-downloaded page) and no
+      // cache write / rail mutation, so the rail's age is untouched. The
+      // snapshot lives in its own map, immune to later Home rounds.
+      final rail = s.rails[key];
+      final title = rail?.title ?? '';
+      final source = railGridSourceFor(key);
+      final captured = List<Meta>.unmodifiable(rail?.items ?? const <Meta>[]);
+      final snapshot = RailGridSnapshot(
+        rowKey: key,
+        title: title.isNotEmpty ? title : homeRowLabel(key),
+        items: captured,
+        source: source,
+        request: s.request,
+        cursor: source == RailGridSource.tmdb ? 1 : captured.length,
+        hasMore: rail?.hasMore ?? false,
+      );
+      final grids = Map<String, RailGridSnapshot>.from(s.railGrids);
+      grids[key] = snapshot;
+      return s.copy(
+        railGrids: grids,
+        activeRailGridKey: key,
+        notice: 'open rail grid $key',
+      );
 
     case OpenDetail(meta: final meta):
       s.effects.add('fetch:detail');

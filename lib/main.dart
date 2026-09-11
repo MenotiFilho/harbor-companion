@@ -8,6 +8,7 @@ import 'app/home/detail_screen.dart';
 import 'app/home/home_cache_disk_store.dart';
 import 'app/home/home_controller.dart';
 import 'app/home/home_rows_screen.dart';
+import 'app/home/rail_grid_screen.dart';
 import 'app/routes.dart';
 import 'app/shell/shell_screen.dart';
 import 'app/settings/settings_controller.dart';
@@ -62,6 +63,7 @@ class _HarborCompanionAppState extends ConsumerState<HarborCompanionApp>
         AppRoutes.settings: (_) => const SettingsScreen(),
         AppRoutes.homeRows: (_) => const HomeRowsScreen(),
         AppRoutes.detail: (_) => const DetailScreen(),
+        AppRoutes.railGrid: (_) => const RailGridScreen(),
       },
     );
   }

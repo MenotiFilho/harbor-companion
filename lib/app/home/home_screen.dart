@@ -57,9 +57,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void _retryRail(String rowKey) =>
       ref.read(homeControllerProvider.notifier).retryRail(rowKey);
 
-  /// The rail title / "See more" tap seam (ticket 75); the grid route is #76.
-  void _openRail(String rowKey) =>
-      ref.read(homeControllerProvider.notifier).openRailGrid(rowKey);
+  /// Opens the dedicated rail grid (tickets 75, 76): the reducer snapshots the
+  /// rail (items + source + request + cursor) and the widget pushes the route,
+  /// like the detail flow.
+  void _openRail(String rowKey) {
+    ref.read(homeControllerProvider.notifier).openRailGrid(rowKey);
+    Navigator.of(context).pushNamed(AppRoutes.railGrid);
+  }
 
   /// The pull gesture (ADR-0008): starts a round or joins the one in flight,
   /// and keeps the indicator up until every planned rail settles. A short
@@ -528,7 +532,13 @@ class _RailErrorCard extends StatelessWidget {
 
 class PosterCard extends ConsumerWidget {
   final Meta meta;
-  const PosterCard({super.key, required this.meta});
+
+  /// Fixed card width — the Home rail's 110. Null lets the parent define it:
+  /// the rail grid's delegate supplies the tile width, so the card fills it
+  /// (ticket 76). One card, no fork.
+  final double? width;
+
+  const PosterCard({super.key, required this.meta, this.width = 110});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -538,7 +548,7 @@ class PosterCard extends ConsumerWidget {
         Navigator.of(context).pushNamed(AppRoutes.detail);
       },
       child: SizedBox(
-        width: 110,
+        width: width,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
