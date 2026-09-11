@@ -368,6 +368,27 @@ void main() {
       expect(saved.items, hasLength(1));
     });
 
+    test('a fresh loaded outcome persists the source hasMore (ticket 75)',
+        () async {
+      final cache = InMemoryHomeCacheStore();
+      final fetcher = RecordingCatalogFetcher();
+      fetcher.outcomes[firstKey] = () => HomeRailLoaded(
+            firstKey,
+            'Top Movies',
+            [Meta(id: 'tt1', type: 'movie', name: 'A')],
+            hasMore: true,
+          );
+      final container = make(fetcher, InMemorySettingsStore(), cacheStore: cache);
+      addTearDown(container.dispose);
+
+      container.read(homeControllerProvider.notifier).load();
+      await settle();
+
+      final saved = await cache.loadRail(const HomeCacheIdentity(firstKey));
+      expect(saved, isNotNull);
+      expect(saved!.hasMore, isTrue);
+    });
+
     test('a Letterboxd rail caches under rowKey + manifestUrl', () async {
       final cache = InMemoryHomeCacheStore();
       final settings = InMemorySettingsStore();

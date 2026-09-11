@@ -342,6 +342,14 @@ class RetryRail extends HomeEvent {
   const RetryRail(this.rowKey);
 }
 
+/// A rail's title or its "See more" card was tapped (ticket 75). The dedicated
+/// grid route and its snapshot state arrive in #76; this event is the seam they
+/// hook into, so the rail is tappable (and testable) before the grid exists.
+class OpenRailGrid extends HomeEvent {
+  final String rowKey;
+  const OpenRailGrid(this.rowKey);
+}
+
 class OpenDetail extends HomeEvent {
   final Meta meta;
   const OpenDetail(this.meta);
@@ -608,6 +616,11 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
         retryingRail: key,
         notice: 'retrying rail $key…',
       );
+
+    case OpenRailGrid(rowKey: final key):
+      // Ticket 75 seam: the grid state + route land in #76. No fetch effect —
+      // the grid opens on what the rail already holds.
+      return s.copy(notice: 'open rail grid $key (#76)');
 
     case OpenDetail(meta: final meta):
       s.effects.add('fetch:detail');

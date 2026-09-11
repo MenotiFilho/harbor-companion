@@ -120,6 +120,10 @@ class HomeController extends Notifier<HomeState> {
   /// Re-fetch one failed rail from its local retry card.
   void retryRail(String rowKey) => _dispatch(RetryRail(rowKey));
 
+  /// The tap seam for a rail's title / "See more" card (ticket 75). The grid
+  /// route + snapshot state land in #76, which replaces the reducer handler.
+  void openRailGrid(String rowKey) => _dispatch(OpenRailGrid(rowKey));
+
   void openDetail(Meta meta) => _dispatch(OpenDetail(meta));
 
   void closeDetail() => _dispatch(const CloseDetail());

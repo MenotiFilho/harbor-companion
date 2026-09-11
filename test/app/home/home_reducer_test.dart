@@ -622,4 +622,53 @@ void main() {
       expect(s.renderKeys[1], 'cinemeta:top-movies');
     });
   });
+
+  group('rail cap + see-more trigger (ticket 75)', () {
+    test('visibleItems caps at 20 and keeps the full list in state', () {
+      final rail = RailState(rowKey: firstKey, items: items('x', 25));
+      expect(rail.items, hasLength(25), reason: 'the full list stays for the grid');
+      expect(rail.visibleItems, hasLength(kHomeRailCap));
+      expect(rail.visibleItems.first.id, 'x:0');
+      expect(rail.visibleItems.last.id, 'x:19');
+    });
+
+    test('a rail at or under the cap keeps every item visible', () {
+      final rail = RailState(rowKey: firstKey, items: items('x', 20));
+      expect(rail.visibleItems, hasLength(20));
+    });
+
+    test('the card shows iff the rail was cut or the source has more', () {
+      expect(homeRailShowsSeeMore(itemCount: 5, hasMore: false), isFalse);
+      expect(homeRailShowsSeeMore(itemCount: 20, hasMore: false), isFalse);
+      expect(homeRailShowsSeeMore(itemCount: 20, hasMore: true), isTrue);
+      expect(homeRailShowsSeeMore(itemCount: 21, hasMore: false), isTrue);
+    });
+
+    test('a cached rail carries its persisted hasMore into state', () {
+      final start = started();
+      final s = homeReduce(
+        start,
+        CacheLoaded(start.request, {
+          firstKey: CachedRail(items: items('c'), hasMore: true, updatedAt: 1),
+        }),
+      );
+      expect(s.rails[firstKey]!.hasMore, isTrue);
+      expect(s.rails[firstKey]!.showsSeeMore, isTrue);
+    });
+
+    test('the fetched hasMore drives the card for an exactly-20 rail', () {
+      final s = fold(
+        started(),
+        HomeRailLoaded(firstKey, 'Top Movies', items('x', 20), hasMore: true),
+      );
+      expect(s.rails[firstKey]!.visibleItems, hasLength(20));
+      expect(s.rails[firstKey]!.showsSeeMore, isTrue);
+    });
+
+    test('OpenRailGrid is the tap seam and emits no fetch effect', () {
+      final s = homeReduce(started(), const OpenRailGrid(firstKey));
+      expect(drain(s), isEmpty);
+      expect(s.notice, contains(firstKey));
+    });
+  });
 }

@@ -26,6 +26,9 @@ class _StubHomeController extends HomeController {
   /// When set, [refresh] waits on it so a test can hold the round in flight.
   Completer<void>? refreshGate;
   final List<String> retried = [];
+
+  /// Rail keys whose title / "See more" card was tapped (ticket 75 seam).
+  final List<String> openedRails = [];
   _StubHomeController(this.state);
 
   @override
@@ -45,6 +48,9 @@ class _StubHomeController extends HomeController {
 
   @override
   void retryRail(String rowKey) => retried.add(rowKey);
+
+  @override
+  void openRailGrid(String rowKey) => openedRails.add(rowKey);
 }
 
 const twoRows = CatalogRequest(
@@ -360,6 +366,84 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byType(SnackBar), findsNothing);
+    });
+  });
+
+  group('rail cap + see-more card (ticket 75)', () {
+    List<Meta> many(int n) =>
+        [for (var i = 0; i < n; i++) movie(id: 'tt$i', name: 'Movie $i')];
+
+    HomeState oneRail(List<Meta> items, {bool hasMore = false}) => HomeState(
+          request: const CatalogRequest(rowOrder: ['cinemeta:top-movies']),
+          rails: {
+            'cinemeta:top-movies': RailState(
+              rowKey: 'cinemeta:top-movies',
+              title: 'Top Movies',
+              items: items,
+              status: RailStatus.loaded,
+              hasMore: hasMore,
+            ),
+          },
+        );
+
+    testWidgets('renders at most 20 items and shows the card when cut',
+        (tester) async {
+      await tester.binding.setSurfaceSize(const Size(2600, 600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await tester.pumpWidget(_app(oneRail(many(25))));
+
+      expect(find.byType(PosterCard), findsNWidgets(20));
+      expect(find.text('See more'), findsOneWidget);
+      expect(find.text('Movie 24'), findsNothing, reason: 'capped out of the rail');
+      expect(find.text('Movie 19'), findsOneWidget);
+    });
+
+    testWidgets('a short rail with no source continuation hides the card',
+        (tester) async {
+      await tester.pumpWidget(_app(oneRail(many(5))));
+      expect(find.byType(PosterCard), findsNWidgets(5));
+      expect(find.text('See more'), findsNothing);
+    });
+
+    testWidgets('exactly 20 items with no continuation hides the card',
+        (tester) async {
+      await tester.binding.setSurfaceSize(const Size(2600, 600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(_app(oneRail(many(20))));
+      expect(find.byType(PosterCard), findsNWidgets(20));
+      expect(find.text('See more'), findsNothing);
+    });
+
+    testWidgets('exactly 20 items with a source continuation shows the card',
+        (tester) async {
+      await tester.binding.setSurfaceSize(const Size(2600, 600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(_app(oneRail(many(20), hasMore: true)));
+      expect(find.byType(PosterCard), findsNWidgets(20));
+      expect(find.text('See more'), findsOneWidget);
+    });
+
+    testWidgets('the rail title is always tappable, even without the card',
+        (tester) async {
+      final controller = _StubHomeController(oneRail(many(3)));
+      await tester.pumpWidget(_app(controller.state, controller: controller));
+
+      expect(find.text('See more'), findsNothing);
+      await tester.tap(find.text('Top Movies'));
+      await tester.pump();
+
+      expect(controller.openedRails, ['cinemeta:top-movies']);
+    });
+
+    testWidgets('tapping the See more card opens the rail', (tester) async {
+      final controller = _StubHomeController(oneRail(many(3), hasMore: true));
+      await tester.pumpWidget(_app(controller.state, controller: controller));
+
+      await tester.tap(find.text('See more'));
+      await tester.pump();
+
+      expect(controller.openedRails, ['cinemeta:top-movies']);
     });
   });
 

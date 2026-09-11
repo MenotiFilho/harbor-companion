@@ -11,6 +11,12 @@
 // spike (#8) proved: sustained 60fps via lazy rails + raised `ImageCache` limits
 // (set app-wide in main()).
 //
+// Each rail renders at most `kHomeRailCap` (20) items (ticket 75, ADR-0009): a
+// render-time slice over the full source page, which stays in state/cache for
+// the grid. When the rail was cut or its source reports more, a trailing "See
+// more" card appears, and the rail title is always tappable; both open the
+// dedicated grid route (#76).
+//
 // Tapping a poster opens the detail page via the reducer's `openDetail`, then
 // pushes the detail route.
 
@@ -50,6 +56,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   void _retryRail(String rowKey) =>
       ref.read(homeControllerProvider.notifier).retryRail(rowKey);
+
+  /// The rail title / "See more" tap seam (ticket 75); the grid route is #76.
+  void _openRail(String rowKey) =>
+      ref.read(homeControllerProvider.notifier).openRailGrid(rowKey);
 
   /// The pull gesture (ADR-0008): starts a round or joins the one in flight,
   /// and keeps the indicator up until every planned rail settles. A short
@@ -100,6 +110,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           rail: state.rails[rowKey],
           rowKey: rowKey,
           onRetry: () => _retryRail(rowKey),
+          onOpen: () => _openRail(rowKey),
         );
       },
     );
@@ -134,8 +145,14 @@ class _RailBlock extends StatelessWidget {
   final RailState? rail;
   final String rowKey;
   final VoidCallback onRetry;
+  final VoidCallback onOpen;
 
-  const _RailBlock({required this.rail, required this.rowKey, required this.onRetry});
+  const _RailBlock({
+    required this.rail,
+    required this.rowKey,
+    required this.onRetry,
+    required this.onOpen,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -145,6 +162,8 @@ class _RailBlock extends StatelessWidget {
         row: HomeRow(rowKey, current.title, current.items),
         fromCache: current.fromCache,
         updatedAt: current.updatedAt,
+        hasMore: current.hasMore,
+        onOpen: onOpen,
       );
     }
     if (current != null && current.status == RailStatus.failed) {
@@ -244,45 +263,106 @@ class HomeRowRail extends StatelessWidget {
   /// The cache write time (ms since epoch) the badge renders; null for fresh.
   final int? updatedAt;
 
+  /// The source's "there is more than this page" signal (ticket 75). Combined
+  /// with the 20-item render cap it decides the "See more" card.
+  final bool hasMore;
+
+  /// The tap seam for the title and the "See more" card (ticket 75); #76 opens
+  /// the dedicated grid route from it. Required so the title is always tappable.
+  final VoidCallback onOpen;
+
   const HomeRowRail({
     super.key,
     required this.row,
+    required this.onOpen,
     this.fromCache = false,
     this.updatedAt,
+    this.hasMore = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    // Cap at render time: the full list stays in `row.items` for the grid.
+    final visible = homeRailVisibleItems(row.items);
+    final showSeeMore =
+        homeRailShowsSeeMore(itemCount: row.items.length, hasMore: hasMore);
     return SizedBox(
       height: kRowExtent,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Row(
-              children: [
-                Flexible(
-                  child: Text(
-                    row.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleMedium,
+          InkWell(
+            onTap: onOpen,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      row.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
                   ),
-                ),
-                if (fromCache) HomeRailAgeBadge(updatedAt: updatedAt),
-              ],
+                  if (fromCache) HomeRailAgeBadge(updatedAt: updatedAt),
+                ],
+              ),
             ),
           ),
           Expanded(
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              itemCount: row.items.length,
-              itemBuilder: (context, j) => PosterCard(meta: row.items[j]),
+              itemCount: visible.length + (showSeeMore ? 1 : 0),
+              itemBuilder: (context, j) => j < visible.length
+                  ? PosterCard(meta: visible[j])
+                  : _SeeMoreCard(onTap: onOpen),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The "See more" card at the end of a capped rail (ticket 75, ADR-0009): a
+/// poster-shaped affordance that opens the rail's dedicated grid (#76). Shown
+/// iff the rail was cut at [kHomeRailCap] or its source reports more.
+class _SeeMoreCard extends StatelessWidget {
+  final VoidCallback? onTap;
+  const _SeeMoreCard({this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      width: 110,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Container(
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(Icons.more_horiz, color: scheme.onSurfaceVariant),
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              'See more',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
       ),
     );
   }

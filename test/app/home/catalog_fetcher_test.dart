@@ -790,4 +790,122 @@ void main() {
       expect(seriesGets, 2, reason: 'a failed rail gets exactly one retry');
     });
   });
+
+  group('per-source hasMore (ticket 75)', () {
+    String cinemeta(List<String> ids) => jsonEncode({
+          'metas': [
+            for (final id in ids) {'id': id, 'type': 'movie', 'name': id},
+          ],
+        });
+
+    String tmdbPage({
+      required int page,
+      required int totalPages,
+      int count = 20,
+    }) =>
+        jsonEncode({
+          'page': page,
+          'total_pages': totalPages,
+          'results': [
+            for (var i = 0; i < count; i++) {'id': i, 'title': 'T$i'},
+          ],
+        });
+
+    test('parseTmdbPageResponse reads the page cursor', () {
+      final parsed = parseTmdbPageResponse(
+        tmdbPage(page: 2, totalPages: 5, count: 3),
+        'movie',
+      );
+      expect(parsed.items, hasLength(3));
+      expect(parsed.page, 2);
+      expect(parsed.totalPages, 5);
+      expect(parsed.hasMore, isTrue);
+      expect(
+        parseTmdbPageResponse(tmdbPage(page: 5, totalPages: 5), 'movie').hasMore,
+        isFalse,
+      );
+    });
+
+    test('a response without page/total_pages is treated as the end', () {
+      final parsed = parseTmdbPageResponse(jsonEncode({'results': []}), 'movie');
+      expect(parsed.hasMore, isFalse);
+    });
+
+    test('stremboxdHasMore: a full 100 page has more, a short page ends', () {
+      expect(stremboxdHasMore(100), isTrue);
+      expect(stremboxdHasMore(101), isTrue);
+      expect(stremboxdHasMore(99), isFalse);
+      expect(stremboxdHasMore(0), isFalse);
+    });
+
+    test('Cinemeta rows always report hasMore (skip is unbounded)', () async {
+      final fetcher = HttpCatalogFetcher(get: (url) async => cinemeta(['tt1']));
+      final outcomes = await fetcher
+          .fetchRails(const CatalogRequest(rowOrder: ['cinemeta:top-movies']))
+          .toList();
+      expect((outcomes.single as HomeRailLoaded).hasMore, isTrue);
+    });
+
+    test('a TMDB list row reports hasMore from page < total_pages', () async {
+      Future<bool> hasMore(int page, int totalPages) async {
+        final fetcher = HttpCatalogFetcher(
+          get: (url) async =>
+              tmdbPage(page: page, totalPages: totalPages, count: 3),
+        );
+        final outcomes = await fetcher
+            .fetchRails(const CatalogRequest(
+              tmdbKey: 'key',
+              rowOrder: ['tmdb:popular-movies'],
+            ))
+            .toList();
+        return (outcomes.single as HomeRailLoaded).hasMore;
+      }
+
+      expect(await hasMore(1, 3), isTrue);
+      expect(await hasMore(3, 3), isFalse);
+    });
+
+    test('a /trending row never reports hasMore, even as page 1 of 1000',
+        () async {
+      final fetcher = HttpCatalogFetcher(
+        get: (url) async => tmdbPage(page: 1, totalPages: 1000),
+      );
+      final outcomes = await fetcher
+          .fetchRails(const CatalogRequest(
+            tmdbKey: 'key',
+            rowOrder: ['tmdb:trending-movies'],
+          ))
+          .toList();
+      expect((outcomes.single as HomeRailLoaded).hasMore, isFalse);
+    });
+
+    test('a Stremboxd page of 100 has more; a short page is the end', () async {
+      const active = LetterboxdConfig(
+        manifestUrl: 'https://api.stremboxd.com/stremio/tok/manifest.json',
+        enabledCatalogIds: {'letterboxd-watchlist'},
+      );
+      Future<bool> hasMore(int count) async {
+        final fetcher = HttpCatalogFetcher(get: (url) async {
+          if (url.path.endsWith('/manifest.json')) {
+            return jsonEncode({
+              'catalogs': [
+                {'id': 'letterboxd-watchlist', 'type': 'movie', 'name': 'Watchlist'},
+              ],
+            });
+          }
+          return cinemeta([for (var i = 0; i < count; i++) 'tt$i']);
+        });
+        final outcomes = await fetcher
+            .fetchRails(const CatalogRequest(
+              letterboxd: active,
+              rowOrder: ['letterboxd:letterboxd-watchlist'],
+            ))
+            .toList();
+        return (outcomes.single as HomeRailLoaded).hasMore;
+      }
+
+      expect(await hasMore(100), isTrue);
+      expect(await hasMore(42), isFalse);
+    });
+  });
 }

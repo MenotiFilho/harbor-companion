@@ -18,6 +18,23 @@
 
 import 'meta.dart';
 
+/// The rail render cap (ticket 75, ADR-0009): at most this many items render in
+/// the Home rail. The cap is a *render* slice over the full source page — the
+/// whole list stays in state/cache so the grid (#76) opens instantly on the
+/// remainder.
+const int kHomeRailCap = 20;
+
+/// The items a rail actually renders: the first [kHomeRailCap] of [items]. The
+/// full [items] list is never trimmed.
+List<Meta> homeRailVisibleItems(List<Meta> items) =>
+    items.length > kHomeRailCap ? items.sublist(0, kHomeRailCap) : items;
+
+/// Whether a rail shows the "See more" card: it was cut at the cap, or the
+/// source reports there is more (ticket 75, ADR-0009). An exactly-20-item source
+/// page (TMDB) still shows the card when [hasMore] holds.
+bool homeRailShowsSeeMore({required int itemCount, required bool hasMore}) =>
+    itemCount > kHomeRailCap || hasMore;
+
 /// The result of attempting one planned Home rail. Sealed so the reducer's
 /// commit switch is exhaustive.
 sealed class HomeRailOutcome {
@@ -27,8 +44,9 @@ sealed class HomeRailOutcome {
 
 /// The rail [rowKey] loaded under [title] with [items]. Empty [items] is a valid
 /// `loaded` outcome — the rail commits empty and is removed from the Home.
-/// [hasMore] is the source's own "there is more than this page" signal (ticket
-/// 72 carries it into the cache entry; the render cap/see-more is #75).
+/// [hasMore] is the source's own "there is more than this page" signal: the
+/// fetcher computes it per source (ticket 75), the cache entry persists it, and
+/// the rail's render cap / "See more" card reads it.
 class HomeRailLoaded extends HomeRailOutcome {
   final String title;
   final List<Meta> items;
@@ -80,6 +98,13 @@ class RailState {
   });
 
   bool get hasItems => items.isNotEmpty;
+
+  /// The items the rail renders — the full [items] capped at [kHomeRailCap].
+  List<Meta> get visibleItems => homeRailVisibleItems(items);
+
+  /// Whether this rail shows the "See more" card (ticket 75).
+  bool get showsSeeMore =>
+      homeRailShowsSeeMore(itemCount: items.length, hasMore: hasMore);
 
   RailState copyWith({
     String? title,

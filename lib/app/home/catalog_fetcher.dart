@@ -30,6 +30,16 @@ const String cinemetaBase = 'https://v3-cinemeta.strem.io';
 const String tmdbBase = 'https://api.themoviedb.org/3';
 const String tmdbImageBase = 'https://image.tmdb.org/t/p';
 
+/// The Stremio addon protocol's standard catalog page size. Stremboxd (and
+/// Cinemeta, though it is unbounded) slices catalogs in windows of this size: a
+/// full page means there is more, a shorter one is the end of the catalog
+/// (ticket 75, ADR-0009).
+const int kStremboxdPageSize = 100;
+
+/// Whether a Stremboxd/Stremio catalog page has a continuation: a full
+/// [kStremboxdPageSize] page means more may exist, a short page is the end.
+bool stremboxdHasMore(int itemCount) => itemCount >= kStremboxdPageSize;
+
 // ---------------------------------------------------------------------------
 // Pure mappers (pinned to the upstream JSON shapes; tested without network)
 // ---------------------------------------------------------------------------
@@ -81,17 +91,44 @@ Meta parseTmdbMeta(Map<String, dynamic> j, String type) {
   );
 }
 
-/// Parses a TMDB paged response `{ "results": [...] }`.
-List<Meta> parseTmdbPage(String raw, String type) {
-  final decoded = jsonDecode(raw);
-  if (decoded is! Map<String, dynamic>) return const [];
-  final results = decoded['results'];
-  if (results is! List) return const [];
-  return [
-    for (final r in results)
-      if (r is Map<String, dynamic>) parseTmdbMeta(r, type),
-  ];
+/// A parsed TMDB paged response: the page's items plus the cursor fields the
+/// `hasMore` rule reads (`page < total_pages`, ticket 75, ADR-0009). A response
+/// without the fields is treated as page 1 of 1 — no continuation.
+class TmdbPage {
+  final List<Meta> items;
+  final int page;
+  final int totalPages;
+
+  const TmdbPage({
+    required this.items,
+    required this.page,
+    required this.totalPages,
+  });
+
+  bool get hasMore => page < totalPages;
 }
+
+/// Parses a TMDB paged response `{ page, total_pages, results: [...] }`.
+TmdbPage parseTmdbPageResponse(String raw, String type) {
+  final decoded = jsonDecode(raw);
+  if (decoded is! Map<String, dynamic>) {
+    return const TmdbPage(items: [], page: 1, totalPages: 1);
+  }
+  final results = decoded['results'];
+  final items = results is List
+      ? [
+          for (final r in results)
+            if (r is Map<String, dynamic>) parseTmdbMeta(r, type),
+        ]
+      : <Meta>[];
+  final page = (decoded['page'] as num?)?.toInt() ?? 1;
+  final totalPages = (decoded['total_pages'] as num?)?.toInt() ?? page;
+  return TmdbPage(items: items, page: page, totalPages: totalPages);
+}
+
+/// Parses a TMDB paged response's `results` array.
+List<Meta> parseTmdbPage(String raw, String type) =>
+    parseTmdbPageResponse(raw, type).items;
 
 /// Parses a Cinemeta detail response `{ "meta": {...} }`, deriving seasons from
 /// the `videos[]` array (each video carries season/episode) — the keyless path.
@@ -461,8 +498,9 @@ class HttpCatalogFetcher implements CatalogFetcher {
     try {
       final builtIn = builtInRowById(key);
       if (builtIn != null) {
-        final metas = await _fetchBuiltInRow(builtIn, request.tmdbKey, railTimeout);
-        return HomeRailLoaded(key, builtIn.title, metas);
+        final (metas, hasMore) =
+            await _fetchBuiltInRow(builtIn, request.tmdbKey, railTimeout);
+        return HomeRailLoaded(key, builtIn.title, metas, hasMore: hasMore);
       }
       final catalogId = letterboxdCatalogId(key);
       if (catalogId == null) return HomeRailAbsent(key);
@@ -474,15 +512,22 @@ class HttpCatalogFetcher implements CatalogFetcher {
       final url = letterboxdCatalogUrl(request.letterboxd.manifestUrl, catalog);
       if (url == null) return HomeRailAbsent(key);
       final metas = parseCinemetaCatalog(await _get(Uri.parse(url), railTimeout));
-      return HomeRailLoaded(key, catalog.name, metas);
+      // Stremboxd pages at 100: a full page has more, a short one is the end.
+      return HomeRailLoaded(key, catalog.name, metas,
+          hasMore: stremboxdHasMore(metas.length));
     } catch (error) {
       return HomeRailFailed(key, error);
     }
   }
 
-  /// Fetches a built-in rail. Throws on an HTTP/parse failure (so the rail
+  /// Fetches a built-in rail, returning its items plus the source's `hasMore`
+  /// signal (ticket 75, ADR-0009). Throws on an HTTP/parse failure (so the rail
   /// becomes [HomeRailFailed]); an empty catalog is a legitimate empty result.
-  Future<List<Meta>> _fetchBuiltInRow(
+  ///
+  /// `hasMore` is per source: Cinemeta's `skip` is unbounded (always more),
+  /// TMDB follows `page < total_pages`, and the `/trending/*` rows expose no
+  /// page cursor so they are always `false`.
+  Future<(List<Meta>, bool)> _fetchBuiltInRow(
     BuiltInRow row,
     String? tmdbKey,
     Duration railTimeout,
@@ -491,9 +536,11 @@ class HttpCatalogFetcher implements CatalogFetcher {
         ? '$cinemetaBase${row.path}'
         : '$tmdbBase${row.path}?api_key=$tmdbKey';
     final raw = await _get(Uri.parse(url), railTimeout);
-    return tmdbKey == null
-        ? parseCinemetaCatalog(raw)
-        : parseTmdbPage(raw, row.type);
+    if (tmdbKey == null) {
+      return (parseCinemetaCatalog(raw), row.paginatable);
+    }
+    final page = parseTmdbPageResponse(raw, row.type);
+    return (page.items, row.paginatable && page.hasMore);
   }
 
   @override
