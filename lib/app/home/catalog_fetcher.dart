@@ -252,15 +252,48 @@ abstract interface class CatalogFetcher {
   Future<DetailMeta> fetchDetail(String type, String id, String? tmdbKey);
 }
 
+/// Adaptive per-rail timeout + retry policy (ticket 73).
+///
+/// Calibrated on the field measurement from #51: a warm Stremboxd rail answers
+/// in ~0.4s, while a cold one can take 9–33s. A rail that already has a cached
+/// copy can therefore fail fast ([warm], 8s) — the cached copy stays on screen
+/// and is badged; a rail with no fallback is given the long [cold] timeout (45s)
+/// before it is marked failed. A failed rail is retried exactly once after
+/// [retryBackoff] (~1s), so a transient blip does not drop it until the next
+/// round.
+class HomeRailTimeouts {
+  final Duration cold;
+  final Duration warm;
+  final Duration retryBackoff;
+
+  const HomeRailTimeouts({
+    this.cold = const Duration(seconds: 45),
+    this.warm = const Duration(seconds: 8),
+    this.retryBackoff = const Duration(seconds: 1),
+  });
+
+  /// The timeout for a rail that does/does not have a cached copy to fall back
+  /// to. Warm is short because the cache already covers the screen; cold is long
+  /// because the source may legitimately be slow and there is nothing to show.
+  Duration forCache({required bool hasCache}) => hasCache ? warm : cold;
+}
+
 /// Real catalog fetcher over dart:io HTTP. No `/api-proxy` — the phone hits the
 /// upstreams directly (wire-contract §6).
 class HttpCatalogFetcher implements CatalogFetcher {
+  /// Short HTTP timeout for the non-rail requests that do not use the adaptive
+  /// policy: the Stremboxd manifest and detail. Per-rail timeouts come from
+  /// [timeouts].
   final Duration timeout;
+
+  /// Adaptive per-rail timeout + retry policy (ticket 73).
+  final HomeRailTimeouts timeouts;
 
   /// Optional manifest cache (ticket 72). When set, a successful manifest fetch
   /// is written as its own entry, and a failed fresh fetch falls back to the
   /// cached manifest for the same URL — so a manifest timeout no longer fails
-  /// every Letterboxd rail. Null in the pure wire-shape tests.
+  /// every Letterboxd rail. Its presence also marks a rail "warm" for the
+  /// adaptive timeout. Null in the pure wire-shape tests.
   final HomeCacheStore? cache;
 
   /// Clock for the manifest entry's `updatedAt` (ms since epoch). Tests pin it.
@@ -273,6 +306,7 @@ class HttpCatalogFetcher implements CatalogFetcher {
 
   HttpCatalogFetcher({
     this.timeout = const Duration(seconds: 8),
+    this.timeouts = const HomeRailTimeouts(),
     this.cache,
     int Function()? nowMs,
     Future<String> Function(Uri url)? get,
@@ -301,7 +335,7 @@ class HttpCatalogFetcher implements CatalogFetcher {
     if (builtInKeys.isNotEmpty) {
       fetchRailOutcomesConcurrently(
         builtInKeys,
-        (key) => _fetchOutcome(key, request, null, null),
+        (key) => _fetchOutcomeWithRetry(key, request, null, null),
       ).listen(forward);
     }
     if (letterboxdKeys.isNotEmpty) {
@@ -309,7 +343,7 @@ class HttpCatalogFetcher implements CatalogFetcher {
         final (catalogsById, manifestError) = resolved;
         fetchRailOutcomesConcurrently(
           letterboxdKeys,
-          (key) => _fetchOutcome(key, request, catalogsById, manifestError),
+          (key) => _fetchOutcomeWithRetry(key, request, catalogsById, manifestError),
         ).listen(forward);
       });
     }
@@ -323,7 +357,54 @@ class HttpCatalogFetcher implements CatalogFetcher {
   ) async {
     final (catalogsById, manifestError) =
         await _resolveManifest(request, [rowKey]);
-    return _fetchOutcome(rowKey, request, catalogsById, manifestError);
+    return _fetchOutcomeWithRetry(rowKey, request, catalogsById, manifestError);
+  }
+
+  /// Fetches one rail with the cache-aware timeout, retrying exactly once when
+  /// it fails. The timeout comes from the rail's cache presence: a rail with a
+  /// cached copy gets the short [HomeRailTimeouts.warm] (fail fast; the cache
+  /// stays on screen), a cold one the long [HomeRailTimeouts.cold] (the source
+  /// may legitimately take 30s+). Never throws — a second failure is the rail's
+  /// final [HomeRailFailed], and it fails only this rail.
+  Future<HomeRailOutcome> _fetchOutcomeWithRetry(
+    String key,
+    CatalogRequest request,
+    Map<String, LetterboxdCatalog>? catalogsById,
+    Object? manifestError,
+  ) async {
+    final hasCache = await _hasCachedRail(key, request);
+    final railTimeout = timeouts.forCache(hasCache: hasCache);
+    var outcome = await _fetchOutcome(
+      key,
+      request,
+      catalogsById,
+      manifestError,
+      railTimeout,
+    );
+    if (outcome is HomeRailFailed) {
+      await Future<void>.delayed(timeouts.retryBackoff);
+      outcome = await _fetchOutcome(
+        key,
+        request,
+        catalogsById,
+        manifestError,
+        railTimeout,
+      );
+    }
+    return outcome;
+  }
+
+  /// Whether [key] has a cache entry to fall back to, which selects the short
+  /// warm timeout. A cache read failure is treated as "no cache" (the long
+  /// timeout), never as a rail failure.
+  Future<bool> _hasCachedRail(String key, CatalogRequest request) async {
+    final store = cache;
+    if (store == null) return false;
+    try {
+      return await store.loadRail(cacheIdentityFor(key, request)) != null;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Fetches the Stremboxd manifest when any planned key is a Letterboxd rail.
@@ -338,7 +419,7 @@ class HttpCatalogFetcher implements CatalogFetcher {
     if (!keys.any(isLetterboxdRowKey)) return (null, null);
     final url = request.letterboxd.manifestUrl.trim();
     try {
-      final raw = await _get(Uri.parse(url));
+      final raw = await _get(Uri.parse(url), timeout);
       final manifest = parseLetterboxdManifest(raw);
       // A body that yields no catalogs (e.g. an HTML error page served 200) is
       // treated as a failure so the cached manifest can still serve.
@@ -375,11 +456,12 @@ class HttpCatalogFetcher implements CatalogFetcher {
     CatalogRequest request,
     Map<String, LetterboxdCatalog>? catalogsById,
     Object? manifestError,
+    Duration railTimeout,
   ) async {
     try {
       final builtIn = builtInRowById(key);
       if (builtIn != null) {
-        final metas = await _fetchBuiltInRow(builtIn, request.tmdbKey);
+        final metas = await _fetchBuiltInRow(builtIn, request.tmdbKey, railTimeout);
         return HomeRailLoaded(key, builtIn.title, metas);
       }
       final catalogId = letterboxdCatalogId(key);
@@ -391,7 +473,7 @@ class HttpCatalogFetcher implements CatalogFetcher {
       if (catalog == null) return HomeRailAbsent(key);
       final url = letterboxdCatalogUrl(request.letterboxd.manifestUrl, catalog);
       if (url == null) return HomeRailAbsent(key);
-      final metas = parseCinemetaCatalog(await _get(Uri.parse(url)));
+      final metas = parseCinemetaCatalog(await _get(Uri.parse(url), railTimeout));
       return HomeRailLoaded(key, catalog.name, metas);
     } catch (error) {
       return HomeRailFailed(key, error);
@@ -400,11 +482,15 @@ class HttpCatalogFetcher implements CatalogFetcher {
 
   /// Fetches a built-in rail. Throws on an HTTP/parse failure (so the rail
   /// becomes [HomeRailFailed]); an empty catalog is a legitimate empty result.
-  Future<List<Meta>> _fetchBuiltInRow(BuiltInRow row, String? tmdbKey) async {
+  Future<List<Meta>> _fetchBuiltInRow(
+    BuiltInRow row,
+    String? tmdbKey,
+    Duration railTimeout,
+  ) async {
     final url = tmdbKey == null
         ? '$cinemetaBase${row.path}'
         : '$tmdbBase${row.path}?api_key=$tmdbKey';
-    final raw = await _get(Uri.parse(url));
+    final raw = await _get(Uri.parse(url), railTimeout);
     return tmdbKey == null
         ? parseCinemetaCatalog(raw)
         : parseTmdbPage(raw, row.type);
@@ -413,17 +499,17 @@ class HttpCatalogFetcher implements CatalogFetcher {
   @override
   Future<DetailMeta> fetchDetail(String type, String id, String? tmdbKey) async {
     if (!usesTmdbDetail(tmdbKey, id)) {
-      final raw = await _get(Uri.parse('$cinemetaBase/meta/$type/$id.json'));
+      final raw = await _get(Uri.parse('$cinemetaBase/meta/$type/$id.json'), timeout);
       return parseCinemetaDetail(raw);
     }
     final key = tmdbKey!;
     // id is `tmdb:movie:<id>` / `tmdb:tv:<id>`; the numeric id is the last segment.
     final idNum = id.substring(id.lastIndexOf(':') + 1);
     if (type == 'movie') {
-      final raw = await _get(Uri.parse('$tmdbBase/movie/$idNum?api_key=$key'));
+      final raw = await _get(Uri.parse('$tmdbBase/movie/$idNum?api_key=$key'), timeout);
       return DetailMeta(meta: parseTmdbDetail(raw, 'movie'));
     }
-    final raw = await _get(Uri.parse('$tmdbBase/tv/$idNum?api_key=$key'));
+    final raw = await _get(Uri.parse('$tmdbBase/tv/$idNum?api_key=$key'), timeout);
     final meta = parseTmdbDetail(raw, 'series');
     final seasons = await loadTmdbSeasonEpisodes(
       parseTmdbSeasons(raw),
@@ -434,27 +520,35 @@ class HttpCatalogFetcher implements CatalogFetcher {
 
   Future<List<Episode>> _tmdbEpisodes(String id, int season, String key) async {
     try {
-      final raw = await _get(Uri.parse('$tmdbBase/tv/$id/season/$season?api_key=$key'));
+      final raw = await _get(
+        Uri.parse('$tmdbBase/tv/$id/season/$season?api_key=$key'),
+        timeout,
+      );
       return parseTmdbSeasonEpisodes(raw, season);
     } catch (_) {
       return const [];
     }
   }
 
-  Future<String> _get(Uri url) {
+  Future<String> _get(Uri url, Duration requestTimeout) {
     final override = _getOverride;
-    return override != null ? override(url) : _getReal(url);
+    // The timeout is applied here (not just in the real client) so a hanging
+    // upstream — including the test override — is bounded by the rail's
+    // cache-aware timeout.
+    return override != null
+        ? override(url).timeout(requestTimeout)
+        : _getReal(url, requestTimeout);
   }
 
-  Future<String> _getReal(Uri url) async {
-    final client = HttpClient()..connectionTimeout = timeout;
+  Future<String> _getReal(Uri url, Duration requestTimeout) async {
+    final client = HttpClient()..connectionTimeout = requestTimeout;
     try {
-      final request = await client.getUrl(url);
-      final response = await request.close().timeout(timeout);
+      final request = await client.getUrl(url).timeout(requestTimeout);
+      final response = await request.close().timeout(requestTimeout);
       if (response.statusCode != HttpStatus.ok) {
         throw HttpException('HTTP ${response.statusCode} for $url');
       }
-      return await response.transform(utf8.decoder).join();
+      return await response.transform(utf8.decoder).join().timeout(requestTimeout);
     } finally {
       client.close(force: true);
     }

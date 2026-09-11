@@ -7,6 +7,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harbor_companion/app/home/catalog_fetcher.dart';
@@ -622,6 +623,171 @@ void main() {
           .toList();
 
       expect(outcomes.single, isA<HomeRailFailed>());
+    });
+  });
+
+  group('adaptive timeout + retry (ticket 73)', () {
+    String cinemeta(List<String> ids) => jsonEncode({
+          'metas': [
+            for (final id in ids) {'id': id, 'type': 'movie', 'name': id},
+          ],
+        });
+
+    CatalogRequest keyless({
+      List<String> order = const ['cinemeta:top-movies'],
+    }) =>
+        CatalogRequest(rowOrder: order);
+
+    Meta cached(String id) => Meta(id: id, type: 'movie', name: id);
+
+    test('policy: cold is 45s, warm is 8s, retry backoff is ~1s', () {
+      const policy = HomeRailTimeouts();
+      expect(policy.forCache(hasCache: false), const Duration(seconds: 45));
+      expect(policy.forCache(hasCache: true), const Duration(seconds: 8));
+      expect(policy.retryBackoff, const Duration(seconds: 1));
+    });
+
+    test('a warm rail uses the 8s timeout and a cold rail the 45s one',
+        () async {
+      final warmCache = InMemoryHomeCacheStore();
+      await warmCache.saveRail(
+        const HomeCacheIdentity('cinemeta:top-movies'),
+        CachedRail(items: [cached('cached')], updatedAt: 1),
+      );
+
+      var warmGets = 0;
+      final warmFetcher = HttpCatalogFetcher(
+        cache: warmCache,
+        timeouts: const HomeRailTimeouts(retryBackoff: Duration.zero),
+        get: (url) {
+          warmGets++;
+          return Completer<String>().future; // never answers
+        },
+      );
+      var coldGets = 0;
+      final coldFetcher = HttpCatalogFetcher(
+        cache: InMemoryHomeCacheStore(), // no entry → cold
+        timeouts: const HomeRailTimeouts(retryBackoff: Duration.zero),
+        get: (url) {
+          coldGets++;
+          return Completer<String>().future; // never answers
+        },
+      );
+
+      fakeAsync((async) {
+        HomeRailOutcome? warmOutcome;
+        HomeRailOutcome? coldOutcome;
+        warmFetcher
+            .fetchRail(keyless(), 'cinemeta:top-movies')
+            .then((o) => warmOutcome = o);
+        coldFetcher
+            .fetchRail(keyless(), 'cinemeta:top-movies')
+            .then((o) => coldOutcome = o);
+        async.flushMicrotasks();
+
+        // At 8s the warm rail has timed out and retried; the cold one is still
+        // on its first (45s) attempt.
+        async.elapse(const Duration(seconds: 8));
+        async.flushMicrotasks();
+        expect(warmGets, 2, reason: 'warm rail (8s) timed out and retried');
+        expect(coldGets, 1, reason: 'cold rail (45s) is still fetching at 8s');
+
+        // A further 8s settles the warm rail after exactly one retry.
+        async.elapse(const Duration(seconds: 8));
+        async.flushMicrotasks();
+        expect(warmOutcome, isA<HomeRailFailed>());
+        expect(warmGets, 2, reason: 'exactly one retry');
+        expect(coldOutcome, isNull);
+
+        // Past 45s the cold rail finally times out and retries too.
+        async.elapse(const Duration(seconds: 30));
+        async.flushMicrotasks();
+        expect(coldGets, 2, reason: 'cold rail timed out only after 45s');
+      });
+    });
+
+    test('a failing rail is retried exactly once before HomeRailFailed',
+        () async {
+      var gets = 0;
+      final fetcher = HttpCatalogFetcher(
+        timeouts: const HomeRailTimeouts(retryBackoff: Duration.zero),
+        get: (url) async {
+          gets++;
+          throw Exception('down');
+        },
+      );
+
+      final outcome =
+          await fetcher.fetchRail(keyless(), 'cinemeta:top-movies');
+
+      expect(outcome, isA<HomeRailFailed>());
+      expect(gets, 2, reason: 'the initial attempt + exactly one retry');
+    });
+
+    test('a transient failure recovers on the single retry', () async {
+      var gets = 0;
+      final fetcher = HttpCatalogFetcher(
+        timeouts: const HomeRailTimeouts(retryBackoff: Duration.zero),
+        get: (url) async {
+          gets++;
+          if (gets == 1) throw Exception('blip');
+          return cinemeta(['tt1']);
+        },
+      );
+
+      final outcome =
+          await fetcher.fetchRail(keyless(), 'cinemeta:top-movies');
+
+      expect(outcome, isA<HomeRailLoaded>());
+      expect(gets, 2);
+    });
+
+    test('a rail that loads on the first try is not retried', () async {
+      var gets = 0;
+      final fetcher = HttpCatalogFetcher(
+        get: (url) async {
+          gets++;
+          return cinemeta(['tt1']);
+        },
+      );
+
+      final outcome =
+          await fetcher.fetchRail(keyless(), 'cinemeta:top-movies');
+
+      expect(outcome, isA<HomeRailLoaded>());
+      expect(gets, 1);
+    });
+
+    test('fetchRails retries the failed rail only; the others still load',
+        () async {
+      var movieGets = 0;
+      var seriesGets = 0;
+      final fetcher = HttpCatalogFetcher(
+        timeouts: const HomeRailTimeouts(retryBackoff: Duration.zero),
+        get: (url) async {
+          if (url.path.contains('/series/')) {
+            seriesGets++;
+            throw Exception('500');
+          }
+          movieGets++;
+          return cinemeta(['tt1']);
+        },
+      );
+
+      final outcomes = await fetcher
+          .fetchRails(keyless(order: const [
+            'cinemeta:top-movies',
+            'cinemeta:top-series',
+          ]))
+          .toList();
+
+      expect(outcomes, hasLength(2));
+      expect(outcomes.whereType<HomeRailFailed>().single.rowKey,
+          'cinemeta:top-series');
+      expect(outcomes.whereType<HomeRailLoaded>().single.rowKey,
+          'cinemeta:top-movies');
+      expect(movieGets, 1, reason: 'a loaded rail is not retried');
+      expect(seriesGets, 2, reason: 'a failed rail gets exactly one retry');
     });
   });
 }

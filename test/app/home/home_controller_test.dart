@@ -4,6 +4,7 @@
 // they stream, and the local retry hitting the single-rail fetch seam.
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -94,7 +95,7 @@ class LoggingCacheStore extends InMemoryHomeCacheStore {
 }
 
 ProviderContainer make(
-  RecordingCatalogFetcher fetcher,
+  CatalogFetcher fetcher,
   SettingsStore store, {
   HomeCacheStore? cacheStore,
   int Function()? clock,
@@ -368,6 +369,55 @@ void main() {
         )),
         isNull,
       );
+    });
+  });
+
+  group('adaptive timeout + retry (ticket 73)', () {
+    const firstKey = 'cinemeta:top-movies';
+
+    test('a rail that fails after one retry keeps its cached copy; others load',
+        () async {
+      final cache = InMemoryHomeCacheStore();
+      await cache.saveRail(
+        const HomeCacheIdentity(firstKey),
+        CachedRail(
+          items: [Meta(id: 'cached', type: 'movie', name: 'Cached')],
+          updatedAt: 1000,
+        ),
+      );
+      var movieGets = 0;
+      var seriesGets = 0;
+      final fetcher = HttpCatalogFetcher(
+        cache: cache,
+        timeouts: const HomeRailTimeouts(retryBackoff: Duration.zero),
+        get: (url) async {
+          if (url.path == '/catalog/movie/top.json') {
+            movieGets++;
+            throw Exception('down');
+          }
+          if (url.path == '/catalog/series/top.json') seriesGets++;
+          return jsonEncode({'metas': []});
+        },
+      );
+      final container =
+          make(fetcher, InMemorySettingsStore(), cacheStore: cache);
+      addTearDown(container.dispose);
+
+      container.read(homeControllerProvider.notifier).load();
+      await pumpEventQueue();
+
+      expect(movieGets, 2, reason: 'the failed rail is retried exactly once');
+      expect(seriesGets, 1, reason: 'a loaded rail is not retried');
+
+      final state = container.read(homeControllerProvider);
+      final rail = state.rails[firstKey]!;
+      expect(rail.status, RailStatus.failed);
+      // The previous copy survives the final failure, still badged from cache.
+      expect(rail.items.single.name, 'Cached');
+      expect(rail.fromCache, isTrue);
+      expect(rail.updatedAt, 1000);
+      // The other rails still settle.
+      expect(state.hasPending, isFalse);
     });
   });
 }

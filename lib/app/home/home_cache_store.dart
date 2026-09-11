@@ -148,6 +148,18 @@ List<HomeCacheIdentity> cacheIdentitiesFor(CatalogRequest request) {
   ];
 }
 
+/// The identity a single rail's cache entry lives under for [request]:
+/// `rowKey`, plus the Stremboxd `manifestUrl` for Letterboxd rails. One
+/// definition shared by the controller (cache read/write) and the fetcher
+/// (cache-aware timeout), so they always agree on which entry is "warm".
+HomeCacheIdentity cacheIdentityFor(String rowKey, CatalogRequest request) {
+  final manifestUrl = request.letterboxd.manifestUrl.trim();
+  return HomeCacheIdentity(
+    rowKey,
+    manifestUrl: isLetterboxdRowKey(rowKey) ? manifestUrl : null,
+  );
+}
+
 /// Serializes a rail entry to the versioned on-disk shape. Pure so tests can pin
 /// the wire shape without touching the filesystem.
 String encodeCachedRail(CachedRail rail) => jsonEncode({

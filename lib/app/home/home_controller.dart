@@ -170,12 +170,11 @@ class HomeController extends Notifier<HomeState> {
       // A failed sweep must never block the Home.
     }
     if (!ref.mounted) return;
-    final manifestUrl = request.letterboxd.manifestUrl.trim();
     // Read every planned rail in parallel so a cold open is one disk round, not
     // one per rail; the badge appears as soon as they all land.
     final loaded = await Future.wait([
       for (final key in planHomeRowKeys(request))
-        _loadCachedRail(store, key, manifestUrl),
+        _loadCachedRail(store, key, request),
     ]);
     final cached = <String, CachedRail>{
       for (final entry in loaded)
@@ -188,13 +187,10 @@ class HomeController extends Notifier<HomeState> {
   Future<MapEntry<String, CachedRail?>> _loadCachedRail(
     HomeCacheStore store,
     String key,
-    String manifestUrl,
+    CatalogRequest request,
   ) async {
     try {
-      final rail = await store.loadRail(HomeCacheIdentity(
-        key,
-        manifestUrl: isLetterboxdRowKey(key) ? manifestUrl : null,
-      ));
+      final rail = await store.loadRail(cacheIdentityFor(key, request));
       return MapEntry(key, rail);
     } catch (_) {
       // A bad entry costs one rail.
@@ -207,11 +203,7 @@ class HomeController extends Notifier<HomeState> {
   /// previous entry untouched.
   void _writeCache(HomeRailOutcome outcome, CatalogRequest request) {
     if (outcome is! HomeRailLoaded) return;
-    final manifestUrl = request.letterboxd.manifestUrl.trim();
-    final identity = HomeCacheIdentity(
-      outcome.rowKey,
-      manifestUrl: isLetterboxdRowKey(outcome.rowKey) ? manifestUrl : null,
-    );
+    final identity = cacheIdentityFor(outcome.rowKey, request);
     final entry = CachedRail(
       items: outcome.items,
       hasMore: outcome.hasMore,
