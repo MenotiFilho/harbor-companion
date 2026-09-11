@@ -26,6 +26,29 @@ class Meta {
   });
 
   bool get isSeries => type == 'series';
+
+  /// Serializes the poster/catalog shape the Home caches (ticket 72). Hand-
+  /// written like every other wire mapper in the repo; the cache entry is a
+  /// versioned file, not a network payload.
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'type': type,
+        'name': name,
+        'poster': poster,
+        'background': background,
+        'description': description,
+        'releaseInfo': releaseInfo,
+      };
+
+  factory Meta.fromJson(Map<String, dynamic> j) => Meta(
+        id: j['id'] as String? ?? '',
+        type: j['type'] as String? ?? 'movie',
+        name: j['name'] as String? ?? '',
+        poster: j['poster'] as String?,
+        background: j['background'] as String?,
+        description: j['description'] as String?,
+        releaseInfo: j['releaseInfo'] as String?,
+      );
 }
 
 /// A titled row of posters, rendered as a horizontal rail. [rowKey] is the

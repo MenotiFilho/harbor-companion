@@ -14,6 +14,10 @@
 //   - **Derived global states** (ticket 71): the Home renders one block per
 //     planned rail; "empty Home" and "everything failed" are compositions of the
 //     per-rail state, never a blocking `HomeStatus`.
+//   - **Cache-first** (ticket 72, ADR-0004): `CacheLoaded` seeds pending rails
+//     from disk before the network round, marked `fromCache` with the entry's
+//     `updatedAt`; a fresh `loaded` outcome replaces the copy and clears the
+//     badge. A revalidation never clobbers content already on screen.
 //   - **TMDB-if-key-else-Cinemeta** rows, auto-upgrading the moment a `tmdbKey`
 //     lands in a snapshot (and downgrading back to Cinemeta if it is removed).
 //   - **Catalog sources on/off** (ticket 41): rows carry the [CatalogRequest] in
@@ -34,7 +38,9 @@ library;
 
 import '../letterboxd/letterboxd.dart';
 import 'catalog_request.dart';
+import 'home_cache_store.dart';
 import 'home_rail.dart';
+import 'home_rows.dart';
 import 'meta.dart';
 
 enum DetailStatus { loading, ready, failed }
@@ -242,6 +248,16 @@ class CatalogSourcesChanged extends HomeEvent {
   const CatalogSourcesChanged(this.request);
 }
 
+/// Seeds the planned rails from the disk cache before the network round. Each
+/// cached rail renders immediately as `fromCache` with its age; a fresh outcome
+/// replaces it in place. Only rails still pending with nothing on screen are
+/// seeded, so a revalidation never clobbers content already shown.
+class CacheLoaded extends HomeEvent {
+  final CatalogRequest request;
+  final Map<String, CachedRail> rails; // by rowKey
+  const CacheLoaded(this.request, this.rails);
+}
+
 /// One planned rail resolved. [round] + [request] pin the round that produced
 /// it; an outcome from a superseded round is dropped.
 class RailOutcomeReceived extends HomeEvent {
@@ -353,6 +369,32 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
       if (request == s.request) return s.copy(notice: 'catalog sources unchanged');
       return _startRound(s, request, 'catalog sources changed → refetching rails');
 
+    case CacheLoaded(request: final request, rails: final cached):
+      if (request != s.request) {
+        return s.copy(notice: 'stale cache — dropped');
+      }
+      final rails = Map<String, RailState>.from(s.rails);
+      for (final entry in cached.entries) {
+        final key = entry.key;
+        if (!s.plannedKeys.contains(key)) continue;
+        final prev = rails[key];
+        // Never clobber a rail that already has content or has settled this
+        // round: cache-first only fills a pending empty rail.
+        if (prev != null && (prev.hasItems || prev.status != RailStatus.pending)) {
+          continue;
+        }
+        rails[key] = RailState(
+          rowKey: key,
+          title: homeRowLabel(key),
+          items: entry.value.items,
+          status: RailStatus.loaded,
+          fromCache: true,
+          updatedAt: entry.value.updatedAt,
+          hasMore: entry.value.hasMore,
+        );
+      }
+      return s.copy(rails: rails, notice: '${cached.length} cached rails seeded');
+
     case RailOutcomeReceived(
         outcome: final outcome,
         request: final request,
@@ -364,12 +406,13 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
       final rails = Map<String, RailState>.from(s.rails);
       final prev = rails[outcome.rowKey];
       switch (outcome) {
-        case HomeRailLoaded(title: final title, items: final items):
+        case HomeRailLoaded(title: final title, items: final items, hasMore: final hasMore):
           rails[outcome.rowKey] = RailState(
             rowKey: outcome.rowKey,
             title: title,
             items: items,
             status: RailStatus.loaded,
+            hasMore: hasMore,
           );
         case HomeRailFailed(error: final error):
           rails[outcome.rowKey] = RailState(
@@ -379,6 +422,10 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
             items: prev?.items ?? const [],
             status: RailStatus.failed,
             error: '$error',
+            // A cached copy stays badged through a failed revalidation.
+            fromCache: prev?.fromCache ?? false,
+            updatedAt: prev?.updatedAt,
+            hasMore: prev?.hasMore ?? false,
           );
         case HomeRailAbsent():
           rails[outcome.rowKey] = RailState(
@@ -410,6 +457,9 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
           items: prev?.items ?? const [],
           status: RailStatus.failed,
           error: '$error',
+          fromCache: prev?.fromCache ?? false,
+          updatedAt: prev?.updatedAt,
+          hasMore: prev?.hasMore ?? false,
         );
       }
       return s.copy(rails: rails, notice: 'rail stream failed');

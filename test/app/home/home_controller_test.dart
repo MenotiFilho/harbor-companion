@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harbor_companion/app/home/catalog_fetcher.dart';
 import 'package:harbor_companion/app/home/catalog_request.dart';
+import 'package:harbor_companion/app/home/home_cache_store.dart';
 import 'package:harbor_companion/app/home/home_controller.dart';
 import 'package:harbor_companion/app/home/home_rail.dart';
 import 'package:harbor_companion/app/letterboxd/letterboxd.dart';
@@ -42,12 +43,17 @@ class RecordingCatalogFetcher implements CatalogFetcher {
   final List<String> retriedKeys = [];
   final Map<String, HomeRailOutcome Function()> outcomes = {};
 
+  /// Called synchronously when [fetchRails] starts, so a test can interleave a
+  /// cache-read log with the network hand-off.
+  void Function()? onFetch;
+
   HomeRailOutcome _outcome(String key) =>
       outcomes[key]?.call() ??
       HomeRailLoaded(key, 'Row $key', [Meta(id: 'tt-$key', type: 'movie', name: key)]);
 
   @override
   Stream<HomeRailOutcome> fetchRails(CatalogRequest request) {
+    onFetch?.call();
     rowRequests.add(request);
     return Stream.fromIterable([
       for (final key in planHomeRowKeys(request)) _outcome(key),
@@ -68,13 +74,40 @@ class RecordingCatalogFetcher implements CatalogFetcher {
 /// Lets the settings restore + the resulting fetch microtasks settle.
 Future<void> settle() => Future<void>.delayed(Duration.zero);
 
-ProviderContainer make(RecordingCatalogFetcher fetcher, SettingsStore store) =>
+/// Cache store that records its reads/sweeps so a test can prove the cache is
+/// consulted before the network round.
+class LoggingCacheStore extends InMemoryHomeCacheStore {
+  final List<String> log;
+  LoggingCacheStore(this.log);
+
+  @override
+  Future<CachedRail?> loadRail(HomeCacheIdentity identity) {
+    log.add('load:${identity.rowKey}');
+    return super.loadRail(identity);
+  }
+
+  @override
+  Future<void> sweep(Iterable<HomeCacheIdentity> live) {
+    log.add('sweep');
+    return super.sweep(live);
+  }
+}
+
+ProviderContainer make(
+  RecordingCatalogFetcher fetcher,
+  SettingsStore store, {
+  HomeCacheStore? cacheStore,
+  int Function()? clock,
+}) =>
     ProviderContainer(
       overrides: [
         wsTransportProvider.overrideWithValue(FakeTransport()),
         wsKeyStoreProvider.overrideWithValue(InMemoryHostKeyStore()),
         catalogFetcherProvider.overrideWithValue(fetcher),
         settingsStoreProvider.overrideWithValue(store),
+        homeCacheStoreProvider
+            .overrideWithValue(cacheStore ?? InMemoryHomeCacheStore()),
+        if (clock != null) homeCacheClockProvider.overrideWithValue(clock),
       ],
     );
 
@@ -237,5 +270,104 @@ void main() {
       fetcher.rowRequests.last.letterboxd.manifestUrl,
       'https://api.stremboxd.com/stremio/abc/manifest.json',
     );
+  });
+
+  group('per-rail cache (ticket 72)', () {
+    const firstKey = 'cinemeta:top-movies';
+
+    test('reads the cache (and sweeps) before starting the network round',
+        () async {
+      final log = <String>[];
+      final cache = LoggingCacheStore(log);
+      final fetcher = RecordingCatalogFetcher()..onFetch = () => log.add('fetch');
+      final container = make(fetcher, InMemorySettingsStore(), cacheStore: cache);
+      addTearDown(container.dispose);
+
+      container.read(homeControllerProvider.notifier).load();
+      await settle();
+
+      final fetchAt = log.indexOf('fetch');
+      expect(fetchAt, greaterThan(0));
+      expect(log.sublist(0, fetchAt), contains('sweep'));
+      expect(
+        log.sublist(0, fetchAt).any((e) => e.startsWith('load:')),
+        isTrue,
+      );
+    });
+
+    test('a cached rail renders badged while its fresh fetch fails', () async {
+      final cache = InMemoryHomeCacheStore();
+      await cache.saveRail(
+        const HomeCacheIdentity(firstKey),
+        CachedRail(
+          items: [Meta(id: 'cached', type: 'movie', name: 'Cached')],
+          updatedAt: 1000,
+        ),
+      );
+      final fetcher = RecordingCatalogFetcher();
+      fetcher.outcomes[firstKey] = () => HomeRailFailed(firstKey, Exception('down'));
+      final container = make(fetcher, InMemorySettingsStore(), cacheStore: cache);
+      addTearDown(container.dispose);
+
+      container.read(homeControllerProvider.notifier).load();
+      await settle();
+
+      final rail = container.read(homeControllerProvider).rails[firstKey]!;
+      expect(rail.items.single.name, 'Cached');
+      expect(rail.fromCache, isTrue);
+      expect(rail.updatedAt, 1000);
+    });
+
+    test('a fresh loaded outcome clears the badge and writes the entry', () async {
+      final cache = InMemoryHomeCacheStore();
+      final fetcher = RecordingCatalogFetcher();
+      final container = make(
+        fetcher,
+        InMemorySettingsStore(),
+        cacheStore: cache,
+        clock: () => 7777,
+      );
+      addTearDown(container.dispose);
+
+      container.read(homeControllerProvider.notifier).load();
+      await settle();
+
+      final rail = container.read(homeControllerProvider).rails[firstKey]!;
+      expect(rail.fromCache, isFalse);
+      expect(rail.updatedAt, isNull);
+
+      final saved = await cache.loadRail(const HomeCacheIdentity(firstKey));
+      expect(saved, isNotNull);
+      expect(saved!.updatedAt, 7777);
+      expect(saved.items, hasLength(1));
+    });
+
+    test('a Letterboxd rail caches under rowKey + manifestUrl', () async {
+      final cache = InMemoryHomeCacheStore();
+      final settings = InMemorySettingsStore();
+      await settings
+          .saveLetterboxdManifestUrl('https://api.stremboxd.com/stremio/tok/manifest.json');
+      final fetcher = RecordingCatalogFetcher();
+      final container = make(fetcher, settings, cacheStore: cache);
+      addTearDown(container.dispose);
+
+      container.read(homeControllerProvider.notifier).load();
+      await settle();
+
+      final manifestUrl = 'https://api.stremboxd.com/stremio/tok/manifest.json';
+      final watchlist = HomeCacheIdentity(
+        'letterboxd:letterboxd-watchlist',
+        manifestUrl: manifestUrl,
+      );
+      expect(await cache.loadRail(watchlist), isNotNull);
+      // A different account's manifest URL does not see the entry.
+      expect(
+        await cache.loadRail(const HomeCacheIdentity(
+          'letterboxd:letterboxd-watchlist',
+          manifestUrl: 'https://other/manifest.json',
+        )),
+        isNull,
+      );
+    });
   });
 }

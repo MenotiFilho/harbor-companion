@@ -5,6 +5,8 @@ import 'app/connect/connect_controller.dart';
 import 'app/connect/host_registry.dart';
 import 'app/connect/lan_scan.dart';
 import 'app/home/detail_screen.dart';
+import 'app/home/home_cache_disk_store.dart';
+import 'app/home/home_controller.dart';
 import 'app/home/home_rows_screen.dart';
 import 'app/routes.dart';
 import 'app/shell/shell_screen.dart';
@@ -83,6 +85,9 @@ void main() {
         hostRegistryStoreProvider.overrideWithValue(SharedPrefsHostRegistryStore()),
         subnetScannerProvider.overrideWithValue(TcpProbeScanner()),
         settingsStoreProvider.overrideWithValue(SharedPrefsSettingsStore()),
+        // Per-rail disk cache (ADR-0004). Resolves <app-support>/home_cache on
+        // first use; the in-memory store stays the provider default for tests.
+        homeCacheStoreProvider.overrideWithValue(HomeCacheDiskStore()),
       ],
       child: const HarborCompanionApp(),
     ),

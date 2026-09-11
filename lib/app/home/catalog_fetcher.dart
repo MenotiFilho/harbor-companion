@@ -21,6 +21,7 @@ import 'dart:io';
 
 import '../letterboxd/letterboxd.dart';
 import 'catalog_request.dart';
+import 'home_cache_store.dart';
 import 'home_rail.dart';
 import 'home_rows.dart';
 import 'meta.dart';
@@ -256,6 +257,15 @@ abstract interface class CatalogFetcher {
 class HttpCatalogFetcher implements CatalogFetcher {
   final Duration timeout;
 
+  /// Optional manifest cache (ticket 72). When set, a successful manifest fetch
+  /// is written as its own entry, and a failed fresh fetch falls back to the
+  /// cached manifest for the same URL — so a manifest timeout no longer fails
+  /// every Letterboxd rail. Null in the pure wire-shape tests.
+  final HomeCacheStore? cache;
+
+  /// Clock for the manifest entry's `updatedAt` (ms since epoch). Tests pin it.
+  final int Function() nowMs;
+
   /// Test seam: when set, every upstream GET goes through it instead of the
   /// real dart:io client, so the per-rail outcome mapping is pinned without
   /// network. Null in production.
@@ -263,8 +273,13 @@ class HttpCatalogFetcher implements CatalogFetcher {
 
   HttpCatalogFetcher({
     this.timeout = const Duration(seconds: 8),
+    this.cache,
+    int Function()? nowMs,
     Future<String> Function(Uri url)? get,
-  }) : _getOverride = get;
+  })  : nowMs = nowMs ?? _systemNow,
+        _getOverride = get;
+
+  static int _systemNow() => DateTime.now().millisecondsSinceEpoch;
 
   @override
   Stream<HomeRailOutcome> fetchRails(CatalogRequest request) {
@@ -313,19 +328,41 @@ class HttpCatalogFetcher implements CatalogFetcher {
 
   /// Fetches the Stremboxd manifest when any planned key is a Letterboxd rail.
   /// Returns the catalogs on success, or `(null, error)` on failure — a bad
-  /// manifest fails only the Letterboxd rails, never the built-ins.
+  /// manifest fails only the Letterboxd rails, never the built-ins. A valid
+  /// manifest for the same URL is cached; a fresh failure falls back to it
+  /// (ticket 72, ADR-0004).
   Future<(Map<String, LetterboxdCatalog>?, Object?)> _resolveManifest(
     CatalogRequest request,
     List<String> keys,
   ) async {
     if (!keys.any(isLetterboxdRowKey)) return (null, null);
+    final url = request.letterboxd.manifestUrl.trim();
     try {
-      final raw = await _get(Uri.parse(request.letterboxd.manifestUrl.trim()));
+      final raw = await _get(Uri.parse(url));
+      final manifest = parseLetterboxdManifest(raw);
+      // A body that yields no catalogs (e.g. an HTML error page served 200) is
+      // treated as a failure so the cached manifest can still serve.
+      if (manifest.catalogs.isEmpty) {
+        throw const FormatException('manifest lists no catalogs');
+      }
+      await cache?.saveManifest(CachedManifest(
+        manifestUrl: url,
+        body: raw,
+        updatedAt: nowMs(),
+      ));
       return ({
-        for (final catalog in parseLetterboxdManifest(raw).catalogs)
-          catalog.id: catalog,
+        for (final catalog in manifest.catalogs) catalog.id: catalog,
       }, null);
     } catch (error) {
+      final cached = await cache?.loadManifest(url);
+      if (cached != null) {
+        final manifest = parseLetterboxdManifest(cached.body);
+        if (manifest.catalogs.isNotEmpty) {
+          return ({
+            for (final catalog in manifest.catalogs) catalog.id: catalog,
+          }, null);
+        }
+      }
       return (null, error);
     }
   }

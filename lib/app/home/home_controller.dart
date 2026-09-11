@@ -21,15 +21,28 @@ import '../settings/settings_controller.dart';
 import '../ws/client_controller.dart';
 import 'catalog_fetcher.dart';
 import 'catalog_request.dart';
+import 'home_cache_store.dart';
 import 'home_rail.dart';
 import 'home_reducer.dart';
 import 'home_rows.dart';
 import 'meta.dart';
 
-/// Catalog fetch seam. Defaults to the real dart:io HTTP fetcher; tests
-/// override with a fake.
-final catalogFetcherProvider =
-    Provider<CatalogFetcher>((ref) => HttpCatalogFetcher());
+/// Catalog fetch seam. Defaults to the real dart:io HTTP fetcher (with the
+/// manifest cache wired in); tests override with a fake.
+final catalogFetcherProvider = Provider<CatalogFetcher>((ref) => HttpCatalogFetcher(
+      cache: ref.read(homeCacheStoreProvider),
+      nowMs: ref.read(homeCacheClockProvider),
+    ));
+
+/// Per-rail cache seam. Defaults to an in-memory store; the disk-backed store is
+/// wired only in the app bootstrap. Tests override.
+final homeCacheStoreProvider =
+    Provider<HomeCacheStore>((ref) => InMemoryHomeCacheStore());
+
+/// Clock for cache entry `updatedAt` (ms since epoch). Tests pin it.
+final homeCacheClockProvider = Provider<int Function()>(
+  (ref) => () => DateTime.now().millisecondsSinceEpoch,
+);
 
 class HomeController extends Notifier<HomeState> {
   StreamSubscription<HomeRailOutcome>? _railsSub;
@@ -120,11 +133,16 @@ class HomeController extends Notifier<HomeState> {
   }
 
   /// Starts the round's stream: one [HomeRailOutcome] per planned rail, folded
-  /// in as each arrives. Captures the round id so a late outcome from a
-  /// superseded round is dropped by the reducer. A previous subscription is
-  /// cancelled first so a new round never receives the old round's tail.
+  /// in as each arrives. The per-rail cache is read *before* the network round
+  /// so cached rails render immediately (badged); each fresh `loaded` outcome is
+  /// committed and written back to the cache. Captures the round id so a late
+  /// outcome from a superseded round is dropped by the reducer. A previous
+  /// subscription is cancelled first so a new round never receives the old
+  /// round's tail.
   Future<void> _fetchRails() async {
     final request = state.request;
+    await _seedFromCache(request);
+    if (!ref.mounted || state.request != request) return;
     final round = state.round;
     await _railsSub?.cancel();
     if (!ref.mounted) return;
@@ -132,12 +150,77 @@ class HomeController extends Notifier<HomeState> {
       (outcome) {
         if (!ref.mounted) return;
         _dispatch(RailOutcomeReceived(outcome, request, round));
+        _writeCache(outcome, request);
       },
       onError: (Object error) {
         if (!ref.mounted) return;
         _dispatch(RailsFetchFailed(error, request, round));
       },
     );
+  }
+
+  /// Reads the per-rail cache for [request] and folds it in as [CacheLoaded]
+  /// before any network rail starts. Also sweeps entries whose identity no
+  /// longer matches the config (never order/visibility/tmdbKey).
+  Future<void> _seedFromCache(CatalogRequest request) async {
+    final store = ref.read(homeCacheStoreProvider);
+    try {
+      await store.sweep(cacheIdentitiesFor(request));
+    } catch (_) {
+      // A failed sweep must never block the Home.
+    }
+    if (!ref.mounted) return;
+    final manifestUrl = request.letterboxd.manifestUrl.trim();
+    // Read every planned rail in parallel so a cold open is one disk round, not
+    // one per rail; the badge appears as soon as they all land.
+    final loaded = await Future.wait([
+      for (final key in planHomeRowKeys(request))
+        _loadCachedRail(store, key, manifestUrl),
+    ]);
+    final cached = <String, CachedRail>{
+      for (final entry in loaded)
+        if (entry.value != null) entry.key: entry.value!,
+    };
+    if (!ref.mounted || cached.isEmpty) return;
+    _dispatch(CacheLoaded(request, cached));
+  }
+
+  Future<MapEntry<String, CachedRail?>> _loadCachedRail(
+    HomeCacheStore store,
+    String key,
+    String manifestUrl,
+  ) async {
+    try {
+      final rail = await store.loadRail(HomeCacheIdentity(
+        key,
+        manifestUrl: isLetterboxdRowKey(key) ? manifestUrl : null,
+      ));
+      return MapEntry(key, rail);
+    } catch (_) {
+      // A bad entry costs one rail.
+      return MapEntry(key, null);
+    }
+  }
+
+  /// Writes a fresh `loaded` rail back to the cache (fire-and-forget — a cache
+  /// write never blocks or fails the UI). Failed/absent outcomes leave the
+  /// previous entry untouched.
+  void _writeCache(HomeRailOutcome outcome, CatalogRequest request) {
+    if (outcome is! HomeRailLoaded) return;
+    final manifestUrl = request.letterboxd.manifestUrl.trim();
+    final identity = HomeCacheIdentity(
+      outcome.rowKey,
+      manifestUrl: isLetterboxdRowKey(outcome.rowKey) ? manifestUrl : null,
+    );
+    final entry = CachedRail(
+      items: outcome.items,
+      hasMore: outcome.hasMore,
+      updatedAt: ref.read(homeCacheClockProvider)(),
+    );
+    ref
+        .read(homeCacheStoreProvider)
+        .saveRail(identity, entry)
+        .catchError((_) {});
   }
 
   /// Re-fetches the single rail named by the retry card.

@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harbor_companion/app/home/catalog_fetcher.dart';
 import 'package:harbor_companion/app/home/catalog_request.dart';
+import 'package:harbor_companion/app/home/home_cache_store.dart';
 import 'package:harbor_companion/app/home/home_rail.dart';
 import 'package:harbor_companion/app/home/home_rows.dart';
 import 'package:harbor_companion/app/letterboxd/letterboxd.dart';
@@ -536,6 +537,91 @@ void main() {
       expect(outcome, isA<HomeRailLoaded>());
       expect(outcome.rowKey, 'cinemeta:top-series');
       expect((outcome as HomeRailLoaded).items.single.id, 'tt7');
+    });
+
+    test('a successful manifest is cached for later fallback', () async {
+      final cache = InMemoryHomeCacheStore();
+      final fetcher = HttpCatalogFetcher(
+        cache: cache,
+        nowMs: () => 1234,
+        get: (url) async {
+          if (url.path.endsWith('/manifest.json')) {
+            return jsonEncode({
+              'catalogs': [
+                {'id': 'letterboxd-watchlist', 'type': 'movie', 'name': 'Watchlist'},
+              ],
+            });
+          }
+          return cinemeta(['tt1']);
+        },
+      );
+      await fetcher
+          .fetchRails(keyless(
+            order: const ['letterboxd:letterboxd-watchlist'],
+            letterboxd: active,
+          ))
+          .toList();
+
+      final cached = await cache.loadManifest(active.manifestUrl);
+      expect(cached, isNotNull);
+      expect(cached!.updatedAt, 1234);
+    });
+
+    test('a failed fresh manifest falls back to the cached manifest', () async {
+      final cache = InMemoryHomeCacheStore();
+      await cache.saveManifest(CachedManifest(
+        manifestUrl: active.manifestUrl,
+        body: jsonEncode({
+          'catalogs': [
+            {'id': 'letterboxd-watchlist', 'type': 'movie', 'name': 'Watchlist'},
+          ],
+        }),
+        updatedAt: 1,
+      ));
+      final fetcher = HttpCatalogFetcher(
+        cache: cache,
+        get: (url) async {
+          if (url.path.endsWith('/manifest.json')) throw Exception('timeout');
+          return cinemeta(['tt9']);
+        },
+      );
+
+      final outcomes = await fetcher
+          .fetchRails(keyless(
+            order: const ['letterboxd:letterboxd-watchlist'],
+            letterboxd: active,
+          ))
+          .toList();
+
+      final loaded = outcomes.single as HomeRailLoaded;
+      expect(loaded.title, 'Watchlist');
+      expect(loaded.items.single.id, 'tt9');
+    });
+
+    test('a cached manifest for another URL does not rescue the rail', () async {
+      final cache = InMemoryHomeCacheStore();
+      await cache.saveManifest(CachedManifest(
+        manifestUrl: 'https://api.stremboxd.com/stremio/other/manifest.json',
+        body: jsonEncode({
+          'catalogs': [
+            {'id': 'letterboxd-watchlist', 'type': 'movie', 'name': 'Watchlist'},
+          ],
+        }),
+        updatedAt: 1,
+      ));
+      final fetcher = HttpCatalogFetcher(
+        cache: cache,
+        get: (url) async => throw Exception('timeout'),
+      );
+
+      final outcomes = await fetcher
+          .fetchRails(keyless(
+            order: const ['letterboxd:letterboxd-watchlist'],
+            letterboxd: active,
+          ))
+          .toList();
+
+      expect(outcomes.single, isA<HomeRailFailed>());
     });
   });
 }

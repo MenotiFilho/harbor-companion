@@ -10,6 +10,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harbor_companion/app/home/catalog_request.dart';
+import 'package:harbor_companion/app/home/home_cache_store.dart';
 import 'package:harbor_companion/app/home/home_rail.dart';
 import 'package:harbor_companion/app/home/home_reducer.dart';
 import 'package:harbor_companion/app/home/home_rows.dart';
@@ -293,6 +294,69 @@ void main() {
     test('RetryRail for an unplanned key is a no-op', () {
       final s = homeReduce(started(), const RetryRail('bogus:key'));
       expect(drain(s), isEmpty);
+    });
+  });
+
+  group('cache-first (ticket 72)', () {
+    CachedRail cached(String prefix, {int updatedAt = 5000, bool hasMore = false}) =>
+        CachedRail(items: items(prefix), updatedAt: updatedAt, hasMore: hasMore);
+
+    test('CacheLoaded seeds a pending rail as fromCache with its age', () {
+      final start = started();
+      final s = homeReduce(
+        start,
+        CacheLoaded(start.request, {firstKey: cached('c', updatedAt: 7000)}),
+      );
+      final rail = s.rails[firstKey]!;
+      expect(rail.status, RailStatus.loaded);
+      expect(rail.items, hasLength(3));
+      expect(rail.title, 'Top Movies');
+      expect(rail.fromCache, isTrue);
+      expect(rail.updatedAt, 7000);
+      expect(s.renderKeys, contains(firstKey));
+    });
+
+    test('a fresh loaded outcome clears fromCache and the age (badge gone)', () {
+      var s = started();
+      s = homeReduce(s, CacheLoaded(s.request, {firstKey: cached('c')}));
+      s = fold(s, HomeRailLoaded(firstKey, 'Top Movies', items('fresh')));
+      expect(s.rails[firstKey]!.status, RailStatus.loaded);
+      expect(s.rails[firstKey]!.fromCache, isFalse);
+      expect(s.rails[firstKey]!.updatedAt, isNull);
+    });
+
+    test('cache does not clobber a rail that already has content', () {
+      var s = fold(started(), HomeRailLoaded(firstKey, 'Top Movies', items('fresh')));
+      s = homeReduce(s, const RefreshHome()); // pending, keeps the fresh copy
+      s = homeReduce(s, CacheLoaded(s.request, {firstKey: cached('old')}));
+      expect(s.rails[firstKey]!.items.first.id, 'fresh:0');
+      expect(s.rails[firstKey]!.fromCache, isFalse);
+    });
+
+    test('a failed revalidation keeps the cached copy and its badge', () {
+      var s = started();
+      s = homeReduce(s, CacheLoaded(s.request, {firstKey: cached('c', updatedAt: 900)}));
+      s = fold(s, HomeRailFailed(firstKey, Exception('down')));
+      final rail = s.rails[firstKey]!;
+      expect(rail.status, RailStatus.failed);
+      expect(rail.items, hasLength(3));
+      expect(rail.fromCache, isTrue);
+      expect(rail.updatedAt, 900);
+    });
+
+    test('a stale CacheLoaded for a superseded request is dropped', () {
+      var s = started();
+      s = homeReduce(s, const KeyChanged('tmdb-key'));
+      s = homeReduce(s, CacheLoaded(req(), {firstKey: cached('c')}));
+      expect(s.rails[firstKey]?.hasItems ?? false, isFalse);
+    });
+
+    test('hasMore rides through the loaded commit', () {
+      var s = fold(
+        started(),
+        const HomeRailLoaded('cinemeta:top-movies', 'Top Movies', [], hasMore: true),
+      );
+      expect(s.rails[firstKey]!.hasMore, isTrue);
     });
   });
 

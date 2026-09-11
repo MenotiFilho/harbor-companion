@@ -94,7 +94,11 @@ class _RailBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     final current = rail;
     if (current != null && current.hasItems) {
-      return HomeRowRail(row: HomeRow(rowKey, current.title, current.items));
+      return HomeRowRail(
+        row: HomeRow(rowKey, current.title, current.items),
+        fromCache: current.fromCache,
+        updatedAt: current.updatedAt,
+      );
     }
     if (current != null && current.status == RailStatus.failed) {
       return _RailErrorCard(
@@ -186,7 +190,19 @@ class _CatalogError extends StatelessWidget {
 
 class HomeRowRail extends StatelessWidget {
   final HomeRow row;
-  const HomeRowRail({super.key, required this.row});
+
+  /// Whether this rail is served from the per-rail cache (show the age badge).
+  final bool fromCache;
+
+  /// The cache write time (ms since epoch) the badge renders; null for fresh.
+  final int? updatedAt;
+
+  const HomeRowRail({
+    super.key,
+    required this.row,
+    this.fromCache = false,
+    this.updatedAt,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -197,11 +213,18 @@ class HomeRowRail extends StatelessWidget {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Text(
-              row.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleMedium,
+            child: Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    row.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                if (fromCache) HomeRailAgeBadge(updatedAt: updatedAt),
+              ],
             ),
           ),
           Expanded(
@@ -216,6 +239,54 @@ class HomeRowRail extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The age badge on a rail served from the cache (ticket 72, ADR-0004). It is
+/// present while [RailState.fromCache] holds and disappears the moment a fresh
+/// `loaded` outcome commits. The label is a coarse relative age so it never
+/// needs a ticking clock: "cached" under a minute, then `Nm`/`Nh`/`Nd`.
+class HomeRailAgeBadge extends StatelessWidget {
+  final int? updatedAt;
+  const HomeRailAgeBadge({super.key, this.updatedAt});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.only(left: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.history, size: 12, color: scheme.onSurfaceVariant),
+          const SizedBox(width: 4),
+          Text(
+            homeRailAgeLabel(updatedAt),
+            style: Theme.of(context)
+                .textTheme
+                .labelSmall
+                ?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A coarse relative age for [updatedAt] (ms since epoch) — pure so widget tests
+/// can pin it without a clock. Null means "cached, age unknown".
+String homeRailAgeLabel(int? updatedAt, {DateTime? now}) {
+  if (updatedAt == null) return 'cached';
+  final reference = now ?? DateTime.now();
+  final age = reference.difference(DateTime.fromMillisecondsSinceEpoch(updatedAt));
+  if (age.inMinutes < 1) return 'cached';
+  if (age.inMinutes < 60) return '${age.inMinutes}m';
+  if (age.inHours < 24) return '${age.inHours}h';
+  return '${age.inDays}d';
 }
 
 /// The pending block for a planned rail: its known title plus placeholder

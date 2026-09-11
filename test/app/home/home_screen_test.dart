@@ -191,4 +191,67 @@ void main() {
     await tester.pump();
     expect(controller.reloads, 1);
   });
+
+  testWidgets('a cached rail shows the age badge', (tester) async {
+    final twoDaysAgo =
+        DateTime.now().subtract(const Duration(days: 2)).millisecondsSinceEpoch;
+    final cached = HomeState(
+      request: twoRows,
+      rails: {
+        'cinemeta:top-movies': RailState(
+          rowKey: 'cinemeta:top-movies',
+          title: 'Top Movies',
+          items: [movie()],
+          status: RailStatus.loaded,
+          fromCache: true,
+          updatedAt: twoDaysAgo,
+        ),
+        'cinemeta:top-series':
+            loaded('cinemeta:top-series', 'Top Series', [movie(id: 'tt2')]),
+      },
+    );
+    await tester.pumpWidget(_app(cached));
+
+    expect(find.byType(HomeRailAgeBadge), findsOneWidget);
+    expect(find.text('2d'), findsOneWidget);
+  });
+
+  testWidgets('a fresh rail shows no age badge', (tester) async {
+    final fresh = HomeState(
+      request: twoRows,
+      rails: {
+        'cinemeta:top-movies': loaded('cinemeta:top-movies', 'Top Movies', [movie()]),
+        'cinemeta:top-series':
+            loaded('cinemeta:top-series', 'Top Series', [movie(id: 'tt2')]),
+      },
+    );
+    await tester.pumpWidget(_app(fresh));
+
+    expect(find.byType(HomeRailAgeBadge), findsNothing);
+  });
+
+  test('homeRailAgeLabel is a coarse relative age', () {
+    final now = DateTime(2026, 1, 1, 12);
+    expect(homeRailAgeLabel(null, now: now), 'cached');
+    expect(
+      homeRailAgeLabel(now.subtract(const Duration(seconds: 10)).millisecondsSinceEpoch,
+          now: now),
+      'cached',
+    );
+    expect(
+      homeRailAgeLabel(now.subtract(const Duration(minutes: 5)).millisecondsSinceEpoch,
+          now: now),
+      '5m',
+    );
+    expect(
+      homeRailAgeLabel(now.subtract(const Duration(hours: 3)).millisecondsSinceEpoch,
+          now: now),
+      '3h',
+    );
+    expect(
+      homeRailAgeLabel(now.subtract(const Duration(days: 4)).millisecondsSinceEpoch,
+          now: now),
+      '4d',
+    );
+  });
 }
