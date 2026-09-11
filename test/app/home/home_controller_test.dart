@@ -1,8 +1,7 @@
-// Thin wiring tests for the Home controller (ticket 41). The reducer is the
-// decision seam; these pin the glue that makes the Letterboxd rails track
-// Settings: the config the controller passes to the fetcher, a manifest-URL /
-// catalog-toggle change triggering a refetch, and an unrelated setting not
-// refetching the catalog.
+// Thin wiring tests for the Home controller (tickets 41, 71). The reducer is
+// the decision seam; these pin the glue: the config handed to the fetcher, a
+// Settings change starting a new round, the per-rail outcomes being folded in as
+// they stream, and the local retry hitting the single-rail fetch seam.
 
 import 'dart:async';
 
@@ -12,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:harbor_companion/app/home/catalog_fetcher.dart';
 import 'package:harbor_companion/app/home/catalog_request.dart';
 import 'package:harbor_companion/app/home/home_controller.dart';
+import 'package:harbor_companion/app/home/home_rail.dart';
 import 'package:harbor_companion/app/letterboxd/letterboxd.dart';
 import 'package:harbor_companion/app/home/meta.dart';
 import 'package:harbor_companion/app/settings/settings_controller.dart';
@@ -34,16 +34,30 @@ class FakeTransport implements WsTransport {
   Future<WsConnection> open(String url) async => FakeConnection();
 }
 
-/// Records the [CatalogRequest] handed to each `fetchRows` call.
+/// Records the [CatalogRequest] handed to each fetch and lets a test override a
+/// rail's outcome (default: a loaded row with one item). Single-rail retries are
+/// recorded separately.
 class RecordingCatalogFetcher implements CatalogFetcher {
   final List<CatalogRequest> rowRequests = [];
+  final List<String> retriedKeys = [];
+  final Map<String, HomeRailOutcome Function()> outcomes = {};
+
+  HomeRailOutcome _outcome(String key) =>
+      outcomes[key]?.call() ??
+      HomeRailLoaded(key, 'Row $key', [Meta(id: 'tt-$key', type: 'movie', name: key)]);
 
   @override
-  Future<List<HomeRow>> fetchRows(CatalogRequest request) async {
+  Stream<HomeRailOutcome> fetchRails(CatalogRequest request) {
     rowRequests.add(request);
-    return [
-      HomeRow('Top Movies', [Meta(id: 'tt1', type: 'movie', name: 'The Matrix')]),
-    ];
+    return Stream.fromIterable([
+      for (final key in planHomeRowKeys(request)) _outcome(key),
+    ]);
+  }
+
+  @override
+  Future<HomeRailOutcome> fetchRail(CatalogRequest request, String rowKey) async {
+    retriedKeys.add(rowKey);
+    return _outcome(rowKey);
   }
 
   @override
@@ -65,6 +79,8 @@ ProviderContainer make(RecordingCatalogFetcher fetcher, SettingsStore store) =>
     );
 
 void main() {
+  const firstKey = 'cinemeta:top-movies';
+
   test('load passes the seeded Letterboxd config (URL empty, defaults on)', () async {
     final fetcher = RecordingCatalogFetcher();
     final container = make(fetcher, InMemorySettingsStore());
@@ -82,7 +98,48 @@ void main() {
     expect(fetcher.rowRequests.single.showBuiltInCatalogs, isTrue);
   });
 
-  test('setting the manifest URL refetches with the active config', () async {
+  test('folds one outcome per planned rail as it streams', () async {
+    final fetcher = RecordingCatalogFetcher();
+    fetcher.outcomes['cinemeta:top-series'] = () =>
+        HomeRailFailed('cinemeta:top-series', Exception('down'));
+    final container = make(fetcher, InMemorySettingsStore());
+    addTearDown(container.dispose);
+
+    container.read(homeControllerProvider.notifier).load();
+    await settle();
+
+    final state = container.read(homeControllerProvider);
+    expect(state.rails[firstKey]!.status, RailStatus.loaded);
+    expect(state.rails[firstKey]!.items, isNotEmpty);
+    expect(state.rails['cinemeta:top-series']!.status, RailStatus.failed);
+    expect(state.hasContent, isTrue);
+  });
+
+  test('a failed rail with no prior copy can be retried per rail', () async {
+    final fetcher = RecordingCatalogFetcher();
+    fetcher.outcomes[firstKey] = () =>
+        HomeRailFailed(firstKey, Exception('down'));
+    final container = make(fetcher, InMemorySettingsStore());
+    addTearDown(container.dispose);
+
+    container.read(homeControllerProvider.notifier).load();
+    await settle();
+    expect(container.read(homeControllerProvider).rails[firstKey]!.status,
+        RailStatus.failed);
+
+    // The retry card replaces the outcome with a loaded one.
+    fetcher.outcomes[firstKey] = () =>
+        HomeRailLoaded(firstKey, 'Top Movies', [Meta(id: 'tt1', type: 'movie', name: 'The Matrix')]);
+    container.read(homeControllerProvider.notifier).retryRail(firstKey);
+    await settle();
+
+    expect(fetcher.retriedKeys, [firstKey]);
+    final state = container.read(homeControllerProvider);
+    expect(state.rails[firstKey]!.status, RailStatus.loaded);
+    expect(state.rails[firstKey]!.items.single.name, 'The Matrix');
+  });
+
+  test('setting the manifest URL starts a round with the active config', () async {
     final fetcher = RecordingCatalogFetcher();
     final container = make(fetcher, InMemorySettingsStore());
     addTearDown(container.dispose);

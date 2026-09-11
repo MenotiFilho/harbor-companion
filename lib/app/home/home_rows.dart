@@ -139,6 +139,11 @@ class HomeRowEntry {
   });
 }
 
+/// The display label for [key] before its fetch resolves (the skeleton and a
+/// failed-without-copy retry card): the built-in title or the Letterboxd
+/// toggle's label, falling back to the raw key.
+String homeRowLabel(String key) => homeRowEntry(key)?.label ?? key;
+
 HomeRowEntry? homeRowEntry(String key) {
   final builtIn = builtInRowById(key);
   if (builtIn != null) {

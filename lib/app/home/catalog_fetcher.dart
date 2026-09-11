@@ -6,11 +6,12 @@
 //   - Stremboxd (`https://api.stremboxd.com/stremio/<token>/…`), the user's
 //     Letterboxd rails, only when a manifest URL is configured (ticket 41).
 //
-// `CatalogFetcher` is the seam the controller drains `fetch:rows` /
-// `fetch:detail` effects into; tests inject a fake. The real implementation
-// (dart:io) hits the upstreams directly — there is no `/api-proxy` on the LAN
-// (wire-contract §5, §6). The pure JSON→model mappers are top-level so tests
-// pin the wire shapes without network.
+// `CatalogFetcher` is the seam the controller drains `fetch:rails` /
+// `fetch:rail` / `fetch:detail` effects into; tests inject a fake. The real
+// implementation (dart:io) hits the upstreams directly — there is no
+// `/api-proxy` on the LAN (wire-contract §5, §6) — and emits one per-rail
+// outcome as each resolves (ticket 71), never a single blocking list. The pure
+// JSON→model mappers are top-level so tests pin the wire shapes without network.
 //
 // Wire contract: docs/wire-contract.md §5.1 (Cinemeta), §5.2 (TMDB).
 
@@ -20,6 +21,7 @@ import 'dart:io';
 
 import '../letterboxd/letterboxd.dart';
 import 'catalog_request.dart';
+import 'home_rail.dart';
 import 'home_rows.dart';
 import 'meta.dart';
 
@@ -198,48 +200,24 @@ List<Season> parseTmdbSeasons(String raw) {
   ]..sort((a, b) => a.number.compareTo(b.number));
 }
 
-/// The ordered row keys [request] should attempt: the enabled built-in rows for
-/// the source in effect (TMDB when keyed, else Cinemeta), plus the enabled
-/// Letterboxd catalogs when a manifest URL is set. Pure so tests pin the
-/// filtering + order without network. A Letterboxd key survives planning even
-/// when the manifest may not list it — the manifest is consulted at fetch time.
-List<String> planHomeRowKeys(CatalogRequest request) {
-  final activeSource = request.tmdbKey == null ? 'cinemeta' : 'tmdb';
-  final letterboxdActive = request.letterboxd.isActive;
-  final keys = <String>[];
-  for (final key in request.rowOrder) {
-    final builtIn = builtInRowById(key);
-    if (builtIn != null) {
-      if (builtIn.source != activeSource) continue;
-      if (request.disabledBuiltInRowKeys.contains(key)) continue;
-      keys.add(key);
-      continue;
-    }
-    final catalogId = letterboxdCatalogId(key);
-    if (catalogId == null || !letterboxdActive) continue;
-    if (!request.letterboxd.enabledCatalogIds.contains(catalogId)) continue;
-    keys.add(key);
-  }
-  return keys;
-}
-
-/// Fetches each planned [key] via [fetch], concurrently, preserving order. A key
-/// whose fetch throws is skipped — one flaky rail never takes down the rest; a
-/// `null` result means "no row" (empty catalog or skipped).
-Future<List<HomeRow>> fetchHomeRowsConcurrently(
+/// Runs [fetch] for each planned [key] concurrently and emits one outcome per
+/// key as it completes (completion order, not key order — the Home renders in
+/// plan order regardless). A key whose fetch throws becomes a [HomeRailFailed]
+/// for that key alone, so one flaky rail never takes down the rest. This is the
+/// progressive replacement for the old `Future.wait`-then-`List<HomeRow>`.
+Stream<HomeRailOutcome> fetchRailOutcomesConcurrently(
   List<String> keys,
-  Future<HomeRow?> Function(String key) fetch,
-) async {
-  Future<HomeRow?> safe(String key) async {
+  Future<HomeRailOutcome> Function(String key) fetch,
+) {
+  Future<HomeRailOutcome> safe(String key) async {
     try {
       return await fetch(key);
-    } catch (_) {
-      return null;
+    } catch (error) {
+      return HomeRailFailed(key, error);
     }
   }
 
-  final results = await Future.wait([for (final key in keys) safe(key)]);
-  return [for (final row in results) ?row];
+  return Stream.fromFutures([for (final key in keys) safe(key)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -253,13 +231,20 @@ Future<List<HomeRow>> fetchHomeRowsConcurrently(
 bool usesTmdbDetail(String? tmdbKey, String id) =>
     tmdbKey != null && id.startsWith('tmdb:');
 
-/// Fetches home rows and detail from Cinemeta/TMDB/Stremboxd. Injected into the
+/// Fetches home rails and detail from Cinemeta/TMDB/Stremboxd. Injected into the
 /// home controller; tests provide a fake.
+///
+/// [fetchRails] emits exactly one [HomeRailOutcome] per planned rail, as each
+/// resolves — never a single blocking list. [fetchRail] re-fetches one rail for
+/// the Home's local retry card.
 abstract interface class CatalogFetcher {
-  /// Home rows for [request]: TMDB when a key is set, else Cinemeta (unless the
-  /// built-in rails are switched off), plus the enabled Letterboxd rails. A row
-  /// whose fetch fails is skipped; the list only carries rows that loaded.
-  Future<List<HomeRow>> fetchRows(CatalogRequest request);
+  /// Progressive outcomes for [request]: TMDB when a key is set, else Cinemeta
+  /// (unless the built-in rails are switched off), plus the enabled Letterboxd
+  /// rails. A rail whose fetch fails is a [HomeRailFailed] for that rail alone.
+  Stream<HomeRailOutcome> fetchRails(CatalogRequest request);
+
+  /// Re-fetch a single planned [rowKey] (the local retry card).
+  Future<HomeRailOutcome> fetchRail(CatalogRequest request, String rowKey);
 
   /// Detail for a title: Cinemeta `meta/{type}/{id}` when keyless, TMDB detail
   /// + per-season episodes when keyed.
@@ -271,72 +256,121 @@ abstract interface class CatalogFetcher {
 class HttpCatalogFetcher implements CatalogFetcher {
   final Duration timeout;
 
-  HttpCatalogFetcher({this.timeout = const Duration(seconds: 8)});
+  /// Test seam: when set, every upstream GET goes through it instead of the
+  /// real dart:io client, so the per-rail outcome mapping is pinned without
+  /// network. Null in production.
+  final Future<String> Function(Uri url)? _getOverride;
+
+  HttpCatalogFetcher({
+    this.timeout = const Duration(seconds: 8),
+    Future<String> Function(Uri url)? get,
+  }) : _getOverride = get;
 
   @override
-  Future<List<HomeRow>> fetchRows(CatalogRequest request) async {
+  Stream<HomeRailOutcome> fetchRails(CatalogRequest request) {
     final keys = planHomeRowKeys(request);
+    if (keys.isEmpty) return Stream<HomeRailOutcome>.empty();
+    final builtInKeys = keys.where((key) => builtInRowById(key) != null).toList();
+    final letterboxdKeys = keys.where(isLetterboxdRowKey).toList();
 
-    // Resolve the Letterboxd manifest once, up front: catalog names + types come
-    // from it, and one bad manifest must only drop the Letterboxd rails.
-    var catalogsById = const <String, LetterboxdCatalog>{};
-    if (keys.any(isLetterboxdRowKey)) {
-      try {
-        final raw = await _get(Uri.parse(request.letterboxd.manifestUrl.trim()));
-        catalogsById = {
-          for (final catalog in parseLetterboxdManifest(raw).catalogs)
-            catalog.id: catalog,
-        };
-      } catch (_) {
-        catalogsById = const {};
-      }
+    final controller = StreamController<HomeRailOutcome>();
+    var remaining = keys.length;
+    void forward(HomeRailOutcome outcome) {
+      controller.add(outcome);
+      if (--remaining == 0) controller.close();
     }
 
-    final attemptedBuiltIn = keys.any((key) => builtInRowById(key) != null);
-    final rows = await fetchHomeRowsConcurrently(
-      keys,
-      (key) => _fetchRowByKey(key, request, catalogsById),
-    );
-    // Built-ins were requested but every rail failed (e.g. no network): surface
-    // an error so the UI shows the retry state. With them off, an empty Home is
-    // the user's choice, not a failure.
-    if (rows.isEmpty && attemptedBuiltIn) {
-      throw const HttpException('no catalog rows loaded');
+    // Built-ins start immediately; the Letterboxd rails start once their
+    // manifest resolves, in parallel. A slow/broken manifest must never hold
+    // the built-in rails (ADR-0004: one bad manifest only fails Letterboxd).
+    if (builtInKeys.isNotEmpty) {
+      fetchRailOutcomesConcurrently(
+        builtInKeys,
+        (key) => _fetchOutcome(key, request, null, null),
+      ).listen(forward);
     }
-    return rows;
+    if (letterboxdKeys.isNotEmpty) {
+      _resolveManifest(request, letterboxdKeys).then((resolved) {
+        final (catalogsById, manifestError) = resolved;
+        fetchRailOutcomesConcurrently(
+          letterboxdKeys,
+          (key) => _fetchOutcome(key, request, catalogsById, manifestError),
+        ).listen(forward);
+      });
+    }
+    return controller.stream;
   }
 
-  Future<HomeRow?> _fetchRowByKey(
+  @override
+  Future<HomeRailOutcome> fetchRail(
+    CatalogRequest request,
+    String rowKey,
+  ) async {
+    final (catalogsById, manifestError) =
+        await _resolveManifest(request, [rowKey]);
+    return _fetchOutcome(rowKey, request, catalogsById, manifestError);
+  }
+
+  /// Fetches the Stremboxd manifest when any planned key is a Letterboxd rail.
+  /// Returns the catalogs on success, or `(null, error)` on failure — a bad
+  /// manifest fails only the Letterboxd rails, never the built-ins.
+  Future<(Map<String, LetterboxdCatalog>?, Object?)> _resolveManifest(
+    CatalogRequest request,
+    List<String> keys,
+  ) async {
+    if (!keys.any(isLetterboxdRowKey)) return (null, null);
+    try {
+      final raw = await _get(Uri.parse(request.letterboxd.manifestUrl.trim()));
+      return ({
+        for (final catalog in parseLetterboxdManifest(raw).catalogs)
+          catalog.id: catalog,
+      }, null);
+    } catch (error) {
+      return (null, error);
+    }
+  }
+
+  /// Resolves one planned rail to its outcome. Never throws: a fetch error is a
+  /// [HomeRailFailed], an unlisted/unusable Letterboxd catalog is
+  /// [HomeRailAbsent], and an empty catalog is a valid empty [HomeRailLoaded].
+  Future<HomeRailOutcome> _fetchOutcome(
     String key,
     CatalogRequest request,
-    Map<String, LetterboxdCatalog> catalogsById,
+    Map<String, LetterboxdCatalog>? catalogsById,
+    Object? manifestError,
   ) async {
-    final builtIn = builtInRowById(key);
-    if (builtIn != null) {
-      final metas = await _fetchBuiltInRow(builtIn, request.tmdbKey);
-      return metas.isEmpty ? null : HomeRow(builtIn.title, metas);
+    try {
+      final builtIn = builtInRowById(key);
+      if (builtIn != null) {
+        final metas = await _fetchBuiltInRow(builtIn, request.tmdbKey);
+        return HomeRailLoaded(key, builtIn.title, metas);
+      }
+      final catalogId = letterboxdCatalogId(key);
+      if (catalogId == null) return HomeRailAbsent(key);
+      if (catalogsById == null) {
+        return HomeRailFailed(key, manifestError ?? 'manifest unavailable');
+      }
+      final catalog = catalogsById[catalogId];
+      if (catalog == null) return HomeRailAbsent(key);
+      final url = letterboxdCatalogUrl(request.letterboxd.manifestUrl, catalog);
+      if (url == null) return HomeRailAbsent(key);
+      final metas = parseCinemetaCatalog(await _get(Uri.parse(url)));
+      return HomeRailLoaded(key, catalog.name, metas);
+    } catch (error) {
+      return HomeRailFailed(key, error);
     }
-    final catalogId = letterboxdCatalogId(key);
-    final catalog = catalogId == null ? null : catalogsById[catalogId];
-    if (catalog == null) return null;
-    final url = letterboxdCatalogUrl(request.letterboxd.manifestUrl, catalog);
-    if (url == null) return null;
-    final metas = parseCinemetaCatalog(await _get(Uri.parse(url)));
-    return metas.isEmpty ? null : HomeRow(catalog.name, metas);
   }
 
+  /// Fetches a built-in rail. Throws on an HTTP/parse failure (so the rail
+  /// becomes [HomeRailFailed]); an empty catalog is a legitimate empty result.
   Future<List<Meta>> _fetchBuiltInRow(BuiltInRow row, String? tmdbKey) async {
-    try {
-      final url = tmdbKey == null
-          ? '$cinemetaBase${row.path}'
-          : '$tmdbBase${row.path}?api_key=$tmdbKey';
-      final raw = await _get(Uri.parse(url));
-      return tmdbKey == null
-          ? parseCinemetaCatalog(raw)
-          : parseTmdbPage(raw, row.type);
-    } catch (_) {
-      return const [];
-    }
+    final url = tmdbKey == null
+        ? '$cinemetaBase${row.path}'
+        : '$tmdbBase${row.path}?api_key=$tmdbKey';
+    final raw = await _get(Uri.parse(url));
+    return tmdbKey == null
+        ? parseCinemetaCatalog(raw)
+        : parseTmdbPage(raw, row.type);
   }
 
   @override
@@ -370,7 +404,12 @@ class HttpCatalogFetcher implements CatalogFetcher {
     }
   }
 
-  Future<String> _get(Uri url) async {
+  Future<String> _get(Uri url) {
+    final override = _getOverride;
+    return override != null ? override(url) : _getReal(url);
+  }
+
+  Future<String> _getReal(Uri url) async {
     final client = HttpClient()..connectionTimeout = timeout;
     try {
       final request = await client.getUrl(url);

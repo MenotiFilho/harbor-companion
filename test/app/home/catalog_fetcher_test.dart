@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harbor_companion/app/home/catalog_fetcher.dart';
 import 'package:harbor_companion/app/home/catalog_request.dart';
+import 'package:harbor_companion/app/home/home_rail.dart';
 import 'package:harbor_companion/app/home/home_rows.dart';
 import 'package:harbor_companion/app/letterboxd/letterboxd.dart';
 import 'package:harbor_companion/app/home/meta.dart';
@@ -336,23 +337,205 @@ void main() {
     });
   });
 
-  group('concurrent row loading', () {
+  group('concurrent rail outcomes', () {
     Meta meta(String id) => Meta(id: id, type: 'movie', name: id);
 
-    test('preserves order and drops null rows', () async {
-      final rows = await fetchHomeRowsConcurrently(['a', 'b', 'c'], (key) async {
-        if (key == 'b') return null;
-        return HomeRow(key, [meta('tt-$key')]);
-      });
-      expect(rows.map((r) => r.title), ['a', 'c']);
+    test('emits one outcome per key; a throwing fetch fails only that rail',
+        () async {
+      final outcomes = await fetchRailOutcomesConcurrently(['a', 'b', 'c'], (key) async {
+        if (key == 'b') throw Exception('boom');
+        return HomeRailLoaded(key, key, [meta('tt-$key')]);
+      }).toList();
+
+      expect(outcomes.map((o) => o.rowKey).toSet(), {'a', 'b', 'c'});
+      expect(outcomes.whereType<HomeRailFailed>().single.rowKey, 'b');
+      expect(
+        outcomes.whereType<HomeRailLoaded>().map((o) => o.rowKey).toSet(),
+        {'a', 'c'},
+      );
     });
 
-    test('a failing row is skipped; the others still load', () async {
-      final rows = await fetchHomeRowsConcurrently(['a', 'b', 'c'], (key) async {
-        if (key == 'b') throw Exception('boom');
-        return HomeRow(key, [meta('tt-$key')]);
+    test('emits each rail as it completes, not in key order', () async {
+      final slow = Completer<HomeRailOutcome>();
+      final fast = Completer<HomeRailOutcome>();
+      final stream = fetchRailOutcomesConcurrently(
+        ['slow', 'fast'],
+        (key) => key == 'slow' ? slow.future : fast.future,
+      );
+      final seen = <String>[];
+      final done = stream.listen((o) => seen.add(o.rowKey)).asFuture<void>();
+
+      fast.complete(HomeRailLoaded('fast', 'Fast', [meta('tt-fast')]));
+      await Future<void>.delayed(Duration.zero);
+      expect(seen, ['fast']);
+
+      slow.complete(HomeRailLoaded('slow', 'Slow', [meta('tt-slow')]));
+      await done;
+      expect(seen, ['fast', 'slow']);
+    });
+  });
+
+  group('fetchRails per-rail outcomes', () {
+    String cinemeta(List<String> ids) => jsonEncode({
+          'metas': [
+            for (final id in ids) {'id': id, 'type': 'movie', 'name': id},
+          ],
+        });
+
+    CatalogRequest keyless({
+      List<String> order = const ['cinemeta:top-movies', 'cinemeta:top-series'],
+      LetterboxdConfig letterboxd = const LetterboxdConfig(),
+    }) =>
+        CatalogRequest(rowOrder: order, letterboxd: letterboxd);
+
+    const active = LetterboxdConfig(
+      manifestUrl: 'https://api.stremboxd.com/stremio/tok/manifest.json',
+      enabledCatalogIds: {'letterboxd-watchlist'},
+    );
+
+    test('loaded carries the rail title and its items', () async {
+      final fetcher = HttpCatalogFetcher(
+        get: (url) async => cinemeta(['tt1', 'tt2']),
+      );
+      final outcomes = await fetcher.fetchRails(keyless()).toList();
+
+      expect(outcomes, hasLength(2));
+      final top = outcomes.whereType<HomeRailLoaded>().first;
+      expect(top.rowKey, 'cinemeta:top-movies');
+      expect(top.title, 'Top Movies');
+      expect(top.items, hasLength(2));
+    });
+
+    test('an empty catalog is loaded-empty, not failed or absent', () async {
+      final fetcher = HttpCatalogFetcher(
+        get: (url) async => cinemeta(const []),
+      );
+      final outcomes = await fetcher.fetchRails(keyless()).toList();
+
+      final loaded = outcomes.whereType<HomeRailLoaded>();
+      expect(loaded, hasLength(2));
+      expect(loaded.every((o) => o.items.isEmpty), isTrue);
+    });
+
+    test('an HTTP failure fails one rail; the others still load', () async {
+      final fetcher = HttpCatalogFetcher(
+        get: (url) async {
+          if (url.path.contains('/series/')) throw Exception('500');
+          return cinemeta(['tt1']);
+        },
+      );
+      final outcomes = await fetcher.fetchRails(keyless()).toList();
+
+      expect(outcomes.whereType<HomeRailFailed>().single.rowKey,
+          'cinemeta:top-series');
+      expect(outcomes.whereType<HomeRailLoaded>().single.rowKey,
+          'cinemeta:top-movies');
+    });
+
+    test('a Letterboxd catalog the manifest does not list is absent', () async {
+      final fetcher = HttpCatalogFetcher(get: (url) async {
+        if (url.path.endsWith('/manifest.json')) {
+          return jsonEncode({
+            'catalogs': [
+              {'id': 'letterboxd-friends', 'type': 'movie', 'name': 'Friends'},
+            ],
+          });
+        }
+        return cinemeta(['tt1']);
       });
-      expect(rows.map((r) => r.title), ['a', 'c']);
+      final outcomes = await fetcher
+          .fetchRails(keyless(
+            order: const ['cinemeta:top-movies', 'letterboxd:letterboxd-watchlist'],
+            letterboxd: active,
+          ))
+          .toList();
+
+      expect(
+        outcomes.whereType<HomeRailAbsent>().single.rowKey,
+        'letterboxd:letterboxd-watchlist',
+      );
+      expect(outcomes.whereType<HomeRailLoaded>().single.rowKey,
+          'cinemeta:top-movies');
+    });
+
+    test('a Letterboxd rail not in the manifest loads from the catalog', () async {
+      final fetcher = HttpCatalogFetcher(get: (url) async {
+        if (url.path.endsWith('/manifest.json')) {
+          return jsonEncode({
+            'catalogs': [
+              {'id': 'letterboxd-watchlist', 'type': 'movie', 'name': 'Watchlist'},
+            ],
+          });
+        }
+        return cinemeta(['tt9']);
+      });
+      final outcomes = await fetcher
+          .fetchRails(keyless(
+            order: const ['letterboxd:letterboxd-watchlist'],
+            letterboxd: active,
+          ))
+          .toList();
+
+      final loaded = outcomes.single as HomeRailLoaded;
+      expect(loaded.title, 'Watchlist');
+      expect(loaded.items.single.id, 'tt9');
+    });
+
+    test('a manifest failure fails only the Letterboxd rails', () async {
+      final fetcher = HttpCatalogFetcher(get: (url) async {
+        if (url.path.endsWith('/manifest.json')) throw Exception('timeout');
+        return cinemeta(['tt1']);
+      });
+      final outcomes = await fetcher
+          .fetchRails(keyless(
+            order: const ['cinemeta:top-movies', 'letterboxd:letterboxd-watchlist'],
+            letterboxd: active,
+          ))
+          .toList();
+
+      expect(
+        outcomes.whereType<HomeRailFailed>().single.rowKey,
+        'letterboxd:letterboxd-watchlist',
+      );
+      expect(outcomes.whereType<HomeRailLoaded>().single.rowKey,
+          'cinemeta:top-movies');
+    });
+
+    test('built-in rails are not gated on a slow Letterboxd manifest', () async {
+      final manifest = Completer<String>();
+      final fetcher = HttpCatalogFetcher(get: (url) {
+        if (url.path.endsWith('/manifest.json')) return manifest.future;
+        return Future.value(cinemeta(['tt1']));
+      });
+      final seen = <String>[];
+      final done = fetcher
+          .fetchRails(keyless(
+            order: const ['cinemeta:top-movies', 'letterboxd:letterboxd-watchlist'],
+            letterboxd: active,
+          ))
+          .listen((o) => seen.add(o.rowKey))
+          .asFuture<void>();
+
+      await Future<void>.delayed(Duration.zero);
+      expect(seen, ['cinemeta:top-movies']); // manifest still pending
+
+      manifest.complete(jsonEncode({
+        'catalogs': [
+          {'id': 'letterboxd-watchlist', 'type': 'movie', 'name': 'Watchlist'},
+        ],
+      }));
+      await done;
+      expect(seen, contains('letterboxd:letterboxd-watchlist'));
+    });
+
+    test('fetchRail re-fetches a single rail', () async {
+      final fetcher = HttpCatalogFetcher(get: (url) async => cinemeta(['tt7']));
+      final outcome =
+          await fetcher.fetchRail(keyless(), 'cinemeta:top-series');
+
+      expect(outcome, isA<HomeRailLoaded>());
+      expect(outcome.rowKey, 'cinemeta:top-series');
+      expect((outcome as HomeRailLoaded).items.single.id, 'tt7');
     });
   });
 }

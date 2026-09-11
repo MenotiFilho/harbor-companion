@@ -28,11 +28,14 @@ class Meta {
   bool get isSeries => type == 'series';
 }
 
-/// A titled row of posters, rendered as a horizontal rail.
+/// A titled row of posters, rendered as a horizontal rail. [rowKey] is the
+/// stable identity from `home_rows.dart` (`cinemeta:*` / `tmdb:*` /
+/// `letterboxd:*`) that ties the rail to its fetch outcome, order and cache.
 class HomeRow {
+  final String rowKey;
   final String title;
   final List<Meta> items;
-  const HomeRow(this.title, this.items);
+  const HomeRow(this.rowKey, this.title, this.items);
 }
 
 /// A single episode within a season.

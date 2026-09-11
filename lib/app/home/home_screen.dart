@@ -1,10 +1,15 @@
-// Home tab (ticket 04): virtualized poster rails + detail navigation.
+// Home tab (tickets 04, 71): virtualized poster rails + detail navigation.
 //
-// A vertical `ListView.builder` of `HomeRowRail`s, each a horizontal
-// `ListView.builder` of poster cards — build cost is O(visible), not
-// O(catalog). This is the rendering architecture the Home perf spike (#8)
-// proved: sustained 60fps via lazy rails + raised `ImageCache` limits (set
-// app-wide in main()).
+// A vertical `ListView.builder` of one block per **planned rail** (ticket 71):
+// each block is the loaded rail, a skeleton while its outcome is pending, or a
+// local retry card when it failed without a previous copy. There is no global
+// spinner hiding available content, and the global empty / everything-failed
+// screens are derived from the per-rail state, not a blocking status.
+//
+// Each rail is a horizontal `ListView.builder` of poster cards — build cost is
+// O(visible), not O(catalog). This is the rendering architecture the Home perf
+// spike (#8) proved: sustained 60fps via lazy rails + raised `ImageCache` limits
+// (set app-wide in main()).
 //
 // Tapping a poster opens the detail page via the reducer's `openDetail`, then
 // pushes the detail route.
@@ -14,7 +19,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../routes.dart';
 import 'home_controller.dart';
-import 'home_reducer.dart';
+import 'home_rail.dart';
+import 'home_rows.dart';
 import 'meta.dart';
 import 'poster_image.dart';
 
@@ -31,44 +37,78 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    // Load rows on first mount — deferred to after the frame so the provider
-    // mutation never happens mid-build. Re-entry is a no-op while ready (the
-    // reducer guards it), so switching tabs doesn't refetch.
+    // Load rails on first mount — deferred to after the frame so the provider
+    // mutation never happens mid-build. Re-entry is a no-op once a round has
+    // started (the reducer guards it), so switching tabs doesn't refetch.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) ref.read(homeControllerProvider.notifier).load();
     });
   }
 
+  void _reload() => ref.read(homeControllerProvider.notifier).reload();
+
+  void _retryRail(String rowKey) =>
+      ref.read(homeControllerProvider.notifier).retryRail(rowKey);
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(homeControllerProvider);
-    switch (state.status) {
-      case HomeStatus.idle:
-      case HomeStatus.loading:
-        return const Center(child: CircularProgressIndicator());
-      case HomeStatus.failed:
-        return _CatalogError(
-          message: state.lastError ?? 'Could not load the catalog.',
-          onRetry: () => ref.read(homeControllerProvider.notifier).load(),
-        );
-      case HomeStatus.ready:
-        if (state.rows.isEmpty) {
-          return _EmptyCatalog(
-            onRefresh: () => ref.read(homeControllerProvider.notifier).reload(),
-          );
-        }
-        return ListView.builder(
-          key: const ValueKey('homeList'),
-          itemCount: state.rows.length,
-          itemExtent: kRowExtent,
-          itemBuilder: (context, i) => HomeRowRail(row: state.rows[i]),
-        );
+
+    if (state.allFailed) {
+      return _CatalogError(
+        message: state.firstError ?? 'Could not load the catalog.',
+        onRetry: _reload,
+      );
     }
+    if (state.isEmptyHome) {
+      return _EmptyCatalog(onRefresh: _reload);
+    }
+    final keys = state.renderKeys;
+    return ListView.builder(
+      key: const ValueKey('homeList'),
+      itemCount: keys.length,
+      itemExtent: kRowExtent,
+      itemBuilder: (context, i) {
+        final rowKey = keys[i];
+        return _RailBlock(
+          rail: state.rails[rowKey],
+          rowKey: rowKey,
+          onRetry: () => _retryRail(rowKey),
+        );
+      },
+    );
+  }
+}
+
+/// One planned rail's block: content if it has items (loaded, or a failed rail
+/// keeping its previous copy), a local retry card if it failed with nothing to
+/// show, a skeleton while pending.
+class _RailBlock extends StatelessWidget {
+  final RailState? rail;
+  final String rowKey;
+  final VoidCallback onRetry;
+
+  const _RailBlock({required this.rail, required this.rowKey, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    final current = rail;
+    if (current != null && current.hasItems) {
+      return HomeRowRail(row: HomeRow(rowKey, current.title, current.items));
+    }
+    if (current != null && current.status == RailStatus.failed) {
+      return _RailErrorCard(
+        title: current.title.isEmpty ? homeRowLabel(rowKey) : current.title,
+        onRetry: onRetry,
+      );
+    }
+    return HomeRailSkeleton(rowKey: rowKey, title: homeRowLabel(rowKey));
   }
 }
 
 /// Shown when the user turned the built-in rails off and has no own source
-/// (Letterboxd) rails either — an empty Home by choice, not a failure.
+/// (Letterboxd) rails either, or when a settled round produced nothing — an
+/// empty Home by choice or by empty catalogs, not a failure.
 class _EmptyCatalog extends StatelessWidget {
   final VoidCallback onRefresh;
   const _EmptyCatalog({required this.onRefresh});
@@ -170,6 +210,116 @@ class HomeRowRail extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               itemCount: row.items.length,
               itemBuilder: (context, j) => PosterCard(meta: row.items[j]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The pending block for a planned rail: its known title plus placeholder
+/// posters, so a slow rail holds its place without hiding the others.
+class HomeRailSkeleton extends StatelessWidget {
+  final String rowKey;
+  final String title;
+  const HomeRailSkeleton({super.key, required this.rowKey, required this.title});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      height: kRowExtent,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              key: ValueKey('railSkeleton:$rowKey'),
+              scrollDirection: Axis.horizontal,
+              physics: const NeverScrollableScrollPhysics(),
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: 4,
+              itemBuilder: (context, _) => Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Container(
+                  width: 110,
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The local retry card replacing a failed rail that has no previous copy; the
+/// other rails around it keep rendering.
+class _RailErrorCard extends StatelessWidget {
+  final String title;
+  final VoidCallback onRetry;
+  const _RailErrorCard({required this.title, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      height: kRowExtent,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Container(
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Row(
+                  children: [
+                    Icon(Icons.cloud_off, size: 20, color: scheme.onSurfaceVariant),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Couldn\'t load this row.',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodySmall
+                            ?.copyWith(color: scheme.onSurfaceVariant),
+                      ),
+                    ),
+                    TextButton(onPressed: onRetry, child: const Text('Retry')),
+                  ],
+                ),
+              ),
             ),
           ),
         ],

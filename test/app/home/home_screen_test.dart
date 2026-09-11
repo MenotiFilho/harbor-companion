@@ -1,74 +1,194 @@
-// Widget test for the Home screen (thin coverage: the reducer is the real
-// seam). Verifies the Home tab loads rows through the catalog fetcher and
-// renders virtualized rails with the row titles and poster labels.
+// Widget tests for the Home screen's per-rail render (ticket 71). Thin coverage
+// over a stub controller: the reducer is the real seam. Verifies skeleton for a
+// pending rail, the user's order preserved, a loaded-empty rail removed, a local
+// retry card that leaves the other rails on screen, and the derived empty /
+// everything-failed screens.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:harbor_companion/app/home/catalog_fetcher.dart';
 import 'package:harbor_companion/app/home/catalog_request.dart';
 import 'package:harbor_companion/app/home/home_controller.dart';
+import 'package:harbor_companion/app/home/home_rail.dart';
+import 'package:harbor_companion/app/home/home_reducer.dart';
 import 'package:harbor_companion/app/home/home_screen.dart';
 import 'package:harbor_companion/app/home/meta.dart';
 
-class _FakeCatalogFetcher implements CatalogFetcher {
-  final List<HomeRow> rows;
-  int calls = 0;
-
-  _FakeCatalogFetcher([this.rows = const [
-    HomeRow('Top Movies', [
-      Meta(id: 'tt1', type: 'movie', name: 'The Matrix'),
-      Meta(id: 'tt2', type: 'movie', name: 'Inception'),
-    ]),
-    HomeRow('Top Series', [
-      Meta(id: 'tt3', type: 'series', name: 'Breaking Bad'),
-    ]),
-  ]]);
+class _StubHomeController extends HomeController {
+  @override
+  final HomeState state;
+  int reloads = 0;
+  final List<String> retried = [];
+  _StubHomeController(this.state);
 
   @override
-  Future<List<HomeRow>> fetchRows(CatalogRequest request) async {
-    calls++;
-    return rows;
-  }
+  HomeState build() => state;
 
   @override
-  Future<DetailMeta> fetchDetail(String type, String id, String? tmdbKey) async =>
-      DetailMeta(meta: Meta(id: id, type: type, name: 'Detail'));
+  void load() {}
+
+  @override
+  void reload() => reloads++;
+
+  @override
+  void retryRail(String rowKey) => retried.add(rowKey);
 }
 
-Widget _app(CatalogFetcher fetcher) => ProviderScope(
-      overrides: [catalogFetcherProvider.overrideWithValue(fetcher)],
-      child: const MaterialApp(home: Scaffold(body: HomeScreen())),
-    );
+const twoRows = CatalogRequest(
+  rowOrder: ['cinemeta:top-movies', 'cinemeta:top-series'],
+);
+const seriesFirst = CatalogRequest(
+  rowOrder: ['cinemeta:top-series', 'cinemeta:top-movies'],
+);
+
+Meta movie({String id = 'tt1', String name = 'The Matrix'}) =>
+    Meta(id: id, type: 'movie', name: name);
+
+RailState loaded(String rowKey, String title, List<Meta> items) =>
+    RailState(rowKey: rowKey, title: title, items: items, status: RailStatus.loaded);
+
+RailState failed(String rowKey, {String title = ''}) => RailState(
+    rowKey: rowKey,
+    title: title,
+    status: RailStatus.failed,
+    error: 'boom',
+  );
+
+Widget _app(HomeState state, {_StubHomeController? controller}) {
+  controller ??= _StubHomeController(state);
+  return ProviderScope(
+    overrides: [homeControllerProvider.overrideWith(() => controller!)],
+    child: const MaterialApp(home: Scaffold(body: HomeScreen())),
+  );
+}
 
 void main() {
-  testWidgets('Home loads rows and renders rail titles + posters', (tester) async {
-    await tester.pumpWidget(_app(_FakeCatalogFetcher()));
-    await tester.pump(); // load() → fetch resolves
-    await tester.pump(); // rows publish + rebuild
+  testWidgets('a pending rail renders its title + a skeleton, no global spinner',
+      (tester) async {
+    await tester.pumpWidget(_app(HomeState(request: twoRows)));
 
+    expect(find.byType(HomeRailSkeleton), findsNWidgets(2));
     expect(find.text('Top Movies'), findsOneWidget);
     expect(find.text('Top Series'), findsOneWidget);
-    expect(find.text('The Matrix'), findsOneWidget);
-    expect(find.text('Inception'), findsOneWidget);
-    expect(find.text('Breaking Bad'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
   });
 
-  testWidgets('an empty catalog shows the empty state, not a blank grid',
+  testWidgets('rails render in the user order despite arrival order',
       (tester) async {
-    final fetcher = _FakeCatalogFetcher(const []);
-    await tester.pumpWidget(_app(fetcher));
+    final state = HomeState(
+      request: seriesFirst,
+      rails: {
+        'cinemeta:top-movies': loaded('cinemeta:top-movies', 'Top Movies', [movie()]),
+        'cinemeta:top-series':
+            loaded('cinemeta:top-series', 'Top Series', [movie(id: 'tt2', name: 'Breaking Bad')]),
+      },
+    );
+    await tester.pumpWidget(_app(state));
+
+    final moviesY = tester.getTopLeft(find.text('Top Movies')).dy;
+    final seriesY = tester.getTopLeft(find.text('Top Series')).dy;
+    expect(seriesY, lessThan(moviesY));
+    expect(find.byType(HomeRailSkeleton), findsNothing);
+  });
+
+  testWidgets('a loaded-empty rail is removed, not left as a gap', (tester) async {
+    final state = HomeState(
+      request: twoRows,
+      rails: {
+        'cinemeta:top-movies': loaded('cinemeta:top-movies', 'Top Movies', [movie()]),
+        'cinemeta:top-series':
+            loaded('cinemeta:top-series', 'Top Series', const []),
+      },
+    );
+    await tester.pumpWidget(_app(state));
+
+    expect(find.text('Top Movies'), findsOneWidget);
+    expect(find.text('The Matrix'), findsOneWidget);
+    expect(find.text('Top Series'), findsNothing);
+  });
+
+  testWidgets('a failed rail without a copy shows a local retry card; others stay',
+      (tester) async {
+    final controller = _StubHomeController(
+      HomeState(
+        request: twoRows,
+        rails: {
+          'cinemeta:top-movies': loaded('cinemeta:top-movies', 'Top Movies', [movie()]),
+          'cinemeta:top-series': failed('cinemeta:top-series'),
+        },
+      ),
+    );
+    await tester.pumpWidget(_app(controller.state, controller: controller));
+
+    expect(find.text('Top Movies'), findsOneWidget);
+    expect(find.text('The Matrix'), findsOneWidget);
+    expect(find.text('Top Series'), findsOneWidget);
+    expect(find.textContaining("Couldn't load"), findsOneWidget);
+
+    await tester.tap(find.text('Retry'));
     await tester.pump();
-    await tester.pump();
+    expect(controller.retried, ['cinemeta:top-series']);
+  });
+
+  testWidgets('a failed rail with a previous copy keeps its content', (tester) async {
+    final state = HomeState(
+      request: twoRows,
+      rails: {
+        'cinemeta:top-movies': loaded('cinemeta:top-movies', 'Top Movies', [movie()]),
+        'cinemeta:top-series': failed(
+          'cinemeta:top-series',
+          title: 'Top Series',
+        ).copyWith(items: [movie(id: 'tt2', name: 'Breaking Bad')]),
+      },
+    );
+    await tester.pumpWidget(_app(state));
+
+    expect(find.text('Breaking Bad'), findsOneWidget);
+    expect(find.text('Retry'), findsNothing);
+  });
+
+  testWidgets('a settled plan with no content shows the derived empty Home',
+      (tester) async {
+    final state = HomeState(
+      request: twoRows,
+      rails: {
+        'cinemeta:top-movies':
+            const RailState(rowKey: 'cinemeta:top-movies', status: RailStatus.absent),
+        'cinemeta:top-series':
+            loaded('cinemeta:top-series', 'Top Series', const []),
+      },
+    );
+    await tester.pumpWidget(_app(state));
 
     expect(find.text('No catalogs to show'), findsOneWidget);
-    expect(find.text('Open settings'), findsOneWidget);
+    expect(find.byType(HomeRailSkeleton), findsNothing);
+  });
 
-    // Refresh forces a refetch even though the terminal state is `ready`.
+  testWidgets('all rails failed shows the derived global error screen',
+      (tester) async {
+    final state = HomeState(
+      request: twoRows,
+      rails: {
+        'cinemeta:top-movies': failed('cinemeta:top-movies'),
+        'cinemeta:top-series': failed('cinemeta:top-series'),
+      },
+    );
+    await tester.pumpWidget(_app(state));
+
+    expect(find.textContaining('boom'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
+  });
+
+  testWidgets('the empty screen Refresh starts a new round', (tester) async {
+    final controller = _StubHomeController(
+      HomeState(request: const CatalogRequest(rowOrder: [])),
+    );
+    await tester.pumpWidget(_app(controller.state, controller: controller));
+
+    expect(find.text('No catalogs to show'), findsOneWidget);
     await tester.tap(find.text('Refresh'));
     await tester.pump();
-    await tester.pump();
-    expect(fetcher.calls, 2);
+    expect(controller.reloads, 1);
   });
 }

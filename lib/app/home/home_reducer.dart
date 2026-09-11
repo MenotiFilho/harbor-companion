@@ -1,21 +1,30 @@
-// Pure Home/catalog state model (ticket 04).
+// Pure Home/catalog state model (ticket 04; per-rail rewrite in ticket 71).
 //
 // `(HomeState, HomeEvent) => HomeState` reducer producing an effects buffer the
 // controller drains through injected side-channels (the catalog HTTP fetcher
 // and the WS client's playMeta command). No I/O, no timers.
 //
-// The three decisions this module owns, and the seam tests pin:
+// The decisions this module owns, and the seam tests pin:
+//   - **Per-rail fetch outcomes** (ticket 71, ADR-0004): the fetcher emits one
+//     `loaded` / `failed` / `absent` per planned `rowKey`; the reducer commits
+//     each atomically. A `loaded` rail (even empty) replaces the previous copy,
+//     a `failed` rail keeps it, an `absent` rail is dropped. A round is pinned
+//     by a monotonically increasing [HomeState.round] so a rail is never
+//     assembled from two rounds.
+//   - **Derived global states** (ticket 71): the Home renders one block per
+//     planned rail; "empty Home" and "everything failed" are compositions of the
+//     per-rail state, never a blocking `HomeStatus`.
 //   - **TMDB-if-key-else-Cinemeta** rows, auto-upgrading the moment a `tmdbKey`
 //     lands in a snapshot (and downgrading back to Cinemeta if it is removed).
 //   - **Catalog sources on/off** (ticket 41): rows carry the [CatalogRequest] in
-//     effect — built-in rails flag + Stremboxd config — so toggling either
-//     refetches and a late fetch from a superseded request is dropped.
+//     effect; toggling either starts a new round and a late outcome from a
+//     superseded round is dropped.
 //   - **Detail → playMeta**: the detail page loads seasons/episodes and the
-//     play button encodes the host-driven `playMeta` command (movie, series
-//     first episode, or a specific episode — `resume` always true).
+//     play button encodes the host-driven `playMeta` command.
 //
 // Effects vocabulary (the Notifier → adapter surface):
-//   `fetch:rows`   → fetch home rows with the current key + config, then RowsLoaded/Failed
+//   `fetch:rails` → fetch every planned rail, streaming outcomes back per rail
+//   `fetch:rail`  → re-fetch the single rail named by [HomeState.retryingRail]
 //   `fetch:detail` → fetch the requested meta's detail, then DetailLoaded/Failed
 //   `playMeta`     → send the pending playMeta command to the WS client
 //
@@ -25,9 +34,8 @@ library;
 
 import '../letterboxd/letterboxd.dart';
 import 'catalog_request.dart';
+import 'home_rail.dart';
 import 'meta.dart';
-
-enum HomeStatus { idle, loading, ready, failed }
 
 enum DetailStatus { loading, ready, failed }
 
@@ -81,15 +89,23 @@ class DetailState {
 }
 
 class HomeState {
-  final HomeStatus status;
-
-  /// The request the current rows were (or are being) fetched for: the TMDB key
-  /// in effect, whether built-in rails are shown, and the Letterboxd config.
+  /// The request the current rail round runs for: the TMDB key in effect,
+  /// whether built-in rails are shown, and the Letterboxd config.
   final CatalogRequest request;
 
-  final List<HomeRow> rows;
+  /// Per-`rowKey` rail state. Missing means the current round has not settled
+  /// that rail (a skeleton). Entries survive a new round so a failed revalidation
+  /// can keep the previous copy.
+  final Map<String, RailState> rails;
+
+  /// Monotonic round id, bumped whenever a new full-rail round starts. Outcomes
+  /// carry the round they belong to; a mismatch is dropped ("never two rounds").
+  final int round;
+
+  /// The rail a single-rail retry is currently re-fetching (`fetch:rail`).
+  final String? retryingRail;
+
   final DetailState? detail;
-  final String? lastError;
   final String? notice;
   final PlayMetaCommand? pendingPlay; // the most recent playMeta command
 
@@ -98,11 +114,11 @@ class HomeState {
   final List<String> effects;
 
   HomeState({
-    this.status = HomeStatus.idle,
     this.request = const CatalogRequest(),
-    this.rows = const [],
+    this.rails = const {},
+    this.round = 0,
+    this.retryingRail,
     this.detail,
-    this.lastError,
     this.notice,
     this.pendingPlay,
     List<String>? effects,
@@ -112,25 +128,79 @@ class HomeState {
   LetterboxdConfig get letterboxd => request.letterboxd;
   bool get showBuiltInCatalogs => request.showBuiltInCatalogs;
 
+  /// The rails to render, in the user's chosen order. Pure — the same plan the
+  /// fetcher resolves, so a pending rail is known before its outcome arrives.
+  List<String> get plannedKeys => planHomeRowKeys(request);
+
+  bool isPending(String rowKey) {
+    final rail = rails[rowKey];
+    return rail == null || rail.status == RailStatus.pending;
+  }
+
+  /// The planned rails that still have a visible block: content or a failed
+  /// rail's local retry card (pending rails are visible as skeletons). A
+  /// `loaded` empty rail and an `absent` rail render nothing.
+  List<String> get renderKeys => [
+        for (final key in plannedKeys)
+          if (_renders(key)) key,
+      ];
+
+  bool _renders(String rowKey) {
+    final rail = rails[rowKey];
+    if (rail != null && rail.hasItems) return true;
+    if (isPending(rowKey)) return true;
+    return rail?.status == RailStatus.failed;
+  }
+
+  /// Some planned rail still awaits its outcome in the current round.
+  bool get hasPending => plannedKeys.any(isPending);
+
+  /// Some planned rail has items on screen (loaded, or a failed rail keeping the
+  /// previous copy).
+  bool get hasContent => plannedKeys.any((key) => rails[key]?.hasItems ?? false);
+
+  /// Every planned rail failed and nothing is on screen — the global error.
+  bool get allFailed {
+    if (plannedKeys.isEmpty || hasContent || hasPending) return false;
+    return plannedKeys.every((key) => rails[key]?.status == RailStatus.failed);
+  }
+
+  /// Nothing planned, or the round settled with nothing to show (all loaded
+  /// empty / absent) — the empty Home.
+  bool get isEmptyHome {
+    if (plannedKeys.isEmpty) return true;
+    if (hasContent || hasPending) return false;
+    return !allFailed;
+  }
+
+  /// The first rail error in plan order, for the global failure screen.
+  String? get firstError {
+    for (final key in plannedKeys) {
+      final error = rails[key]?.error;
+      if (error != null) return error;
+    }
+    return null;
+  }
+
   HomeState copy({
-    HomeStatus? status,
     CatalogRequest? request,
-    List<HomeRow>? rows,
+    Map<String, RailState>? rails,
+    int? round,
+    String? retryingRail,
+    bool clearRetryingRail = false,
     DetailState? detail,
     bool clearDetail = false,
-    String? lastError,
-    bool clearLastError = false,
     String? notice,
     bool clearNotice = false,
     PlayMetaCommand? pendingPlay,
     List<String>? effects,
   }) {
     return HomeState(
-      status: status ?? this.status,
       request: request ?? this.request,
-      rows: rows ?? this.rows,
+      rails: rails ?? this.rails,
+      round: round ?? this.round,
+      retryingRail: clearRetryingRail ? null : (retryingRail ?? this.retryingRail),
       detail: clearDetail ? null : (detail ?? this.detail),
-      lastError: clearLastError ? null : (lastError ?? this.lastError),
       notice: clearNotice ? null : (notice ?? this.notice),
       pendingPlay: pendingPlay ?? this.pendingPlay,
       effects: effects ?? this.effects,
@@ -146,19 +216,19 @@ sealed class HomeEvent {
   const HomeEvent();
 }
 
-/// Load (or retry after a failure) the home rows. No-op while already loading
-/// or ready — the Home tab re-entry does not refetch.
+/// Load the planned rails on first mount. No-op once a round has started — the
+/// Home tab re-entry does not refetch.
 class LoadHome extends HomeEvent {
   const LoadHome();
 }
 
-/// Force a rows refetch regardless of status. The Home empty state's Refresh
-/// action uses it — `LoadHome` would no-op while ready with zero rows.
+/// Force a fresh round regardless of state. The empty/error screens' Refresh
+/// action uses it — `LoadHome` would no-op after the first round.
 class RefreshHome extends HomeEvent {
   const RefreshHome();
 }
 
-/// The host's `tmdbKey` changed in a snapshot: upgrade (or downgrade) the rows.
+/// The host's `tmdbKey` changed in a snapshot: start a keyed (or keyless) round.
 class KeyChanged extends HomeEvent {
   final String? tmdbKey;
   const KeyChanged(this.tmdbKey);
@@ -172,16 +242,28 @@ class CatalogSourcesChanged extends HomeEvent {
   const CatalogSourcesChanged(this.request);
 }
 
-class RowsLoaded extends HomeEvent {
-  final List<HomeRow> rows;
+/// One planned rail resolved. [round] + [request] pin the round that produced
+/// it; an outcome from a superseded round is dropped.
+class RailOutcomeReceived extends HomeEvent {
+  final HomeRailOutcome outcome;
   final CatalogRequest request;
-  const RowsLoaded(this.rows, this.request);
+  final int round;
+  const RailOutcomeReceived(this.outcome, this.request, this.round);
 }
 
-class RowsFailed extends HomeEvent {
+/// The rail stream itself errored (rare — the real fetcher wraps per-rail
+/// failures). Every still-pending planned rail fails, keeping any previous copy.
+class RailsFetchFailed extends HomeEvent {
   final Object error;
   final CatalogRequest request;
-  const RowsFailed(this.error, this.request);
+  final int round;
+  const RailsFetchFailed(this.error, this.request, this.round);
+}
+
+/// Re-fetch a single failed rail from its local retry card.
+class RetryRail extends HomeEvent {
+  final String rowKey;
+  const RetryRail(this.rowKey);
 }
 
 class OpenDetail extends HomeEvent {
@@ -223,67 +305,129 @@ class PlayMeta extends HomeEvent {
 /// `remote-open-bridge.tsx`. Shared with the Search reducer (anime → series).
 String coerceMetaType(String type) => type == 'movie' ? 'movie' : 'series';
 
+/// Starts a fresh round for [request]: bump the round id, mark every planned
+/// rail pending (keeping any previous copy for a failed revalidation), and emit
+/// the fetch effect.
+HomeState _startRound(HomeState s, CatalogRequest request, String notice) {
+  final rails = Map<String, RailState>.from(s.rails);
+  for (final key in planHomeRowKeys(request)) {
+    final prev = rails[key];
+    rails[key] = prev == null
+        ? RailState(rowKey: key)
+        : prev.copyWith(status: RailStatus.pending, clearError: true);
+  }
+  s.effects.add('fetch:rails');
+  return s.copy(
+    request: request,
+    rails: rails,
+    round: s.round + 1,
+    clearRetryingRail: true,
+    notice: notice,
+  );
+}
+
 HomeState homeReduce(HomeState s, HomeEvent e) {
   switch (e) {
     case LoadHome():
-      if (s.status == HomeStatus.loading || s.status == HomeStatus.ready) {
-        return s.copy(notice: 'rows already ${s.status.name} — skipped');
+      if (s.round > 0) {
+        return s.copy(notice: 'home already loaded — skipped');
       }
-      s.effects.add('fetch:rows');
-      return s.copy(
-        status: HomeStatus.loading,
-        clearLastError: true,
-        notice: 'loading home rows (${s.tmdbKey == null ? 'cinemeta' : 'tmdb'})…',
+      return _startRound(
+        s,
+        s.request,
+        'loading home rails (${s.tmdbKey == null ? 'cinemeta' : 'tmdb'})…',
       );
 
     case RefreshHome():
-      s.effects.add('fetch:rows');
-      return s.copy(
-        status: HomeStatus.loading,
-        clearLastError: true,
-        notice: 'refreshing home rows…',
-      );
+      return _startRound(s, s.request, 'refreshing home rails…');
 
     case KeyChanged(tmdbKey: final key):
       if (key == s.tmdbKey) return s.copy(notice: 'tmdbKey unchanged');
-      s.effects.add('fetch:rows');
-      return s.copy(
-        request: s.request.copyWith(tmdbKey: key),
-        status: HomeStatus.loading,
-        clearLastError: true,
-        notice: 'tmdbKey ${key == null ? 'removed' : 'arrived'} → refetching rows',
+      return _startRound(
+        s,
+        s.request.copyWith(tmdbKey: key),
+        'tmdbKey ${key == null ? 'removed' : 'arrived'} → refetching rails',
       );
 
     case CatalogSourcesChanged(request: final request):
       if (request == s.request) return s.copy(notice: 'catalog sources unchanged');
-      s.effects.add('fetch:rows');
-      return s.copy(
-        request: request,
-        status: HomeStatus.loading,
-        clearLastError: true,
-        notice: 'catalog sources changed → refetching rows',
-      );
+      return _startRound(s, request, 'catalog sources changed → refetching rails');
 
-    case RowsLoaded(rows: final rows, request: final request):
-      if (request != s.request) {
-        return s.copy(notice: 'stale rows — dropped');
+    case RailOutcomeReceived(
+        outcome: final outcome,
+        request: final request,
+        round: final round
+      ):
+      if (round != s.round || request != s.request) {
+        return s.copy(notice: 'stale rail ${outcome.rowKey} — dropped');
+      }
+      final rails = Map<String, RailState>.from(s.rails);
+      final prev = rails[outcome.rowKey];
+      switch (outcome) {
+        case HomeRailLoaded(title: final title, items: final items):
+          rails[outcome.rowKey] = RailState(
+            rowKey: outcome.rowKey,
+            title: title,
+            items: items,
+            status: RailStatus.loaded,
+          );
+        case HomeRailFailed(error: final error):
+          rails[outcome.rowKey] = RailState(
+            rowKey: outcome.rowKey,
+            title: prev?.title ?? '',
+            // Keep the previous copy: a failure never blanks a loaded rail.
+            items: prev?.items ?? const [],
+            status: RailStatus.failed,
+            error: '$error',
+          );
+        case HomeRailAbsent():
+          rails[outcome.rowKey] = RailState(
+            rowKey: outcome.rowKey,
+            title: prev?.title ?? '',
+            status: RailStatus.absent,
+          );
       }
       return s.copy(
-        status: HomeStatus.ready,
-        rows: rows,
-        clearLastError: true,
-        notice: '${rows.length} rows loaded',
+        rails: rails,
+        clearRetryingRail: s.retryingRail == outcome.rowKey,
       );
 
-    case RowsFailed(error: final error, request: final request):
-      if (request != s.request) {
-        return s.copy(notice: 'stale rows failure — dropped');
+    case RailsFetchFailed(
+        error: final error,
+        request: final request,
+        round: final round
+      ):
+      if (round != s.round || request != s.request) {
+        return s.copy(notice: 'stale rail failure — dropped');
       }
+      final rails = Map<String, RailState>.from(s.rails);
+      for (final key in s.plannedKeys) {
+        if (!s.isPending(key)) continue;
+        final prev = rails[key];
+        rails[key] = RailState(
+          rowKey: key,
+          title: prev?.title ?? '',
+          items: prev?.items ?? const [],
+          status: RailStatus.failed,
+          error: '$error',
+        );
+      }
+      return s.copy(rails: rails, notice: 'rail stream failed');
+
+    case RetryRail(rowKey: final key):
+      if (!s.plannedKeys.contains(key)) {
+        return s.copy(notice: 'retry for unplanned rail $key ignored');
+      }
+      final rails = Map<String, RailState>.from(s.rails);
+      final prev = rails[key];
+      rails[key] = prev == null
+          ? RailState(rowKey: key)
+          : prev.copyWith(status: RailStatus.pending, clearError: true);
+      s.effects.add('fetch:rail');
       return s.copy(
-        status: HomeStatus.failed,
-        rows: const [],
-        lastError: 'catalog fetch failed: $error',
-        notice: 'home rows failed — retry?',
+        rails: rails,
+        retryingRail: key,
+        notice: 'retrying rail $key…',
       );
 
     case OpenDetail(meta: final meta):
