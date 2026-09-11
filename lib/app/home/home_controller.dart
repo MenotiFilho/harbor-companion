@@ -47,9 +47,18 @@ final homeCacheClockProvider = Provider<int Function()>(
 class HomeController extends Notifier<HomeState> {
   StreamSubscription<HomeRailOutcome>? _railsSub;
 
+  /// Completes when the in-flight round settles (all planned network outcomes
+  /// resolved). Created when a round starts; a pull that joins a round awaits
+  /// this same future, so the pull indicator clears exactly on settle.
+  Completer<void>? _roundSettled;
+
   @override
   HomeState build() {
-    ref.onDispose(() => _railsSub?.cancel());
+    ref.onDispose(() {
+      _railsSub?.cancel();
+      final settled = _roundSettled;
+      if (settled != null && !settled.isCompleted) settled.complete();
+    });
     // Seed the current key + Letterboxd config, then upgrade/refetch the rows
     // whenever either changes: the host's `tmdbKey` arrives in a snapshot (the
     // WS client persists + re-applies it), and the Letterboxd manifest URL /
@@ -92,10 +101,21 @@ class HomeController extends Notifier<HomeState> {
             settings?.enabledLetterboxdCatalogs ?? kDefaultLetterboxdCatalogIds,
       );
 
+  /// The automatic once-per-process trigger, dispatched when the Home first
+  /// becomes available after connect (ADR-0008). A second call is a no-op.
   void load() => _dispatch(const LoadHome());
 
-  /// Force a fresh round (the empty/error screens' Refresh action).
+  /// Force a fresh round (the empty/error screens' Refresh/Retry action).
   void reload() => _dispatch(const RefreshHome());
+
+  /// Manual pull-to-refresh. Starts a round when none is in flight; a pull
+  /// during an in-flight round joins it (ADR-0008 coalescing) instead of
+  /// starting a second. The returned future completes when the round settles,
+  /// so the pull indicator stays up until every planned rail resolves.
+  Future<void> refresh() {
+    _dispatch(const RefreshHome());
+    return _roundSettled?.future ?? Future<void>.value();
+  }
 
   /// Re-fetch one failed rail from its local retry card.
   void retryRail(String rowKey) => _dispatch(RetryRail(rowKey));
@@ -111,7 +131,23 @@ class HomeController extends Notifier<HomeState> {
 
   void _dispatch(HomeEvent event) {
     state = homeReduce(state, event);
+    _syncRoundCompleter();
     _drain(state);
+  }
+
+  /// Keeps [_roundSettled] in step with the reducer's explicit in-flight signal:
+  /// a round start creates the completer, the moment the plan stops pending it
+  /// completes (and is cleared for the next round). Cache seeding never trips
+  /// this — only a network outcome (or the stream failing) does.
+  void _syncRoundCompleter() {
+    if (state.roundInFlight) {
+      _roundSettled ??= Completer<void>();
+      return;
+    }
+    final settled = _roundSettled;
+    if (settled == null) return;
+    _roundSettled = null;
+    if (!settled.isCompleted) settled.complete();
   }
 
   void _drain(HomeState next) {
@@ -155,6 +191,21 @@ class HomeController extends Notifier<HomeState> {
       onError: (Object error) {
         if (!ref.mounted) return;
         _dispatch(RailsFetchFailed(error, request, round));
+      },
+      // Safety net: a stream that ends before emitting every planned rail would
+      // otherwise leave the round (and the pull indicator) hanging. Fail the
+      // still-pending rails of this round; a normal stream has none left.
+      onDone: () {
+        if (!ref.mounted) return;
+        if (state.round == round &&
+            state.request == request &&
+            state.roundInFlight) {
+          _dispatch(RailsFetchFailed(
+            StateError('rail stream closed before every rail resolved'),
+            request,
+            round,
+          ));
+        }
       },
     );
   }

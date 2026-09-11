@@ -77,7 +77,10 @@ void main() {
     });
 
     test('RefreshHome starts a new round even after the first settled', () {
-      var s = fold(started(), const HomeRailAbsent(firstKey));
+      var s = started();
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailAbsent(key));
+      }
       final after = homeReduce(s, const RefreshHome());
       expect(after.round, 2);
       expect(drain(after), ['fetch:rails']);
@@ -178,6 +181,9 @@ void main() {
   group('never two rounds', () {
     test('an outcome from a superseded round is dropped', () {
       var s = started(); // round 1
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailAbsent(key));
+      }
       s = homeReduce(s, const RefreshHome()); // round 2
       final stale = homeReduce(
         s,
@@ -357,6 +363,146 @@ void main() {
         const HomeRailLoaded('cinemeta:top-movies', 'Top Movies', [], hasMore: true),
       );
       expect(s.rails[firstKey]!.hasMore, isTrue);
+    });
+  });
+
+  group('refresh triggers (ticket 74)', () {
+    /// Settles the round [s] is on by dropping every planned rail absent.
+    HomeState settle(HomeState s) {
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailAbsent(key));
+      }
+      return s;
+    }
+
+    test('the automatic round fires once and arms the process latch', () {
+      final s = homeReduce(HomeState(request: req()), const LoadHome());
+      expect(s.round, 1);
+      expect(s.autoRefreshDone, isTrue);
+      expect(s.roundManual, isFalse);
+      drain(s);
+
+      final again = homeReduce(s, const LoadHome());
+      expect(again.round, 1);
+      expect(drain(again), isEmpty);
+    });
+
+    test('settling the automatic round does not clear the latch', () {
+      final s = settle(started());
+      final again = homeReduce(s, const LoadHome());
+      expect(again.round, s.round);
+      expect(drain(again), isEmpty);
+    });
+
+    test('the latch arms even when the first availability joins a round', () {
+      // A source-change round is already in flight before the Home opens.
+      var s = homeReduce(
+        HomeState(),
+        CatalogSourcesChanged(req(order: [firstKey])),
+      );
+      drain(s);
+      expect(s.roundInFlight, isTrue);
+      expect(s.autoRefreshDone, isFalse);
+
+      final joined = homeReduce(s, const LoadHome());
+      expect(joined.round, s.round);
+      expect(joined.autoRefreshDone, isTrue);
+      expect(drain(joined), isEmpty);
+    });
+
+    test('a manual pull during an in-flight round joins and marks it manual',
+        () {
+      final s = started();
+      expect(s.roundInFlight, isTrue);
+
+      final joined = homeReduce(s, const RefreshHome());
+      expect(joined.round, s.round);
+      expect(drain(joined), isEmpty);
+      expect(joined.roundManual, isTrue);
+      expect(joined.roundInFlight, isTrue);
+    });
+
+    test('a manual pull after settle starts a new manual round', () {
+      final done = settle(started());
+      expect(done.roundInFlight, isFalse);
+
+      final next = homeReduce(done, const RefreshHome());
+      expect(next.round, done.round + 1);
+      expect(drain(next), ['fetch:rails']);
+      expect(next.roundManual, isTrue);
+      expect(next.roundInFlight, isTrue);
+      expect(next.roundSummary, isNull, reason: 'the previous summary cleared');
+    });
+
+    test('cache seeding does not settle the round (network still in flight)',
+        () {
+      var s = started();
+      final cached = {
+        for (final key in s.plannedKeys)
+          key: CachedRail(items: items(key), updatedAt: 1000),
+      };
+      s = homeReduce(s, CacheLoaded(s.request, cached));
+
+      // Cached rails render (no skeletons) but the round is not done.
+      expect(s.hasPending, isFalse);
+      expect(s.roundInFlight, isTrue);
+      expect(s.roundSummary, isNull);
+    });
+
+    test('the summary reports a fully-failed manual round for feedback', () {
+      var s = settle(started());
+
+      // An all-failed automatic round is quiet.
+      var auto = started();
+      for (final key in auto.plannedKeys) {
+        auto = fold(auto, HomeRailFailed(key, Exception('x')));
+      }
+      expect(auto.roundSummary!.manual, isFalse);
+      expect(auto.roundSummary!.allFailed, isTrue);
+      expect(auto.roundSummary!.notifyFailure, isFalse);
+
+      s = homeReduce(s, const RefreshHome());
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailFailed(key, Exception('x')));
+      }
+      expect(s.roundSummary!.round, s.round);
+      expect(s.roundSummary!.manual, isTrue);
+      expect(s.roundSummary!.allFailed, isTrue);
+      expect(s.roundSummary!.notifyFailure, isTrue);
+    });
+
+    test('a partial failure never notifies', () {
+      var s = homeReduce(settle(started()), const RefreshHome());
+      for (final key in s.plannedKeys) {
+        s = fold(
+          s,
+          key == firstKey
+              ? HomeRailLoaded(key, 'Top Movies', items('a'))
+              : HomeRailFailed(key, Exception('x')),
+        );
+      }
+      expect(s.roundSummary!.allFailed, isFalse);
+      expect(s.roundSummary!.notifyFailure, isFalse);
+    });
+
+    test('a failed manual round with cache stays silent', () {
+      var s = started();
+      for (final key in s.plannedKeys) {
+        s = fold(
+          s,
+          key == firstKey
+              ? HomeRailLoaded(key, 'Top Movies', items('a'))
+              : HomeRailAbsent(key),
+        );
+      }
+      s = homeReduce(s, const RefreshHome());
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailFailed(key, Exception('x')));
+      }
+      expect(s.hasContent, isTrue);
+      expect(s.roundSummary!.manual, isTrue);
+      expect(s.roundSummary!.allFailed, isFalse);
+      expect(s.roundSummary!.notifyFailure, isFalse);
     });
   });
 

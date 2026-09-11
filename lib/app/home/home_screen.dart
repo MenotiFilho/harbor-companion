@@ -20,6 +20,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../routes.dart';
 import 'home_controller.dart';
 import 'home_rail.dart';
+import 'home_reducer.dart';
 import 'home_rows.dart';
 import 'meta.dart';
 import 'poster_image.dart';
@@ -50,22 +51,47 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void _retryRail(String rowKey) =>
       ref.read(homeControllerProvider.notifier).retryRail(rowKey);
 
+  /// The pull gesture (ADR-0008): starts a round or joins the one in flight,
+  /// and keeps the indicator up until every planned rail settles. A short
+  /// snackbar appears only when a manual round fails entirely — partial
+  /// failures and the automatic round stay silent (the age badge covers cache).
+  Future<void> _pullRefresh() async {
+    await ref.read(homeControllerProvider.notifier).refresh();
+    if (!mounted) return;
+    final summary = ref.read(homeControllerProvider).roundSummary;
+    if (summary?.notifyFailure ?? false) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          content: const Text("Couldn't refresh the catalog."),
+          duration: const Duration(seconds: 2),
+        ));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(homeControllerProvider);
+    return RefreshIndicator(onRefresh: _pullRefresh, child: _body(state));
+  }
 
+  Widget _body(HomeState state) {
     if (state.allFailed) {
-      return _CatalogError(
-        message: state.firstError ?? 'Could not load the catalog.',
-        onRetry: _reload,
+      return _ScrollableMessage(
+        child: _CatalogError(
+          message: state.firstError ?? 'Could not load the catalog.',
+          onRetry: _reload,
+        ),
       );
     }
     if (state.isEmptyHome) {
-      return _EmptyCatalog(onRefresh: _reload);
+      return _ScrollableMessage(child: _EmptyCatalog(onRefresh: _reload));
     }
     final keys = state.renderKeys;
     return ListView.builder(
       key: const ValueKey('homeList'),
+      // Always accepts overscroll so a short Home still pulls to refresh.
+      physics: const AlwaysScrollableScrollPhysics(),
       itemCount: keys.length,
       itemExtent: kRowExtent,
       itemBuilder: (context, i) {
@@ -76,6 +102,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           onRetry: () => _retryRail(rowKey),
         );
       },
+    );
+  }
+}
+
+/// Wraps a no-content screen (empty Home / global error) in a scrollable that
+/// always accepts overscroll, so pull-to-refresh works even with nothing to
+/// scroll. The screen itself keeps its buttons (ADR-0008).
+class _ScrollableMessage extends StatelessWidget {
+  final Widget child;
+  const _ScrollableMessage({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: constraints.maxHeight),
+          child: child,
+        ),
+      ),
     );
   }
 }

@@ -75,6 +75,31 @@ class RecordingCatalogFetcher implements CatalogFetcher {
 /// Lets the settings restore + the resulting fetch microtasks settle.
 Future<void> settle() => Future<void>.delayed(Duration.zero);
 
+/// A fetcher whose rail stream is held open so a test controls exactly when the
+/// round settles — used to pin coalescing (a pull joining an in-flight round).
+class ControllableCatalogFetcher implements CatalogFetcher {
+  final List<CatalogRequest> rowRequests = [];
+  StreamController<HomeRailOutcome>? _rails;
+
+  @override
+  Stream<HomeRailOutcome> fetchRails(CatalogRequest request) {
+    rowRequests.add(request);
+    return (_rails = StreamController<HomeRailOutcome>()).stream;
+  }
+
+  void emit(HomeRailOutcome outcome) => _rails!.add(outcome);
+
+  void finish() => _rails?.close();
+
+  @override
+  Future<HomeRailOutcome> fetchRail(CatalogRequest request, String rowKey) async =>
+      HomeRailAbsent(rowKey);
+
+  @override
+  Future<DetailMeta> fetchDetail(String type, String id, String? tmdbKey) async =>
+      DetailMeta(meta: Meta(id: id, type: type, name: 'Detail'));
+}
+
 /// Cache store that records its reads/sweeps so a test can prove the cache is
 /// consulted before the network round.
 class LoggingCacheStore extends InMemoryHomeCacheStore {
@@ -369,6 +394,122 @@ void main() {
         )),
         isNull,
       );
+    });
+  });
+
+  group('refresh triggers (ticket 74)', () {
+    test('load is a no-op after the first process round', () async {
+      final fetcher = RecordingCatalogFetcher();
+      final container = make(fetcher, InMemorySettingsStore());
+      addTearDown(container.dispose);
+      final notifier = container.read(homeControllerProvider.notifier);
+
+      notifier.load();
+      await settle();
+      notifier.load();
+      await settle();
+
+      expect(fetcher.rowRequests, hasLength(1));
+    });
+
+    test('a pull during an in-flight round joins it and resolves with it',
+        () async {
+      final fetcher = ControllableCatalogFetcher();
+      final container = make(fetcher, InMemorySettingsStore());
+      addTearDown(container.dispose);
+      final notifier = container.read(homeControllerProvider.notifier);
+
+      notifier.load();
+      await settle();
+      expect(fetcher.rowRequests, hasLength(1));
+
+      var refreshed = false;
+      final pull = notifier.refresh().whenComplete(() => refreshed = true);
+      await settle();
+      expect(fetcher.rowRequests, hasLength(1), reason: 'joined, not restarted');
+      expect(refreshed, isFalse, reason: 'round still in flight');
+
+      final keys = planHomeRowKeys(fetcher.rowRequests.single);
+      fetcher.emit(HomeRailLoaded(keys.first, 'Top Movies', [
+        Meta(id: 'tt1', type: 'movie', name: 'The Matrix'),
+      ]));
+      await settle();
+      expect(refreshed, isFalse, reason: 'more rails still pending');
+
+      for (final key in keys.skip(1)) {
+        fetcher.emit(HomeRailAbsent(key));
+      }
+      await pull;
+      expect(refreshed, isTrue);
+      final state = container.read(homeControllerProvider);
+      expect(state.roundInFlight, isFalse);
+      expect(state.roundSummary, isNotNull);
+    });
+
+    test('a stream ending early settles the round instead of hanging it',
+        () async {
+      final fetcher = ControllableCatalogFetcher();
+      final container = make(fetcher, InMemorySettingsStore());
+      addTearDown(container.dispose);
+      final notifier = container.read(homeControllerProvider.notifier);
+
+      notifier.load();
+      await settle();
+      final keys = planHomeRowKeys(fetcher.rowRequests.single);
+      fetcher.emit(HomeRailLoaded(keys.first, 'Top Movies', [
+        Meta(id: 'tt1', type: 'movie', name: 'The Matrix'),
+      ]));
+      await settle();
+
+      fetcher.finish();
+      await settle();
+
+      final state = container.read(homeControllerProvider);
+      expect(state.roundInFlight, isFalse);
+      expect(state.roundSummary, isNotNull);
+      expect(state.hasPending, isFalse);
+    });
+
+    test('a pull after settle starts a new round and resolves at its end',
+        () async {
+      final fetcher = RecordingCatalogFetcher();
+      final container = make(fetcher, InMemorySettingsStore());
+      addTearDown(container.dispose);
+      final notifier = container.read(homeControllerProvider.notifier);
+
+      notifier.load();
+      await settle();
+      expect(fetcher.rowRequests, hasLength(1));
+
+      await notifier.refresh();
+      expect(fetcher.rowRequests, hasLength(2));
+      final state = container.read(homeControllerProvider);
+      expect(state.roundInFlight, isFalse);
+      expect(state.roundSummary, isNotNull);
+    });
+
+    test('a fully-failed manual round reports a notify summary', () async {
+      final fetcher = RecordingCatalogFetcher();
+      final container = make(fetcher, InMemorySettingsStore());
+      addTearDown(container.dispose);
+      final notifier = container.read(homeControllerProvider.notifier);
+
+      final keys =
+          planHomeRowKeys(container.read(homeControllerProvider).request);
+      for (final key in keys) {
+        fetcher.outcomes[key] = () => HomeRailAbsent(key);
+      }
+      notifier.load();
+      await settle();
+
+      for (final key in keys) {
+        fetcher.outcomes[key] = () => HomeRailFailed(key, Exception('down'));
+      }
+      await notifier.refresh();
+      final summary = container.read(homeControllerProvider).roundSummary!;
+      expect(summary.manual, isTrue);
+      expect(summary.allFailed, isTrue);
+      expect(summary.notifyFailure, isTrue);
     });
   });
 

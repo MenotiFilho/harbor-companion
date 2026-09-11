@@ -4,6 +4,8 @@
 // retry card that leaves the other rails on screen, and the derived empty /
 // everything-failed screens.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -19,6 +21,10 @@ class _StubHomeController extends HomeController {
   @override
   final HomeState state;
   int reloads = 0;
+  int refreshes = 0;
+
+  /// When set, [refresh] waits on it so a test can hold the round in flight.
+  Completer<void>? refreshGate;
   final List<String> retried = [];
   _StubHomeController(this.state);
 
@@ -30,6 +36,12 @@ class _StubHomeController extends HomeController {
 
   @override
   void reload() => reloads++;
+
+  @override
+  Future<void> refresh() {
+    refreshes++;
+    return refreshGate?.future ?? Future<void>.value();
+  }
 
   @override
   void retryRail(String rowKey) => retried.add(rowKey);
@@ -228,6 +240,127 @@ void main() {
     await tester.pumpWidget(_app(fresh));
 
     expect(find.byType(HomeRailAgeBadge), findsNothing);
+  });
+
+  group('pull-to-refresh (ticket 74)', () {
+    Widget app(_StubHomeController controller) =>
+        _app(controller.state, controller: controller);
+
+    testWidgets('pulling the rail list starts a manual refresh', (tester) async {
+      final controller = _StubHomeController(HomeState(
+        request: twoRows,
+        rails: {
+          'cinemeta:top-movies':
+              loaded('cinemeta:top-movies', 'Top Movies', [movie()]),
+          'cinemeta:top-series':
+              loaded('cinemeta:top-series', 'Top Series', [movie(id: 'tt2')]),
+        },
+      ));
+      await tester.pumpWidget(app(controller));
+
+      await tester.fling(
+        find.byKey(const ValueKey('homeList')),
+        const Offset(0, 300),
+        1000,
+      );
+      await tester.pumpAndSettle();
+
+      expect(controller.refreshes, 1);
+      expect(controller.reloads, 0);
+    });
+
+    testWidgets(
+        'the empty Home is scrollable, accepts the pull, and keeps its buttons',
+        (tester) async {
+      final controller = _StubHomeController(
+        HomeState(request: const CatalogRequest(rowOrder: [])),
+      );
+      await tester.pumpWidget(app(controller));
+
+      expect(find.text('No catalogs to show'), findsOneWidget);
+      expect(find.text('Refresh'), findsOneWidget);
+      expect(find.text('Open settings'), findsOneWidget);
+      expect(find.byType(SingleChildScrollView), findsOneWidget);
+
+      await tester.fling(
+        find.byType(SingleChildScrollView),
+        const Offset(0, 300),
+        1000,
+      );
+      await tester.pumpAndSettle();
+
+      expect(controller.refreshes, 1);
+    });
+
+    testWidgets(
+        'the global error screen is scrollable, accepts the pull, keeps Retry',
+        (tester) async {
+      final controller = _StubHomeController(HomeState(
+        request: twoRows,
+        rails: {
+          'cinemeta:top-movies': failed('cinemeta:top-movies'),
+          'cinemeta:top-series': failed('cinemeta:top-series'),
+        },
+      ));
+      await tester.pumpWidget(app(controller));
+
+      expect(find.text('Retry'), findsOneWidget);
+      await tester.fling(
+        find.byType(SingleChildScrollView),
+        const Offset(0, 300),
+        1000,
+      );
+      await tester.pumpAndSettle();
+
+      expect(controller.refreshes, 1);
+    });
+
+    testWidgets('a fully-failed manual round shows one short snackbar',
+        (tester) async {
+      final controller = _StubHomeController(HomeState(
+        request: twoRows,
+        rails: {
+          'cinemeta:top-movies': failed('cinemeta:top-movies'),
+          'cinemeta:top-series': failed('cinemeta:top-series'),
+        },
+        roundSummary:
+            const RoundSummary(round: 1, manual: true, allFailed: true),
+      ));
+      await tester.pumpWidget(app(controller));
+
+      await tester.fling(
+        find.byType(SingleChildScrollView),
+        const Offset(0, 300),
+        1000,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining("Couldn't refresh"), findsOneWidget);
+    });
+
+    testWidgets('a partial round shows no snackbar', (tester) async {
+      final controller = _StubHomeController(HomeState(
+        request: twoRows,
+        rails: {
+          'cinemeta:top-movies':
+              loaded('cinemeta:top-movies', 'Top Movies', [movie()]),
+          'cinemeta:top-series':
+              loaded('cinemeta:top-series', 'Top Series', [movie(id: 'tt2')]),
+        },
+        roundSummary:
+            const RoundSummary(round: 1, manual: true, allFailed: false),
+      ));
+      await tester.pumpWidget(app(controller));
+
+      await tester.fling(
+        find.byKey(const ValueKey('homeList')),
+        const Offset(0, 300),
+        1000,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(SnackBar), findsNothing);
+    });
   });
 
   test('homeRailAgeLabel is a coarse relative age', () {

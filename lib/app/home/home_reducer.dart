@@ -94,6 +94,24 @@ class DetailState {
   });
 }
 
+/// The outcome of a settled rail round (ticket 74, ADR-0008). The widget shows
+/// at most one short snackbar, and only when [notifyFailure] holds: the round
+/// was started by a manual pull and the whole round failed. A partial failure,
+/// a round that kept content (cache), or the automatic round stay silent.
+class RoundSummary {
+  final int round;
+  final bool manual;
+  final bool allFailed;
+
+  const RoundSummary({
+    required this.round,
+    required this.manual,
+    required this.allFailed,
+  });
+
+  bool get notifyFailure => manual && allFailed;
+}
+
 class HomeState {
   /// The request the current rail round runs for: the TMDB key in effect,
   /// whether built-in rails are shown, and the Letterboxd config.
@@ -111,6 +129,26 @@ class HomeState {
   /// The rail a single-rail retry is currently re-fetching (`fetch:rail`).
   final String? retryingRail;
 
+  /// Process latch (ticket 74, ADR-0008): the automatic once-per-process
+  /// revalidation has been triggered. The first [LoadHome] arms it — even when
+  /// it joins a round already in flight — and nothing clears it, so tab
+  /// re-entry after the Home settled never refetches.
+  final bool autoRefreshDone;
+
+  /// Whether the round currently in flight (or just settled) was started by a
+  /// manual pull. A pull that joins an in-flight round upgrades it to manual so
+  /// the user still gets their failure feedback.
+  final bool roundManual;
+
+  /// The planned rails of the current round that still await their network
+  /// outcome. Cache seeding fills [rails] without completing the round, so this
+  /// — not [hasPending] — is the "round in flight" signal a pull awaits.
+  final Set<String> roundPending;
+
+  /// The summary of the last settled round, or null while a round is in flight
+  /// or before the first round. Cleared when a new round starts.
+  final RoundSummary? roundSummary;
+
   final DetailState? detail;
   final String? notice;
   final PlayMetaCommand? pendingPlay; // the most recent playMeta command
@@ -124,6 +162,10 @@ class HomeState {
     this.rails = const {},
     this.round = 0,
     this.retryingRail,
+    this.autoRefreshDone = false,
+    this.roundManual = false,
+    this.roundPending = const {},
+    this.roundSummary,
     this.detail,
     this.notice,
     this.pendingPlay,
@@ -161,6 +203,11 @@ class HomeState {
   /// Some planned rail still awaits its outcome in the current round.
   bool get hasPending => plannedKeys.any(isPending);
 
+  /// A full round is in flight while any planned rail still awaits its network
+  /// outcome. Cache seeding (which marks rails `loaded` from disk) does not
+  /// settle the round, so a pull keeps its indicator until the network resolves.
+  bool get roundInFlight => roundPending.isNotEmpty;
+
   /// Some planned rail has items on screen (loaded, or a failed rail keeping the
   /// previous copy).
   bool get hasContent => plannedKeys.any((key) => rails[key]?.hasItems ?? false);
@@ -194,6 +241,11 @@ class HomeState {
     int? round,
     String? retryingRail,
     bool clearRetryingRail = false,
+    bool? autoRefreshDone,
+    bool? roundManual,
+    Set<String>? roundPending,
+    RoundSummary? roundSummary,
+    bool clearRoundSummary = false,
     DetailState? detail,
     bool clearDetail = false,
     String? notice,
@@ -206,6 +258,11 @@ class HomeState {
       rails: rails ?? this.rails,
       round: round ?? this.round,
       retryingRail: clearRetryingRail ? null : (retryingRail ?? this.retryingRail),
+      autoRefreshDone: autoRefreshDone ?? this.autoRefreshDone,
+      roundManual: roundManual ?? this.roundManual,
+      roundPending: roundPending ?? this.roundPending,
+      roundSummary:
+          clearRoundSummary ? null : (roundSummary ?? this.roundSummary),
       detail: clearDetail ? null : (detail ?? this.detail),
       notice: clearNotice ? null : (notice ?? this.notice),
       pendingPlay: pendingPlay ?? this.pendingPlay,
@@ -222,14 +279,17 @@ sealed class HomeEvent {
   const HomeEvent();
 }
 
-/// Load the planned rails on first mount. No-op once a round has started — the
-/// Home tab re-entry does not refetch.
+/// The automatic once-per-process trigger (ADR-0008), dispatched when the Home
+/// first becomes available after connect. Arms the process latch; a second
+/// `LoadHome` (tab re-entry) is a no-op. If a round is already in flight (e.g.
+/// a source-change refetch) it joins it instead of starting a duplicate.
 class LoadHome extends HomeEvent {
   const LoadHome();
 }
 
-/// Force a fresh round regardless of state. The empty/error screens' Refresh
-/// action uses it — `LoadHome` would no-op after the first round.
+/// Force a fresh round regardless of state (pull-to-refresh and the empty/error
+/// screens' Refresh action). A `RefreshHome` during an in-flight round joins
+/// that round rather than starting another (ADR-0008 coalescing).
 class RefreshHome extends HomeEvent {
   const RefreshHome();
 }
@@ -322,16 +382,27 @@ class PlayMeta extends HomeEvent {
 String coerceMetaType(String type) => type == 'movie' ? 'movie' : 'series';
 
 /// Starts a fresh round for [request]: bump the round id, mark every planned
-/// rail pending (keeping any previous copy for a failed revalidation), and emit
-/// the fetch effect.
-HomeState _startRound(HomeState s, CatalogRequest request, String notice) {
+/// rail pending (keeping any previous copy for a failed revalidation), pin
+/// which of them still await a network outcome, and emit the fetch effect.
+/// [manual] marks a pull-started round for the failure summary; [armAutoRefresh]
+/// sets the process latch when the round is the automatic first one.
+HomeState _startRound(
+  HomeState s,
+  CatalogRequest request,
+  String notice, {
+  required bool manual,
+  bool armAutoRefresh = false,
+}) {
+  final planned = planHomeRowKeys(request);
   final rails = Map<String, RailState>.from(s.rails);
-  for (final key in planHomeRowKeys(request)) {
+  for (final key in planned) {
     final prev = rails[key];
     rails[key] = prev == null
         ? RailState(rowKey: key)
         : prev.copyWith(status: RailStatus.pending, clearError: true);
   }
+  // An empty plan has no pending outcome: [roundPending] is empty and the
+  // round is considered settled the moment it starts (the empty Home).
   s.effects.add('fetch:rails');
   return s.copy(
     request: request,
@@ -339,23 +410,47 @@ HomeState _startRound(HomeState s, CatalogRequest request, String notice) {
     round: s.round + 1,
     clearRetryingRail: true,
     notice: notice,
+    roundManual: manual,
+    roundPending: planned.toSet(),
+    clearRoundSummary: true,
+    autoRefreshDone: armAutoRefresh ? true : null,
   );
 }
 
 HomeState homeReduce(HomeState s, HomeEvent e) {
   switch (e) {
     case LoadHome():
-      if (s.round > 0) {
+      // The automatic once-per-process trigger: arm the latch and start a
+      // round, or join one already in flight (e.g. a source-change refetch
+      // that began before the Home opened) rather than duplicating it.
+      if (s.autoRefreshDone) {
         return s.copy(notice: 'home already loaded — skipped');
+      }
+      if (s.roundInFlight) {
+        return s.copy(
+          autoRefreshDone: true,
+          notice: 'home load joined in-flight round',
+        );
       }
       return _startRound(
         s,
         s.request,
         'loading home rails (${s.tmdbKey == null ? 'cinemeta' : 'tmdb'})…',
+        manual: false,
+        armAutoRefresh: true,
       );
 
     case RefreshHome():
-      return _startRound(s, s.request, 'refreshing home rails…');
+      // Manual pull. A pull during an in-flight round joins it (ADR-0008);
+      // marking it manual keeps the pull's failure feedback. Otherwise start a
+      // fresh manual round.
+      if (s.roundInFlight) {
+        return s.copy(
+          roundManual: true,
+          notice: 'refresh joined in-flight round',
+        );
+      }
+      return _startRound(s, s.request, 'refreshing home rails…', manual: true);
 
     case KeyChanged(tmdbKey: final key):
       if (key == s.tmdbKey) return s.copy(notice: 'tmdbKey unchanged');
@@ -363,11 +458,17 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
         s,
         s.request.copyWith(tmdbKey: key),
         'tmdbKey ${key == null ? 'removed' : 'arrived'} → refetching rails',
+        manual: false,
       );
 
     case CatalogSourcesChanged(request: final request):
       if (request == s.request) return s.copy(notice: 'catalog sources unchanged');
-      return _startRound(s, request, 'catalog sources changed → refetching rails');
+      return _startRound(
+        s,
+        request,
+        'catalog sources changed → refetching rails',
+        manual: false,
+      );
 
     case CacheLoaded(request: final request, rails: final cached):
       if (request != s.request) {
@@ -434,10 +535,24 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
             status: RailStatus.absent,
           );
       }
-      return s.copy(
+      final pending = Set<String>.from(s.roundPending)..remove(outcome.rowKey);
+      final next = s.copy(
         rails: rails,
+        roundPending: pending,
         clearRetryingRail: s.retryingRail == outcome.rowKey,
       );
+      // The round settles when the last planned outcome lands; the summary is
+      // read by the widget to decide the single manual-failure snackbar.
+      if (s.roundInFlight && pending.isEmpty) {
+        return next.copy(
+          roundSummary: RoundSummary(
+            round: s.round,
+            manual: s.roundManual,
+            allFailed: next.allFailed,
+          ),
+        );
+      }
+      return next;
 
     case RailsFetchFailed(
         error: final error,
@@ -462,7 +577,21 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
           hasMore: prev?.hasMore ?? false,
         );
       }
-      return s.copy(rails: rails, notice: 'rail stream failed');
+      final next = s.copy(
+        rails: rails,
+        roundPending: const {},
+        notice: 'rail stream failed',
+      );
+      if (s.roundInFlight) {
+        return next.copy(
+          roundSummary: RoundSummary(
+            round: s.round,
+            manual: s.roundManual,
+            allFailed: next.allFailed,
+          ),
+        );
+      }
+      return next;
 
     case RetryRail(rowKey: final key):
       if (!s.plannedKeys.contains(key)) {
