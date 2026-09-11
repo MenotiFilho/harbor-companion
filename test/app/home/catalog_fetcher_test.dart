@@ -908,4 +908,185 @@ void main() {
       expect(await hasMore(42), isFalse);
     });
   });
+
+  group('grid pagination cursor + fetch (ticket 77)', () {
+    const active = LetterboxdConfig(
+      manifestUrl: 'https://api.stremboxd.com/stremio/tok/manifest.json',
+      enabledCatalogIds: {'letterboxd-watchlist'},
+    );
+
+    String cinemeta(List<String> ids) => jsonEncode({
+          'metas': [
+            for (final id in ids) {'id': id, 'type': 'movie', 'name': id},
+          ],
+        });
+
+    test('appendCatalogExtra joins a plain path with / and a genre with &', () {
+      expect(
+        appendCatalogExtra(
+          'https://v3-cinemeta.strem.io/catalog/movie/top.json',
+          'skip=50',
+        ),
+        'https://v3-cinemeta.strem.io/catalog/movie/top/skip=50.json',
+      );
+      expect(
+        appendCatalogExtra(
+          'https://v3-cinemeta.strem.io/catalog/movie/top/genre=Action.json',
+          'skip=100',
+        ),
+        'https://v3-cinemeta.strem.io/catalog/movie/top/genre=Action&skip=100.json',
+      );
+      expect(
+        appendCatalogExtra('https://x/not-a-catalog', 'skip=1'),
+        'https://x/not-a-catalog',
+      );
+    });
+
+    test('builtInRailPageUrl: Cinemeta uses skip=<loaded>, through a genre', () {
+      final movies = builtInRowById('cinemeta:top-movies')!;
+      expect(
+        builtInRailPageUrl(movies, null, 50),
+        'https://v3-cinemeta.strem.io/catalog/movie/top/skip=50.json',
+      );
+      final action = builtInRowById('cinemeta:action')!;
+      expect(
+        builtInRailPageUrl(action, null, 50),
+        'https://v3-cinemeta.strem.io/catalog/movie/top/genre=Action&skip=50.json',
+      );
+    });
+
+    test('builtInRailPageUrl: TMDB asks page=N+1; trending has no cursor', () {
+      final row = builtInRowById('tmdb:popular-movies')!;
+      expect(
+        builtInRailPageUrl(row, 'key', 1),
+        'https://api.themoviedb.org/3/movie/popular?api_key=key&page=2',
+      );
+      expect(builtInRailPageUrl(row, null, 1), isNull,
+          reason: 'a keyed source without a key cannot page');
+      final trending = builtInRowById('tmdb:trending-movies')!;
+      expect(builtInRailPageUrl(trending, 'key', 1), isNull,
+          reason: '/trending exposes no page cursor');
+    });
+
+    test('letterboxdRailPageUrl appends skip=<cursor> after the catalog id', () {
+      const catalog = LetterboxdCatalog(
+        id: 'letterboxd-watchlist',
+        type: 'movie',
+        name: 'Watchlist',
+      );
+      expect(
+        letterboxdRailPageUrl(
+          'https://api.stremboxd.com/stremio/tok/manifest.json',
+          catalog,
+          100,
+        ),
+        'https://api.stremboxd.com/stremio/tok/catalog/movie/'
+        'letterboxd-watchlist/skip=100.json',
+      );
+    });
+
+    test('fetchRailPage: Cinemeta asks skip=<loaded> and reports unbounded more',
+        () async {
+      Uri? seen;
+      final fetcher = HttpCatalogFetcher(get: (url) async {
+        seen = url;
+        return cinemeta(['tt1', 'tt2']);
+      });
+      final page = await fetcher.fetchRailPage(
+        const CatalogRequest(rowOrder: ['cinemeta:top-movies']),
+        'cinemeta:top-movies',
+        50,
+      );
+      expect(seen!.path, '/catalog/movie/top/skip=50.json');
+      expect(page.items.map((m) => m.id), ['tt1', 'tt2']);
+      expect(page.hasMore, isTrue, reason: 'Cinemeta ends via the grid cap');
+    });
+
+    test('fetchRailPage: TMDB asks page=N+1 and follows page < total_pages',
+        () async {
+      String tmdb(int page, int totalPages) => jsonEncode({
+            'page': page,
+            'total_pages': totalPages,
+            'results': [
+              {'id': 1, 'title': 'A'},
+            ],
+          });
+      Uri? seen;
+      final fetcher = HttpCatalogFetcher(get: (url) async {
+        seen = url;
+        return tmdb(2, 5);
+      });
+      final page = await fetcher.fetchRailPage(
+        const CatalogRequest(tmdbKey: 'key', rowOrder: ['tmdb:popular-movies']),
+        'tmdb:popular-movies',
+        1,
+      );
+      expect(seen!.queryParameters['page'], '2');
+      expect(page.items, hasLength(1));
+      expect(page.hasMore, isTrue);
+
+      final last = HttpCatalogFetcher(get: (url) async => tmdb(5, 5));
+      final endPage = await last.fetchRailPage(
+        const CatalogRequest(tmdbKey: 'key', rowOrder: ['tmdb:popular-movies']),
+        'tmdb:popular-movies',
+        4,
+      );
+      expect(endPage.hasMore, isFalse, reason: 'page 5 of 5 is the end');
+    });
+
+    test('fetchRailPage: a /trending row never assembles a cursor', () async {
+      final fetcher = HttpCatalogFetcher(get: (url) async => cinemeta(['tt1']));
+      await expectLater(
+        fetcher.fetchRailPage(
+          const CatalogRequest(tmdbKey: 'key', rowOrder: ['tmdb:trending-movies']),
+          'tmdb:trending-movies',
+          1,
+        ),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('fetchRailPage: Letterboxd resolves the catalog and asks skip',
+        () async {
+      final urls = <String>[];
+      final fetcher = HttpCatalogFetcher(get: (url) async {
+        urls.add(url.toString());
+        if (url.path.endsWith('/manifest.json')) {
+          return jsonEncode({
+            'catalogs': [
+              {'id': 'letterboxd-watchlist', 'type': 'movie', 'name': 'Watchlist'},
+            ],
+          });
+        }
+        return cinemeta([for (var i = 0; i < 42; i++) 'tt$i']);
+      });
+      final page = await fetcher.fetchRailPage(
+        const CatalogRequest(
+          letterboxd: active,
+          rowOrder: ['letterboxd:letterboxd-watchlist'],
+        ),
+        'letterboxd:letterboxd-watchlist',
+        100,
+      );
+      expect(
+        urls.any((u) =>
+            u.contains('/catalog/movie/letterboxd-watchlist/skip=100.json')),
+        isTrue,
+      );
+      expect(page.items, hasLength(42));
+      expect(page.hasMore, isFalse, reason: 'a short page ends the catalog');
+    });
+
+    test('fetchRailPage propagates a failure for the grid footer', () async {
+      final fetcher = HttpCatalogFetcher(get: (url) async => throw Exception('down'));
+      await expectLater(
+        fetcher.fetchRailPage(
+          const CatalogRequest(rowOrder: ['cinemeta:top-movies']),
+          'cinemeta:top-movies',
+          50,
+        ),
+        throwsA(isA<Exception>()),
+      );
+    });
+  });
 }

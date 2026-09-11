@@ -35,6 +35,15 @@ List<Meta> homeRailVisibleItems(List<Meta> items) =>
 bool homeRailShowsSeeMore({required int itemCount, required bool hasMore}) =>
     itemCount > kHomeRailCap || hasMore;
 
+/// The Cinemeta grid's safety cap (ticket 77, ADR-0009). Cinemeta is the only
+/// source without a natural end: its `skip` returns a full ~50-item page
+/// arbitrarily deep — the pagination research probed `skip=10000` and still got
+/// 50 items — so the grid stops after this many *loaded* items instead of
+/// relying on an empty page. 500 is ten ~50-item pages, far past any casual
+/// exploration, and it ends with an honest footer rather than an infinite
+/// scroll. TMDB ends at `page >= total_pages` and Stremboxd on a short page.
+const int kCinemetaGridCap = 500;
+
 /// The result of attempting one planned Home rail. Sealed so the reducer's
 /// commit switch is exhaustive.
 sealed class HomeRailOutcome {

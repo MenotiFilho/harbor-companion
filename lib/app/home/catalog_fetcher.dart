@@ -40,6 +40,57 @@ const int kStremboxdPageSize = 100;
 /// [kStremboxdPageSize] page means more may exist, a short page is the end.
 bool stremboxdHasMore(int itemCount) => itemCount >= kStremboxdPageSize;
 
+/// One grid page fetched from a source (ticket 77, ADR-0009). [hasMore] is the
+/// source's own continuation signal: a Stremboxd page of 100, TMDB
+/// `page < total_pages`, and — for Cinemeta, which never ends naturally — always
+/// true, bounded by the grid's [kCinemetaGridCap].
+class RailPage {
+  final List<Meta> items;
+  final bool hasMore;
+
+  const RailPage({required this.items, this.hasMore = false});
+}
+
+/// Appends a Stremio catalog `:extra` segment (e.g. `skip=100`) to a catalog
+/// `.json` URL. The protocol packs every extra into one `/…` path segment joined
+/// by `&`, so an existing extra (`/genre=Action.json`) becomes
+/// `/genre=Action&skip=100.json` — the live Cinemeta shape the pagination
+/// research (#50) probed. A URL without a `.json` suffix is returned unchanged:
+/// never build a malformed cursor.
+String appendCatalogExtra(String url, String segment) {
+  final dot = url.lastIndexOf('.json');
+  if (dot == -1) return url;
+  final prefix = url.substring(0, dot);
+  final separator = prefix.contains('=') ? '&' : '/';
+  return '$prefix$separator$segment${url.substring(dot)}';
+}
+
+/// The next grid-page URL for a built-in [row], resuming at [cursor]. Cinemeta
+/// maps the cursor to `skip=<cursor>` — never `skip=0`, whose window differs
+/// from the default page — while TMDB maps it to `?page=<cursor + 1>` (the
+/// cursor is the page already loaded). Null when the row exposes no cursor (a
+/// `/trending/*` row) or a keyed source is missing its key.
+String? builtInRailPageUrl(BuiltInRow row, String? tmdbKey, int cursor) {
+  if (!row.paginatable) return null;
+  if (row.source == 'tmdb') {
+    if (tmdbKey == null) return null;
+    return '$tmdbBase${row.path}?api_key=$tmdbKey&page=${cursor + 1}';
+  }
+  return appendCatalogExtra('$cinemetaBase${row.path}', 'skip=$cursor');
+}
+
+/// The next grid-page URL for a Letterboxd [catalog], resuming at [cursor]:
+/// `<base>/catalog/<type>/<id>/skip=<cursor>.json`. Null when the manifest URL
+/// is unusable.
+String? letterboxdRailPageUrl(
+  String manifestUrl,
+  LetterboxdCatalog catalog,
+  int cursor,
+) {
+  final base = letterboxdCatalogUrl(manifestUrl, catalog);
+  return base == null ? null : appendCatalogExtra(base, 'skip=$cursor');
+}
+
 // ---------------------------------------------------------------------------
 // Pure mappers (pinned to the upstream JSON shapes; tested without network)
 // ---------------------------------------------------------------------------
@@ -284,6 +335,18 @@ abstract interface class CatalogFetcher {
   /// Re-fetch a single planned [rowKey] (the local retry card).
   Future<HomeRailOutcome> fetchRail(CatalogRequest request, String rowKey);
 
+  /// Fetch one more page of [rowKey]'s catalog for its dedicated grid, resuming
+  /// at [cursor] (the per-source cursor captured in the grid snapshot: the
+  /// `skip` offset for Cinemeta/Stremboxd, the loaded page for TMDB, requested
+  /// as `page + 1`). Throws on an HTTP/parse failure — the grid keeps its loaded
+  /// items and shows a retry footer. A non-paginatable row (a `/trending/*`
+  /// toggle) has no cursor and never reaches here.
+  Future<RailPage> fetchRailPage(
+    CatalogRequest request,
+    String rowKey,
+    int cursor,
+  );
+
   /// Detail for a title: Cinemeta `meta/{type}/{id}` when keyless, TMDB detail
   /// + per-season episodes when keyed.
   Future<DetailMeta> fetchDetail(String type, String id, String? tmdbKey);
@@ -395,6 +458,43 @@ class HttpCatalogFetcher implements CatalogFetcher {
     final (catalogsById, manifestError) =
         await _resolveManifest(request, [rowKey]);
     return _fetchOutcomeWithRetry(rowKey, request, catalogsById, manifestError);
+  }
+
+  @override
+  Future<RailPage> fetchRailPage(
+    CatalogRequest request,
+    String rowKey,
+    int cursor,
+  ) async {
+    final builtIn = builtInRowById(rowKey);
+    if (builtIn != null) {
+      final url = builtInRailPageUrl(builtIn, request.tmdbKey, cursor);
+      if (url == null) {
+        throw StateError('row $rowKey exposes no pagination cursor');
+      }
+      final raw = await _get(Uri.parse(url), timeout);
+      if (builtIn.source == 'tmdb') {
+        final page = parseTmdbPageResponse(raw, builtIn.type);
+        return RailPage(items: page.items, hasMore: page.hasMore);
+      }
+      // Cinemeta's `skip` is unbounded — the grid's safety cap ends it.
+      return RailPage(items: parseCinemetaCatalog(raw), hasMore: true);
+    }
+    final catalogId = letterboxdCatalogId(rowKey);
+    if (catalogId == null) throw StateError('unknown row $rowKey');
+    final (catalogsById, manifestError) = await _resolveManifest(request, [rowKey]);
+    final catalog = catalogsById?[catalogId];
+    if (catalog == null) {
+      throw StateError('$manifestError');
+    }
+    final url = letterboxdRailPageUrl(
+      request.letterboxd.manifestUrl,
+      catalog,
+      cursor,
+    );
+    if (url == null) throw StateError('manifest URL unusable');
+    final items = parseCinemetaCatalog(await _get(Uri.parse(url), timeout));
+    return RailPage(items: items, hasMore: stremboxdHasMore(items.length));
   }
 
   /// Fetches one rail with the cache-aware timeout, retrying exactly once when

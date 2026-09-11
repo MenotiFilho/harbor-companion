@@ -107,8 +107,8 @@ RailGridSource railGridSourceFor(String rowKey) {
   return builtIn.source == 'tmdb' ? RailGridSource.tmdb : RailGridSource.cinemeta;
 }
 
-/// The ephemeral, in-memory state of one rail's dedicated grid (ticket 76,
-/// ADR-0009). Captured at [OpenRailGrid] from the rail as it is *at that
+/// The ephemeral, in-memory state of one rail's dedicated grid (tickets 76,
+/// 77, ADR-0009). Captured at [OpenRailGrid] from the rail as it is *at that
 /// moment*: the full downloaded [items] (never the 20-item render cap), the
 /// [source], the [request] in effect, and the [cursor] the grid will resume
 /// from. It is a snapshot — Home rounds while the grid is open never touch it —
@@ -117,7 +117,9 @@ RailGridSource railGridSourceFor(String rowKey) {
 ///
 /// [cursor] means, per [source]: for Cinemeta/Stremboxd the number of items
 /// already loaded (the `skip` the next page requests), and for TMDB the page
-/// already loaded (1 at open — the rail fetch is page 1). #77 advances it.
+/// already loaded (1 at open — the rail fetch is page 1). [loading], [error]
+/// and [ended] are the on-scroll pagination machine (#77): a page in flight, the
+/// last page's failure (the footer's retry), and the honest per-source end.
 class RailGridSnapshot {
   final String rowKey;
   final String title;
@@ -127,6 +129,17 @@ class RailGridSnapshot {
   final int cursor;
   final bool hasMore;
 
+  /// A next-page request is in flight (the footer shows a spinner).
+  final bool loading;
+
+  /// The last page attempt failed; the loaded items stay and the footer offers
+  /// a retry. Cleared when a retry starts or a page succeeds.
+  final String? error;
+
+  /// No more pages: the source reported a short/final/empty page, or the
+  /// Cinemeta safety cap was reached. The footer shows "End".
+  final bool ended;
+
   const RailGridSnapshot({
     required this.rowKey,
     required this.title,
@@ -135,7 +148,49 @@ class RailGridSnapshot {
     required this.request,
     required this.cursor,
     this.hasMore = false,
+    this.loading = false,
+    this.error,
+    this.ended = false,
   });
+
+  /// The append/pagination seam (#77): [items], [cursor], [hasMore], [loading],
+  /// [error] and [ended] move; the snapshot identity (rowKey/title/source/
+  /// request) never does. [clearError] is needed because passing `error: null`
+  /// leaves the previous value.
+  RailGridSnapshot copyWith({
+    List<Meta>? items,
+    int? cursor,
+    bool? hasMore,
+    bool? loading,
+    String? error,
+    bool clearError = false,
+    bool? ended,
+  }) =>
+      RailGridSnapshot(
+        rowKey: rowKey,
+        title: title,
+        items: items ?? this.items,
+        source: source,
+        request: request,
+        cursor: cursor ?? this.cursor,
+        hasMore: hasMore ?? this.hasMore,
+        loading: loading ?? this.loading,
+        error: clearError ? null : (error ?? this.error),
+        ended: ended ?? this.ended,
+      );
+}
+
+/// [existing] followed by the [incoming] items whose [Meta.id] is not already
+/// present, preserving order (ticket 77). Pages come from different offsets of
+/// a source, so a shifted catalog can repeat a title; the grid never shows the
+/// same poster twice.
+List<Meta> dedupeMetaById(Iterable<Meta> existing, Iterable<Meta> incoming) {
+  final seen = <String>{for (final meta in existing) meta.id};
+  final merged = <Meta>[...existing];
+  for (final meta in incoming) {
+    if (seen.add(meta.id)) merged.add(meta);
+  }
+  return merged;
 }
 
 /// The outcome of a settled rail round (ticket 74, ADR-0008). The widget shows
@@ -417,6 +472,37 @@ class OpenRailGrid extends HomeEvent {
   const OpenRailGrid(this.rowKey);
 }
 
+/// The grid scrolled near its end (ticket 77): request the next page if one can
+/// be requested. Idempotent — ignored while a page is in flight, after the end,
+/// or while the footer shows an error (the retry button owns that case).
+class RailGridScrolledToEnd extends HomeEvent {
+  const RailGridScrolledToEnd();
+}
+
+/// The grid's footer retry (ticket 77): clear the failure and request the same
+/// page again. Ignored while a page is in flight or after the end.
+class RetryRailGridPage extends HomeEvent {
+  const RetryRailGridPage();
+}
+
+/// The next grid page resolved. [rowKey] pins which grid it belongs to; items
+/// already present by [Meta.id] are dropped, then the cursor advances. A page
+/// from a grid that is no longer active (or no longer loading) is stale.
+class RailGridPageReceived extends HomeEvent {
+  final String rowKey;
+  final List<Meta> items;
+  final bool hasMore;
+  const RailGridPageReceived(this.rowKey, this.items, {required this.hasMore});
+}
+
+/// The next grid page failed (ticket 77): the loaded items stay and the error is
+/// exposed for the footer's retry.
+class RailGridPageFailed extends HomeEvent {
+  final String rowKey;
+  final Object error;
+  const RailGridPageFailed(this.rowKey, this.error);
+}
+
 class OpenDetail extends HomeEvent {
   final Meta meta;
   const OpenDetail(this.meta);
@@ -490,6 +576,32 @@ HomeState _startRound(
     clearRoundSummary: true,
     autoRefreshDone: armAutoRefresh ? true : null,
   );
+}
+
+/// Marks the active grid's next page in flight and emits the fetch effect
+/// (ticket 77). Idempotent: a request while a page is loading, after the end,
+/// or while the footer shows an error (unless [clearError], the retry path) is
+/// ignored, so a fast scroll cannot stack duplicate page requests.
+HomeState _requestGridPage(HomeState s, {required bool clearError}) {
+  final key = s.activeRailGridKey;
+  final snapshot = key == null ? null : s.railGrids[key];
+  if (snapshot == null) return s.copy(notice: 'no active rail grid to page');
+  if (snapshot.loading) return s.copy(notice: 'grid page already in flight');
+  if (snapshot.ended) return s.copy(notice: 'grid already ended');
+  if (snapshot.error != null && !clearError) {
+    return s.copy(notice: 'grid page error — retry to continue');
+  }
+  // A grid with no downloaded items has no cursor to resume from — never emit
+  // a `skip=0` request (whose window differs from the default page).
+  if (snapshot.items.isEmpty) {
+    final grids = Map<String, RailGridSnapshot>.from(s.railGrids);
+    grids[key!] = snapshot.copyWith(ended: true);
+    return s.copy(railGrids: grids, notice: 'grid has no items — ended');
+  }
+  final grids = Map<String, RailGridSnapshot>.from(s.railGrids);
+  grids[key!] = snapshot.copyWith(loading: true, clearError: true);
+  s.effects.add('fetch:railPage');
+  return s.copy(railGrids: grids, notice: 'grid page requested ($key)');
 }
 
 HomeState homeReduce(HomeState s, HomeEvent e) {
@@ -693,6 +805,7 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
       final title = rail?.title ?? '';
       final source = railGridSourceFor(key);
       final captured = List<Meta>.unmodifiable(rail?.items ?? const <Meta>[]);
+      final hasMore = rail?.hasMore ?? false;
       final snapshot = RailGridSnapshot(
         rowKey: key,
         title: title.isNotEmpty ? title : homeRowLabel(key),
@@ -700,7 +813,10 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
         source: source,
         request: s.request,
         cursor: source == RailGridSource.tmdb ? 1 : captured.length,
-        hasMore: rail?.hasMore ?? false,
+        hasMore: hasMore,
+        // A rail whose source reports no continuation (a short Stremboxd page,
+        // TMDB's last page, either `/trending/*` rail) opens already ended.
+        ended: !hasMore,
       );
       final grids = Map<String, RailGridSnapshot>.from(s.railGrids);
       grids[key] = snapshot;
@@ -709,6 +825,51 @@ HomeState homeReduce(HomeState s, HomeEvent e) {
         activeRailGridKey: key,
         notice: 'open rail grid $key',
       );
+
+    case RailGridScrolledToEnd():
+      return _requestGridPage(s, clearError: false);
+
+    case RetryRailGridPage():
+      return _requestGridPage(s, clearError: true);
+
+    case RailGridPageReceived(
+        rowKey: final key,
+        items: final pageItems,
+        hasMore: final hasMore
+      ):
+      final snapshot = s.railGrids[key];
+      if (snapshot == null || !snapshot.loading || s.activeRailGridKey != key) {
+        return s.copy(notice: 'stale grid page ($key) — dropped');
+      }
+      final merged = dedupeMetaById(snapshot.items, pageItems);
+      // A page that repeats only what is already shown (a shifted catalog) can
+      // never advance the cursor, so it is the honest end, like an empty page.
+      final appended = merged.length - snapshot.items.length;
+      final atCap = snapshot.source == RailGridSource.cinemeta &&
+          merged.length >= kCinemetaGridCap;
+      final ended = pageItems.isEmpty || appended == 0 || !hasMore || atCap;
+      final cursor = snapshot.source == RailGridSource.tmdb
+          ? snapshot.cursor + 1
+          : merged.length;
+      final grids = Map<String, RailGridSnapshot>.from(s.railGrids);
+      grids[key] = snapshot.copyWith(
+        items: merged,
+        cursor: cursor,
+        hasMore: hasMore,
+        loading: false,
+        clearError: true,
+        ended: ended,
+      );
+      return s.copy(railGrids: grids, notice: 'grid page appended ($key)');
+
+    case RailGridPageFailed(rowKey: final key, error: final error):
+      final snapshot = s.railGrids[key];
+      if (snapshot == null || !snapshot.loading || s.activeRailGridKey != key) {
+        return s.copy(notice: 'stale grid failure ($key) — dropped');
+      }
+      final grids = Map<String, RailGridSnapshot>.from(s.railGrids);
+      grids[key] = snapshot.copyWith(loading: false, error: '$error');
+      return s.copy(railGrids: grids, notice: 'grid page failed ($key)');
 
     case OpenDetail(meta: final meta):
       s.effects.add('fetch:detail');

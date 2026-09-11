@@ -120,9 +120,18 @@ class HomeController extends Notifier<HomeState> {
   /// Re-fetch one failed rail from its local retry card.
   void retryRail(String rowKey) => _dispatch(RetryRail(rowKey));
 
-  /// The tap seam for a rail's title / "See more" card (ticket 75). The grid
-  /// route + snapshot state land in #76, which replaces the reducer handler.
+  /// The tap seam for a rail's title / "See more" card (ticket 75). The reducer
+  /// snapshots the rail and the widget pushes the grid route (#76).
   void openRailGrid(String rowKey) => _dispatch(OpenRailGrid(rowKey));
+
+  /// The grid's on-scroll trigger (ticket 77): ask the reducer for the next
+  /// page. Idempotent — it is ignored while a page is in flight, after the end,
+  /// or while the footer error is showing.
+  void loadMoreRailGrid() => _dispatch(const RailGridScrolledToEnd());
+
+  /// The grid footer's retry (ticket 77): clear the failure and request the
+  /// same page again.
+  void retryRailGridPage() => _dispatch(const RetryRailGridPage());
 
   void openDetail(Meta meta) => _dispatch(OpenDetail(meta));
 
@@ -164,6 +173,8 @@ class HomeController extends Notifier<HomeState> {
           _fetchRails();
         case 'fetch:rail':
           _fetchRail();
+        case 'fetch:railPage':
+          _fetchRailGridPage();
         case 'fetch:detail':
           _fetchDetail();
         case 'playMeta':
@@ -284,6 +295,30 @@ class HomeController extends Notifier<HomeState> {
     } catch (error) {
       if (!ref.mounted) return;
       _dispatch(RailOutcomeReceived(HomeRailFailed(key, error), request, round));
+    }
+  }
+
+  /// Fetches the active grid's next page (ticket 77). The reducer marked it
+  /// loading before emitting `fetch:railPage`, so this reads the cursor and
+  /// request to resume from. A success appends (deduped) and advances the
+  /// cursor; a failure keeps the loaded items and exposes the footer retry. The
+  /// event carries the rowKey, so a page that lands after another grid opened is
+  /// dropped by the reducer instead of corrupting the new grid.
+  Future<void> _fetchRailGridPage() async {
+    final grid = state.activeRailGrid;
+    if (grid == null || !grid.loading) return;
+    final key = grid.rowKey;
+    final cursor = grid.cursor;
+    final request = grid.request;
+    try {
+      final page = await ref
+          .read(catalogFetcherProvider)
+          .fetchRailPage(request, key, cursor);
+      if (!ref.mounted) return;
+      _dispatch(RailGridPageReceived(key, page.items, hasMore: page.hasMore));
+    } catch (error) {
+      if (!ref.mounted) return;
+      _dispatch(RailGridPageFailed(key, error));
     }
   }
 

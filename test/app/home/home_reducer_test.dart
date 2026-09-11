@@ -787,4 +787,206 @@ void main() {
       expect(s.railGrids['cinemeta:top-series']!.items.first.id, 'b:0');
     });
   });
+
+  group('rail grid pagination (ticket 77)', () {
+    const cinemetaKey = 'cinemeta:top-movies';
+    const seriesKey = 'cinemeta:top-series';
+    const trendingKey = 'tmdb:trending-movies';
+    const tmdbKey = 'tmdb:popular-movies';
+    const letterboxdKey = 'letterboxd:letterboxd-watchlist';
+
+    CatalogRequest letterboxdReq() => req(
+          letterboxd: const LetterboxdConfig(
+            manifestUrl: 'https://api.stremboxd.com/stremio/tok/manifest.json',
+            enabledCatalogIds: {'letterboxd-watchlist'},
+          ),
+        );
+
+    /// A state with [key]'s rail loaded and its grid open (effects drained).
+    HomeState grid(
+      HomeState s,
+      String key,
+      List<Meta> loaded, {
+      required bool hasMore,
+    }) {
+      drain(s);
+      s = fold(s, HomeRailLoaded(key, 'Row $key', loaded, hasMore: hasMore));
+      return homeReduce(s, OpenRailGrid(key));
+    }
+
+    test('a scroll trigger marks a page in flight and emits fetch:railPage', () {
+      var s = grid(started(), cinemetaKey, items('x', 50), hasMore: true);
+      drain(s);
+      final requested = homeReduce(s, const RailGridScrolledToEnd());
+      expect(drain(requested), ['fetch:railPage']);
+      expect(requested.activeRailGrid!.loading, isTrue);
+      // Idempotent while the page is in flight.
+      final again = homeReduce(requested, const RailGridScrolledToEnd());
+      expect(drain(again), isEmpty);
+      expect(again.activeRailGrid!.loading, isTrue);
+    });
+
+    test('PageReceived appends, dedupes by id and advances the skip cursor', () {
+      var s = grid(started(), cinemetaKey, items('x', 3), hasMore: true);
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      drain(s);
+      s = homeReduce(s, RailGridPageReceived(
+        cinemetaKey,
+        [movie(id: 'x:2'), movie(id: 'x:3'), movie(id: 'x:4')],
+        hasMore: true,
+      ));
+
+      expect(
+        s.activeRailGrid!.items.map((m) => m.id),
+        ['x:0', 'x:1', 'x:2', 'x:3', 'x:4'],
+        reason: 'x:2 appeared twice — deduped by id',
+      );
+      expect(s.activeRailGrid!.cursor, 5, reason: 'skip advances by loaded count');
+      expect(s.activeRailGrid!.loading, isFalse);
+      expect(s.activeRailGrid!.ended, isFalse);
+      // The rail itself is untouched — the grid pages are session-only.
+      expect(s.rails[cinemetaKey]!.items, hasLength(3));
+    });
+
+    test('an empty page ends the grid', () {
+      var s = grid(started(), cinemetaKey, items('x', 3), hasMore: true);
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      s = homeReduce(s, RailGridPageReceived(cinemetaKey, const [], hasMore: true));
+      expect(s.activeRailGrid!.ended, isTrue);
+      expect(s.activeRailGrid!.loading, isFalse);
+    });
+
+    test('a page repeating only loaded ids ends the grid (no infinite scroll)', () {
+      var s = grid(started(), cinemetaKey, items('x', 3), hasMore: true);
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      s = homeReduce(s, RailGridPageReceived(cinemetaKey, items('x', 3), hasMore: true));
+      expect(s.activeRailGrid!.items, hasLength(3));
+      expect(s.activeRailGrid!.ended, isTrue);
+    });
+
+    test('a short Stremboxd page ends the grid', () {
+      var s = grid(
+        homeReduce(HomeState(request: letterboxdReq()), const LoadHome()),
+        letterboxdKey,
+        items('l', 100),
+        hasMore: true,
+      );
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      s = homeReduce(s, RailGridPageReceived(letterboxdKey, items('l2', 42), hasMore: false));
+      expect(s.activeRailGrid!.ended, isTrue);
+    });
+
+    test('a TMDB page advances the page cursor and ends at total_pages', () {
+      var s = grid(
+        homeReduce(HomeState(request: req(key: 'k')), const LoadHome()),
+        tmdbKey,
+        items('t', 20),
+        hasMore: true,
+      );
+      expect(s.activeRailGrid!.cursor, 1);
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      s = homeReduce(s, RailGridPageReceived(tmdbKey, items('t2', 20), hasMore: true));
+      expect(s.activeRailGrid!.cursor, 2, reason: 'TMDB cursor is the loaded page');
+      expect(s.activeRailGrid!.ended, isFalse);
+
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      s = homeReduce(s, RailGridPageReceived(tmdbKey, items('t3', 20), hasMore: false));
+      expect(s.activeRailGrid!.cursor, 3);
+      expect(s.activeRailGrid!.ended, isTrue);
+    });
+
+    test('the Cinemeta safety cap ends the grid', () {
+      var s = grid(
+        started(),
+        cinemetaKey,
+        items('x', kCinemetaGridCap - 2),
+        hasMore: true,
+      );
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      drain(s);
+      s = homeReduce(s, RailGridPageReceived(cinemetaKey, items('y', 10), hasMore: true));
+      expect(s.activeRailGrid!.items.length, greaterThanOrEqualTo(kCinemetaGridCap));
+      expect(s.activeRailGrid!.ended, isTrue);
+      final ignored = homeReduce(s, const RailGridScrolledToEnd());
+      expect(drain(ignored), isEmpty);
+    });
+
+    test('a /trending grid opens ended and never requests a page', () {
+      final s = grid(
+        homeReduce(HomeState(request: req(key: 'k')), const LoadHome()),
+        trendingKey,
+        items('t', 20),
+        hasMore: false,
+      );
+      expect(s.activeRailGrid!.ended, isTrue);
+      final requested = homeReduce(s, const RailGridScrolledToEnd());
+      expect(drain(requested), isEmpty);
+      expect(requested.activeRailGrid!.ended, isTrue);
+    });
+
+    test('a page failure keeps the items and offers the footer retry', () {
+      var s = grid(started(), cinemetaKey, items('x', 50), hasMore: true);
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      drain(s);
+      s = homeReduce(s, RailGridPageFailed(cinemetaKey, Exception('boom')));
+      expect(s.activeRailGrid!.items, hasLength(50));
+      expect(s.activeRailGrid!.error, contains('boom'));
+      expect(s.activeRailGrid!.loading, isFalse);
+      expect(s.activeRailGrid!.ended, isFalse);
+
+      // A scroll while the error shows does not auto-retry.
+      final scrolled = homeReduce(s, const RailGridScrolledToEnd());
+      expect(drain(scrolled), isEmpty);
+      expect(scrolled.activeRailGrid!.error, contains('boom'));
+
+      // The footer retry clears the error and re-requests the same cursor.
+      final retried = homeReduce(s, const RetryRailGridPage());
+      expect(drain(retried), ['fetch:railPage']);
+      expect(retried.activeRailGrid!.loading, isTrue);
+      expect(retried.activeRailGrid!.error, isNull);
+      expect(retried.activeRailGrid!.cursor, 50);
+    });
+
+    test('a page for a grid that is not loading is dropped', () {
+      var s = grid(started(), cinemetaKey, items('x', 3), hasMore: true);
+      drain(s);
+      final stale = homeReduce(s, RailGridPageReceived(cinemetaKey, items('y', 3), hasMore: true));
+      expect(drain(stale), isEmpty);
+      expect(stale.activeRailGrid!.items, hasLength(3));
+    });
+
+    test('a page carrying another grid key is dropped', () {
+      var s = started();
+      s = fold(s, HomeRailLoaded(cinemetaKey, 'Top Movies', items('x', 3), hasMore: true));
+      s = fold(s, HomeRailLoaded(seriesKey, 'Top Series', items('z', 3), hasMore: true));
+      s = homeReduce(s, const OpenRailGrid(seriesKey));
+      final stale = homeReduce(s, RailGridPageReceived(cinemetaKey, items('y', 3), hasMore: true));
+      expect(drain(stale), isEmpty);
+      // The active grid (series) is untouched; the other key's page is ignored.
+      expect(stale.activeRailGrid!.rowKey, seriesKey);
+      expect(stale.activeRailGrid!.items, hasLength(3));
+    });
+
+    test('a grid with no downloaded items never requests skip=0', () {
+      final request = req();
+      var s = HomeState(
+        request: request,
+        railGrids: {
+          cinemetaKey: RailGridSnapshot(
+            rowKey: cinemetaKey,
+            title: 'Top Movies',
+            items: const [],
+            source: RailGridSource.cinemeta,
+            request: request,
+            cursor: 0,
+            hasMore: true,
+          ),
+        },
+        activeRailGridKey: cinemetaKey,
+      );
+      final requested = homeReduce(s, const RailGridScrolledToEnd());
+      expect(drain(requested), isEmpty);
+      expect(requested.activeRailGrid!.ended, isTrue);
+    });
+  });
 }

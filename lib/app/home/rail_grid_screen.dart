@@ -1,4 +1,4 @@
-// Dedicated rail grid (ticket 76, ADR-0009).
+// Dedicated rail grid (tickets 76, 77, ADR-0009).
 //
 // A rail's title or its "See more" card pushes this route with the rail already
 // snapshotted in the controller (`HomeState.activeRailGrid`): the full
@@ -8,15 +8,19 @@
 // fetch, no cache write and no age badge. A Home round while the grid is open
 // never changes this snapshot.
 //
-// On-scroll pagination (advancing the per-source cursor, dedupe, end/error
-// footers) is #77; this screen shows exactly what was downloaded at open.
+// On-scroll pagination (#77): scrolling near the bottom asks the controller for
+// the next page (`skip=<loaded>` for Cinemeta/Stremboxd, `?page=N+1` for TMDB),
+// which appends deduped by id. The footer is honest per source: a spinner while
+// a page loads, "End" when the source is exhausted (or the Cinemeta cap is hit),
+// and an error + "Try again" when a page fails — the already-loaded items stay
+// on screen. A `/trending/*` rail opens already ended (20-only).
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'home_controller.dart';
+import 'home_reducer.dart';
 import 'home_screen.dart' show PosterCard;
-import 'meta.dart';
 
 class RailGridScreen extends ConsumerWidget {
   const RailGridScreen({super.key});
@@ -24,39 +28,167 @@ class RailGridScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final grid = ref.watch(homeControllerProvider).activeRailGrid;
+    final controller = ref.read(homeControllerProvider.notifier);
 
     return Scaffold(
       appBar: AppBar(title: Text(grid?.title ?? 'Grid')),
       body: grid == null
           ? const Center(child: Text('No rail selected'))
-          : _RailGrid(items: grid.items),
+          : _RailGrid(
+              grid: grid,
+              onLoadMore: controller.loadMoreRailGrid,
+              onRetry: controller.retryRailGridPage,
+            ),
     );
   }
 }
 
 /// The responsive grid itself: columns are chosen by the available width via
-/// [SliverGridDelegateWithMaxCrossAxisExtent], and each cell is the rail's own
-/// [PosterCard] (its width left null so the delegate defines it).
-class _RailGrid extends StatelessWidget {
-  final List<Meta> items;
-  const _RailGrid({required this.items});
+/// [SliverGridDelegateWithMaxCrossAxisExtent], each cell is the rail's own
+/// [PosterCard] (its width left null so the delegate defines it), and a
+/// full-width footer sliver carries the "End"/spinner/retry state.
+class _RailGrid extends StatefulWidget {
+  final RailGridSnapshot grid;
+  final VoidCallback onLoadMore;
+  final VoidCallback onRetry;
+
+  const _RailGrid({
+    required this.grid,
+    required this.onLoadMore,
+    required this.onRetry,
+  });
+
+  @override
+  State<_RailGrid> createState() => _RailGridState();
+}
+
+class _RailGridState extends State<_RailGrid> {
+  final ScrollController _controller = ScrollController();
+
+  /// How close (px) to the bottom the scroll must get before the next page is
+  /// requested — roughly two rows of posters, so the page is usually ready
+  /// before the user reaches the footer.
+  static const double _loadThreshold = 400;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_onScroll);
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_onScroll);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (!_controller.hasClients) return;
+    final grid = widget.grid;
+    // Nothing to request while loading, ended, or showing the error footer
+    // (the retry button owns that case). The reducer also guards, but skipping
+    // the dispatch keeps a fast scroll cheap.
+    if (grid.ended || grid.loading || grid.error != null) return;
+    final position = _controller.position;
+    if (position.maxScrollExtent - position.pixels <= _loadThreshold) {
+      widget.onLoadMore();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final items = widget.grid.items;
     if (items.isEmpty) {
       return const Center(child: Text('Nothing to show'));
     }
-    return GridView.builder(
+    return CustomScrollView(
       key: const ValueKey('railGrid'),
-      padding: const EdgeInsets.all(16),
-      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 150,
-        crossAxisSpacing: 8,
-        mainAxisSpacing: 8,
-        childAspectRatio: 0.58,
-      ),
-      itemCount: items.length,
-      itemBuilder: (context, i) => PosterCard(meta: items[i], width: null),
+      controller: _controller,
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.all(16),
+          sliver: SliverGrid(
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 150,
+              crossAxisSpacing: 8,
+              mainAxisSpacing: 8,
+              childAspectRatio: 0.58,
+            ),
+            delegate: SliverChildBuilderDelegate(
+              (context, i) => PosterCard(meta: items[i], width: null),
+              childCount: items.length,
+            ),
+          ),
+        ),
+        SliverToBoxAdapter(
+          child: _GridFooter(grid: widget.grid, onRetry: widget.onRetry),
+        ),
+      ],
     );
+  }
+}
+
+/// The grid's bottom edge (ticket 77): a spinner while a page is in flight, the
+/// retry affordance when the last page failed, "End" when the source is
+/// exhausted, and a small spacer while more may be requested.
+class _GridFooter extends StatelessWidget {
+  final RailGridSnapshot grid;
+  final VoidCallback onRetry;
+
+  const _GridFooter({required this.grid, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    if (grid.loading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 24),
+        child: Center(
+          child: SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
+    }
+    if (grid.error != null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+        child: Column(
+          children: [
+            Text(
+              "Couldn't load more.",
+              textAlign: TextAlign.center,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 8),
+            FilledButton.tonal(
+              onPressed: onRetry,
+              child: const Text('Try again'),
+            ),
+          ],
+        ),
+      );
+    }
+    if (grid.ended) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 24),
+        child: Center(
+          child: Text(
+            'End',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ),
+      );
+    }
+    return const SizedBox(height: 24);
   }
 }

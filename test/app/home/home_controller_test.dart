@@ -44,6 +44,12 @@ class RecordingCatalogFetcher implements CatalogFetcher {
   final List<String> retriedKeys = [];
   final Map<String, HomeRailOutcome Function()> outcomes = {};
 
+  /// Grid page requests, in order, as `(rowKey, cursor)`.
+  final List<(String, int)> pageRequests = [];
+
+  /// The page [fetchRailPage] returns; default is an empty, ended page.
+  RailPage Function(String rowKey, int cursor)? pageFor;
+
   /// Called synchronously when [fetchRails] starts, so a test can interleave a
   /// cache-read log with the network hand-off.
   void Function()? onFetch;
@@ -65,6 +71,16 @@ class RecordingCatalogFetcher implements CatalogFetcher {
   Future<HomeRailOutcome> fetchRail(CatalogRequest request, String rowKey) async {
     retriedKeys.add(rowKey);
     return _outcome(rowKey);
+  }
+
+  @override
+  Future<RailPage> fetchRailPage(
+    CatalogRequest request,
+    String rowKey,
+    int cursor,
+  ) async {
+    pageRequests.add((rowKey, cursor));
+    return pageFor?.call(rowKey, cursor) ?? const RailPage(items: []);
   }
 
   @override
@@ -94,6 +110,14 @@ class ControllableCatalogFetcher implements CatalogFetcher {
   @override
   Future<HomeRailOutcome> fetchRail(CatalogRequest request, String rowKey) async =>
       HomeRailAbsent(rowKey);
+
+  @override
+  Future<RailPage> fetchRailPage(
+    CatalogRequest request,
+    String rowKey,
+    int cursor,
+  ) async =>
+      const RailPage(items: []);
 
   @override
   Future<DetailMeta> fetchDetail(String type, String id, String? tmdbKey) async =>
@@ -619,6 +643,114 @@ void main() {
       expect(rail.updatedAt, 1000);
       // The other rails still settle.
       expect(state.hasPending, isFalse);
+    });
+  });
+
+  group('rail grid pagination (ticket 77)', () {
+    const firstKey = 'cinemeta:top-movies';
+
+    /// Loads the Home and opens [firstKey]'s grid, leaving the state ready to
+    /// page. The rail has exactly one item and reports a continuation, so the
+    /// open cursor is 1 and the grid is not already ended.
+    Future<HomeController> openGrid(
+      RecordingCatalogFetcher fetcher,
+      ProviderContainer container,
+    ) async {
+      fetcher.outcomes[firstKey] = () => HomeRailLoaded(
+            firstKey,
+            'Top Movies',
+            [Meta(id: 'tt-1', type: 'movie', name: 'One')],
+            hasMore: true,
+          );
+      final notifier = container.read(homeControllerProvider.notifier);
+      notifier.load();
+      await pumpEventQueue();
+      notifier.openRailGrid(firstKey);
+      await settle();
+      return notifier;
+    }
+
+    test('loading more fetches the snapshot cursor and appends the page',
+        () async {
+      final fetcher = RecordingCatalogFetcher();
+      final container = make(fetcher, InMemorySettingsStore());
+      addTearDown(container.dispose);
+      final notifier = await openGrid(fetcher, container);
+      expect(container.read(homeControllerProvider).activeRailGrid!.items,
+          hasLength(1));
+
+      fetcher.pageFor = (key, cursor) => RailPage(
+            items: [Meta(id: 'next', type: 'movie', name: 'Next')],
+            hasMore: false,
+          );
+      notifier.loadMoreRailGrid();
+      await pumpEventQueue();
+
+      expect(fetcher.pageRequests, [(firstKey, 1)]);
+      final grid = container.read(homeControllerProvider).activeRailGrid!;
+      expect(grid.items.last.id, 'next');
+      expect(grid.ended, isTrue);
+    });
+
+    test('a duplicate page is deduped and ends instead of looping', () async {
+      final fetcher = RecordingCatalogFetcher();
+      final container = make(fetcher, InMemorySettingsStore());
+      addTearDown(container.dispose);
+      final notifier = await openGrid(fetcher, container);
+      final loadedId =
+          container.read(homeControllerProvider).activeRailGrid!.items.single.id;
+
+      fetcher.pageFor = (key, cursor) => RailPage(
+            items: [Meta(id: loadedId, type: 'movie', name: 'Same')],
+            hasMore: true,
+          );
+      notifier.loadMoreRailGrid();
+      await pumpEventQueue();
+
+      final grid = container.read(homeControllerProvider).activeRailGrid!;
+      expect(grid.items, hasLength(1), reason: 'the repeated id is dropped');
+      expect(grid.ended, isTrue,
+          reason: 'no new ids can never advance the cursor');
+    });
+
+    test('a page failure keeps the loaded items and a retry re-fetches',
+        () async {
+      final fetcher = RecordingCatalogFetcher();
+      final container = make(fetcher, InMemorySettingsStore());
+      addTearDown(container.dispose);
+      final notifier = await openGrid(fetcher, container);
+
+      fetcher.pageFor = (key, cursor) => throw Exception('boom');
+      notifier.loadMoreRailGrid();
+      await pumpEventQueue();
+      var grid = container.read(homeControllerProvider).activeRailGrid!;
+      expect(grid.items, hasLength(1));
+      expect(grid.error, contains('boom'));
+
+      fetcher.pageFor = (key, cursor) => RailPage(
+            items: [Meta(id: 'next', type: 'movie', name: 'Next')],
+            hasMore: false,
+          );
+      notifier.retryRailGridPage();
+      await pumpEventQueue();
+
+      grid = container.read(homeControllerProvider).activeRailGrid!;
+      expect(grid.error, isNull);
+      expect(grid.items.any((m) => m.id == 'next'), isTrue);
+      expect(fetcher.pageRequests, [(firstKey, 1), (firstKey, 1)]);
+    });
+
+    test('a second scroll while a page is in flight is ignored', () async {
+      final fetcher = RecordingCatalogFetcher();
+      final container = make(fetcher, InMemorySettingsStore());
+      addTearDown(container.dispose);
+      final notifier = await openGrid(fetcher, container);
+
+      fetcher.pageFor = (key, cursor) => const RailPage(items: []);
+      notifier.loadMoreRailGrid();
+      notifier.loadMoreRailGrid();
+      await pumpEventQueue();
+      expect(fetcher.pageRequests, hasLength(1));
     });
   });
 }

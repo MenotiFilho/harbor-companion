@@ -49,6 +49,14 @@ class _StubCatalogFetcher implements CatalogFetcher {
       HomeRailAbsent(rowKey);
 
   @override
+  Future<RailPage> fetchRailPage(
+    CatalogRequest request,
+    String rowKey,
+    int cursor,
+  ) async =>
+      const RailPage(items: []);
+
+  @override
   Future<DetailMeta> fetchDetail(String type, String id, String? tmdbKey) async =>
       DetailMeta(meta: Meta(id: id, type: type, name: ''));
 }
