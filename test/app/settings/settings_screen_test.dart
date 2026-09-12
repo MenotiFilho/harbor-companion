@@ -168,10 +168,44 @@ void main() {
     expect(toggle, findsOneWidget);
     expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
 
+    await scrollTo(tester, toggle);
     await tester.tap(toggle);
     await tester.pumpAndSettle();
 
     expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+  });
+
+  testWidgets('the Connection section toggle defaults on and persists',
+      (tester) async {
+    final store = InMemorySettingsStore();
+    final container = ProviderContainer(
+      overrides: [
+        wsTransportProvider.overrideWithValue(FakeTransport()),
+        wsKeyStoreProvider.overrideWithValue(FakeKeyStore()),
+        hostRegistryStoreProvider.overrideWithValue(InMemoryHostRegistryStore()),
+        settingsStoreProvider.overrideWithValue(store),
+        subnetScannerProvider.overrideWithValue(const FixedSubnetScanner([])),
+        selfUpdateVersionProvider.overrideWithValue(FakeVersionProvider()),
+        releasesClientProvider.overrideWithValue(FakeReleasesClient()),
+      ],
+    );
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    final toggle = find.widgetWithText(
+      SwitchListTile,
+      'Keep connection in background',
+    );
+    await scrollTo(tester, find.text('Connection'));
+    expect(find.text('Connection'), findsOneWidget);
+    expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+
+    expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+    expect(await store.loadKeepConnectionInBackground(), isFalse);
   });
 
   testWidgets('settings exposes the Home rows editor entry point',

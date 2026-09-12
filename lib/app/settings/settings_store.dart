@@ -39,12 +39,20 @@ abstract interface class SettingsStore {
   Future<Set<String>> loadEnabledLetterboxdCatalogs();
 
   Future<void> saveEnabledLetterboxdCatalogs(Set<String> ids);
+
+  /// Whether to keep the Harbor connection alive in the background via a
+  /// foreground service. Defaults to `true` (opted in) when nothing is
+  /// persisted.
+  Future<bool> loadKeepConnectionInBackground();
+
+  Future<void> saveKeepConnectionInBackground(bool keep);
 }
 
 /// In-memory settings store. Default seam for tests; holds state for the
 /// process lifetime only.
 class InMemorySettingsStore implements SettingsStore {
   bool _showPlaybackLocation = false;
+  bool _keepConnectionInBackground = true;
   String _letterboxdManifestUrl = '';
   Set<String> _letterboxdCatalogIds = {...kDefaultLetterboxdCatalogIds};
   Set<String> _disabledBuiltInRowKeys = {};
@@ -55,6 +63,14 @@ class InMemorySettingsStore implements SettingsStore {
   @override
   Future<void> saveShowPlaybackLocation(bool show) async {
     _showPlaybackLocation = show;
+  }
+
+  @override
+  Future<bool> loadKeepConnectionInBackground() async =>
+      _keepConnectionInBackground;
+  @override
+  Future<void> saveKeepConnectionInBackground(bool keep) async {
+    _keepConnectionInBackground = keep;
   }
 
   @override
@@ -91,6 +107,7 @@ class InMemorySettingsStore implements SettingsStore {
 /// SharedPreferences-backed settings store. Survives restarts.
 class SharedPrefsSettingsStore implements SettingsStore {
   static const _showPlaybackLocationKey = 'harbor_companion.settings.show_playback_location';
+  static const _keepConnectionInBackgroundKey = 'harbor_companion.settings.keep_connection_in_background';
   static const _letterboxdManifestUrlKey = 'harbor_companion.settings.letterboxd_manifest_url';
   static const _letterboxdCatalogIdsKey = 'harbor_companion.settings.letterboxd_catalog_ids';
   static const _disabledBuiltInRowsKey = 'harbor_companion.settings.disabled_built_in_rows';
@@ -106,6 +123,18 @@ class SharedPrefsSettingsStore implements SettingsStore {
   Future<void> saveShowPlaybackLocation(bool show) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_showPlaybackLocationKey, show);
+  }
+
+  @override
+  Future<bool> loadKeepConnectionInBackground() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keepConnectionInBackgroundKey) ?? true;
+  }
+
+  @override
+  Future<void> saveKeepConnectionInBackground(bool keep) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keepConnectionInBackgroundKey, keep);
   }
 
   @override

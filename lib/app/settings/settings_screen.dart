@@ -60,6 +60,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           _sectionHeader('Find hosts'),
           _ScanSection(state: state, onScan: ctrl.startScan, onPick: (c) => _pickCandidate(ctrl, c)),
           const SizedBox(height: 24),
+          _sectionHeader('Connection'),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Keep connection in background'),
+            subtitle: const Text(
+              'Keep the Harbor connection alive with the screen off. Shows a '
+              'persistent notification while connected.',
+            ),
+            value: settings.keepConnectionInBackground,
+            onChanged: settingsCtrl.setKeepConnectionInBackground,
+          ),
+          const SizedBox(height: 24),
           _sectionHeader('Playback'),
           _PlaybackSection(
             showPlaybackLocation: settings.showPlaybackLocation,

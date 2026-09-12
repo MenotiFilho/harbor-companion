@@ -29,6 +29,10 @@ final settingsStoreProvider =
 class SettingsState {
   final bool showPlaybackLocation;
 
+  /// Whether to keep the connection alive in the background via a foreground
+  /// service (default on).
+  final bool keepConnectionInBackground;
+
   /// The Stremboxd manifest URL (`''` when unset).
   final String letterboxdManifestUrl;
 
@@ -43,6 +47,7 @@ class SettingsState {
 
   const SettingsState({
     this.showPlaybackLocation = false,
+    this.keepConnectionInBackground = true,
     this.letterboxdManifestUrl = '',
     this.enabledLetterboxdCatalogs = kDefaultLetterboxdCatalogIds,
     this.disabledBuiltInRowKeys = const {},
@@ -51,6 +56,7 @@ class SettingsState {
 
   SettingsState copyWith({
     bool? showPlaybackLocation,
+    bool? keepConnectionInBackground,
     String? letterboxdManifestUrl,
     Set<String>? enabledLetterboxdCatalogs,
     Set<String>? disabledBuiltInRowKeys,
@@ -59,6 +65,8 @@ class SettingsState {
       SettingsState(
         showPlaybackLocation:
             showPlaybackLocation ?? this.showPlaybackLocation,
+        keepConnectionInBackground:
+            keepConnectionInBackground ?? this.keepConnectionInBackground,
         letterboxdManifestUrl:
             letterboxdManifestUrl ?? this.letterboxdManifestUrl,
         enabledLetterboxdCatalogs:
@@ -80,6 +88,7 @@ class SettingsController extends Notifier<SettingsState> {
   Future<void> _restore() async {
     final store = ref.read(settingsStoreProvider);
     final show = await store.loadShowPlaybackLocation();
+    final keepBackground = await store.loadKeepConnectionInBackground();
     final manifestUrl = await store.loadLetterboxdManifestUrl();
     final catalogIds = await store.loadEnabledLetterboxdCatalogs();
     final disabled = await store.loadDisabledBuiltInRowKeys();
@@ -87,6 +96,7 @@ class SettingsController extends Notifier<SettingsState> {
     if (!ref.mounted) return;
     state = state.copyWith(
       showPlaybackLocation: show,
+      keepConnectionInBackground: keepBackground,
       letterboxdManifestUrl: manifestUrl,
       enabledLetterboxdCatalogs: catalogIds,
       disabledBuiltInRowKeys: disabled,
@@ -99,6 +109,14 @@ class SettingsController extends Notifier<SettingsState> {
   void setShowPlaybackLocation(bool value) {
     state = state.copyWith(showPlaybackLocation: value);
     ref.read(settingsStoreProvider).saveShowPlaybackLocation(value);
+  }
+
+  /// Opts in/out of keeping the connection alive in the background. The
+  /// background controller reacts to the state change; toggling on while
+  /// connected and foregrounded starts the service immediately.
+  void setKeepConnectionInBackground(bool value) {
+    state = state.copyWith(keepConnectionInBackground: value);
+    ref.read(settingsStoreProvider).saveKeepConnectionInBackground(value);
   }
 
   /// Sets the Stremboxd manifest URL (trimmed; `''` clears it).
