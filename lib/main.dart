@@ -40,13 +40,10 @@ class _HarborCompanionAppState extends ConsumerState<HarborCompanionApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Pause reconnect timers while the app is backgrounded (story #15).
-    ref
-        .read(connectControllerProvider.notifier)
-        .setBackgrounded(state != AppLifecycleState.resumed);
     // Foreground/background transitions are recorded for self-update but never
     // trigger a re-check — the launch check fires once, and a foreground
-    // return is a no-op (ticket 28).
+    // return is a no-op (ticket 28). The reconnect schedule no longer reacts to
+    // lifecycle at all (ADR-0006).
     ref
         .read(selfUpdateControllerProvider.notifier)
         .setForegrounded(state != AppLifecycleState.resumed);

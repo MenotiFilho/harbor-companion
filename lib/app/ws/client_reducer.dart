@@ -311,7 +311,6 @@ class Snapshot {
 
 class ClientState {
   final WsStatus status;
-  final bool backgrounded;
   final Duration backoff;
   final Duration? reconnectAt;
   final int reconnectAttempts;
@@ -339,7 +338,6 @@ class ClientState {
 
   ClientState({
     this.status = WsStatus.disconnected,
-    this.backgrounded = false,
     this.backoff = backoffFloor,
     this.reconnectAt,
     this.reconnectAttempts = 0,
@@ -364,7 +362,6 @@ class ClientState {
 
   ClientState copy({
     WsStatus? status,
-    bool? backgrounded,
     Duration? backoff,
     Duration? reconnectAt,
     bool clearReconnectAt = false,
@@ -395,7 +392,6 @@ class ClientState {
   }) {
     return ClientState(
       status: status ?? this.status,
-      backgrounded: backgrounded ?? this.backgrounded,
       backoff: backoff ?? this.backoff,
       reconnectAt: clearReconnectAt ? null : (reconnectAt ?? this.reconnectAt),
       reconnectAttempts: reconnectAttempts ?? this.reconnectAttempts,
@@ -461,11 +457,6 @@ class SendCommand extends ClientEvent {
   final String action;
   final Map<String, dynamic> payload;
   const SendCommand(super.now, this.action, [this.payload = const {}]);
-}
-
-class SetBackgrounded extends ClientEvent {
-  final bool value;
-  const SetBackgrounded(super.now, this.value);
 }
 
 /// Re-applies host metadata keys persisted by a previous session.
@@ -598,7 +589,6 @@ ClientState clientReduce(ClientState s, ClientEvent e) {
 
     case Tick(now: final now):
       if (s.status == WsStatus.reconnecting &&
-          !s.backgrounded &&
           s.reconnectAt != null &&
           now >= s.reconnectAt!) {
         return s.copy(
@@ -620,12 +610,6 @@ ClientState clientReduce(ClientState s, ClientEvent e) {
       if (frame == null) return s.copy(lastError: "unknown command '$action'", notice: 'command rejected');
       s.outgoing.add(frame);
       return s.copy(lastCommand: frame, clearLastError: true, notice: 'sent $action');
-
-    case SetBackgrounded(value: final value):
-      return s.copy(
-        backgrounded: value,
-        notice: value ? 'backgrounded — retries paused' : 'foregrounded — retries resume on next tick',
-      );
 
     case RestoreKeys(:final tmdbKey, :final rpdbKey, :final tvdbKey):
       return s.copy(

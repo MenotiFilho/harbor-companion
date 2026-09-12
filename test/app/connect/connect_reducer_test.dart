@@ -2,10 +2,10 @@
 //
 // Pins the decisions validated by the connect prototype (#12) and the ticket
 // 03 acceptance criteria: the warning gate, first-connect give-up vs.
-// established-drop retry, backoff doubling to the cap, backgrounding
-// pause/resume, launch auto-connect (incl. the cold-start drop-to-idle), scan
-// candidacy, and registry teardown. The reducer is pure, so every case is a
-// sequence of (event → assert state/effects).
+// established-drop retry, backoff doubling to the cap, the lifecycle-
+// independent reconnect schedule, launch auto-connect (incl. the cold-start
+// drop-to-idle), scan candidacy, and registry teardown. The reducer is pure, so
+// every case is a sequence of (event → assert state/effects).
 
 import 'package:flutter_test/flutter_test.dart';
 
@@ -236,7 +236,7 @@ void main() {
     });
   });
 
-  group('backgrounding', () {
+  group('reconnect schedule (no lifecycle pause)', () {
     ConnectState reconnecting() {
       var s = connectReduce(ConnectState(), const AddHost('h1', 'desk', '192.168.1.10'));
       _drain(s);
@@ -247,21 +247,25 @@ void main() {
       return s;
     }
 
-    test('background pauses the reconnect timer', () {
+    test('a drop arms the reconnect timer with no lifecycle input', () {
       final s = reconnecting();
-      final after = connectReduce(s, const SetBackgrounded(true));
-      expect(after.backgrounded, isTrue);
-      expect(_drain(after), contains('cancelReconnect'));
+      expect(s.phase, ConnPhase.reconnecting);
+      expect(_drain(s), contains('reconnectIn:400'));
     });
 
-    test('foreground resumes the reconnect timer with the current backoff', () {
+    test('the schedule keeps re-arming; nothing can pause it (ADR-0006)', () {
+      // The old `SetBackgrounded` pause is gone: there is no background/foreground
+      // signal that can cancel the schedule, so each failed attempt re-arms it.
       var s = reconnecting();
       _drain(s);
-      s = connectReduce(s, const SetBackgrounded(true));
-      _drain(s);
-      final after = connectReduce(s, const SetBackgrounded(false));
-      expect(after.backgrounded, isFalse);
-      expect(_drain(after), contains('reconnectIn:400'));
+      final expected = <int>[800, 1600, 3000, 3000];
+      for (final delay in expected) {
+        s = connectReduce(s, const RetryNow());
+        _drain(s);
+        s = connectReduce(s, const SocketClosed('no host'));
+        expect(_drain(s), contains('reconnectIn:$delay'));
+      }
+      expect(s.phase, ConnPhase.reconnecting);
     });
   });
 

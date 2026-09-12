@@ -102,8 +102,6 @@ class ConnectController extends Notifier<ConnectState> {
 
   void retry() => _dispatch(RetryNow());
 
-  void setBackgrounded(bool value) => _dispatch(SetBackgrounded(value));
-
   void startScan() => _dispatch(StartScan());
 
   /// Saves a scan candidate as a real host (a scan never auto-adds); this is

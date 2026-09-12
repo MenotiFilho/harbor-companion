@@ -287,28 +287,15 @@ void main() {
     });
   });
 
-  group('backgrounding', () {
-    test('Tick is suppressed while backgrounded', () {
+  group('reconnect schedule (no lifecycle pause)', () {
+    test('Tick fires the retry with no lifecycle signal (previously suppressed while backgrounded)', () {
       var s = clientReduce(connected(ClientState()), SocketClosed(ms(0), 'drop'));
-      s = clientReduce(s, SetBackgrounded(ms(0), true));
+      expect(s.status, WsStatus.reconnecting);
+      // Nothing foregrounds the app: the tick alone drives the retry, because
+      // the background pause was removed (ADR-0006).
       final after = clientReduce(s, Tick(ms(4000))); // long past reconnectAt
-      expect(after.status, WsStatus.reconnecting);
-      expect(after.backgrounded, isTrue);
-    });
-
-    test('foregrounding resumes retries from the existing backoff', () {
-      var s = clientReduce(connected(ClientState()), SocketClosed(ms(0), 'drop'));
-      s = clientReduce(s, SetBackgrounded(ms(0), true));
-      s = clientReduce(s, SetBackgrounded(ms(4000), false));
-      final after = clientReduce(s, Tick(ms(4000)));
-      expect(after.backgrounded, isFalse);
       expect(after.status, WsStatus.connecting);
-    });
-
-    test('backgrounding does not change an established connection', () {
-      final s = clientReduce(connected(ClientState()), SetBackgrounded(ms(0), true));
-      expect(s.status, WsStatus.connected);
-      expect(s.backgrounded, isTrue);
+      expect(after.reconnectAt, isNull);
     });
   });
 

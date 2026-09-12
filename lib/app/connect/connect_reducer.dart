@@ -86,7 +86,6 @@ class ConnectState {
   final bool warningHeld; // open-LAN warning is up; connect is blocked
   final int reconnectAttempt;
   final Duration reconnectDelay; // current backoff (relevant while reconnecting)
-  final bool backgrounded;
   final bool coldStart; // this connect was initiated by app launch (auto-connect)
   final bool scanning; // LAN scan in flight
   final List<HostEntry> scanResults; // discovered candidates (name may be generic)
@@ -104,7 +103,6 @@ class ConnectState {
     this.warningHeld = false,
     this.reconnectAttempt = 0,
     this.reconnectDelay = backoffFloor,
-    this.backgrounded = false,
     this.coldStart = false,
     this.scanning = false,
     this.scanResults = const [],
@@ -121,7 +119,6 @@ class ConnectState {
     bool? warningHeld,
     int? reconnectAttempt,
     Duration? reconnectDelay,
-    bool? backgrounded,
     bool? coldStart,
     bool? scanning,
     List<HostEntry>? scanResults,
@@ -138,7 +135,6 @@ class ConnectState {
       warningHeld: warningHeld ?? this.warningHeld,
       reconnectAttempt: reconnectAttempt ?? this.reconnectAttempt,
       reconnectDelay: reconnectDelay ?? this.reconnectDelay,
-      backgrounded: backgrounded ?? this.backgrounded,
       coldStart: coldStart ?? this.coldStart,
       scanning: scanning ?? this.scanning,
       scanResults: scanResults ?? this.scanResults,
@@ -226,11 +222,6 @@ class RetryNow extends ConnectEvent {
 
 class DisconnectRequested extends ConnectEvent {
   const DisconnectRequested();
-}
-
-class SetBackgrounded extends ConnectEvent {
-  final bool value;
-  const SetBackgrounded(this.value);
 }
 
 class StartScan extends ConnectEvent {
@@ -486,19 +477,6 @@ ConnectState connectReduce(ConnectState s, ConnectEvent e) {
       }
       next.effects.add('cancelReconnect');
       next = next.copy(notice: 'disconnected');
-      return next;
-
-    case SetBackgrounded(value: final value):
-      var next = s.copy(backgrounded: value);
-      if (s.phase == ConnPhase.reconnecting) {
-        if (value) {
-          next.effects.add('cancelReconnect');
-          next = next.copy(notice: 'backgrounded — reconnect paused');
-        } else {
-          next = next.copy(notice: 'foregrounded — reconnect resumes');
-          next.effects.add('reconnectIn:${s.reconnectDelay.inMilliseconds}');
-        }
-      }
       return next;
 
     case StartScan():
