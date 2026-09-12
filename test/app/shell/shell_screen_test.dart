@@ -3,6 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:harbor_companion/app/background/background_controller.dart';
+import 'package:harbor_companion/app/background/background_platform.dart';
+import 'package:harbor_companion/app/background/background_reducer.dart';
+import 'package:harbor_companion/app/background/open_remote_request.dart';
+import 'package:harbor_companion/app/connect/connect_controller.dart';
+import 'package:harbor_companion/app/connect/connect_reducer.dart';
 import 'package:harbor_companion/app/home/catalog_fetcher.dart';
 import 'package:harbor_companion/app/home/catalog_request.dart';
 import 'package:harbor_companion/app/home/home_controller.dart';
@@ -68,6 +74,77 @@ class _StubRemoteController extends RemoteController {
   _StubRemoteController(this.initialState);
   @override
   RemoteState build() => initialState;
+}
+
+/// Minimal BackgroundPlatform for the shell rationale test; reports the fixed
+/// permission and records the OS prompt.
+class _StubBackgroundPlatform implements BackgroundPlatform {
+  _StubBackgroundPlatform(this.permission);
+
+  NotificationPermissionStatus permission;
+  int requestCalls = 0;
+
+  @override
+  Future<NotificationPermissionStatus> checkNotificationPermission() async =>
+      permission;
+
+  @override
+  Future<NotificationPermissionStatus> requestNotificationPermission() async {
+    requestCalls++;
+    return permission;
+  }
+
+  @override
+  Future<void> openNotificationSettings() async {}
+
+  @override
+  Future<bool> isIgnoringBatteryOptimizations() async => false;
+
+  @override
+  Future<bool> requestIgnoreBatteryOptimizations() async => true;
+
+  @override
+  Future<void> openBatteryOptimizationSettings() async {}
+
+  @override
+  Future<void> openBatterySettings() async {}
+
+  @override
+  Future<LocalNetworkPermissionStatus> checkLocalNetworkPermission() async =>
+      LocalNetworkPermissionStatus.granted;
+
+  @override
+  Future<LocalNetworkPermissionStatus> requestLocalNetworkPermission() async =>
+      LocalNetworkPermissionStatus.granted;
+
+  @override
+  Future<void> startService(BackgroundNotification notification) async {}
+
+  @override
+  Future<void> updateService(BackgroundNotification notification) async {}
+
+  @override
+  Future<void> updateMediaSession(BackgroundMediaSurface? media) async {}
+
+  @override
+  Future<void> stopService() async {}
+
+  @override
+  Stream<BackgroundAction> get actions =>
+      const Stream<BackgroundAction>.empty();
+}
+
+/// A connect controller already in the connected phase, so the background module
+/// sees a successful connect without a real socket.
+class _StubConnectController extends ConnectController {
+  @override
+  ConnectState build() => ConnectState(
+        hosts: const [
+          HostEntry(id: 'h1', name: 'desk', address: '192.168.1.50'),
+        ],
+        selectedId: 'h1',
+        phase: ConnPhase.connected,
+      );
 }
 
 RemoteState _holding(String title) => RemoteState(
@@ -268,5 +345,161 @@ void main() {
     await tester.tap(find.text('Later'));
     await tester.pumpAndSettle();
     expect(find.text('Update available'), findsNothing);
+  });
+
+  testWidgets('a notification body tap opens Remote and pops pushed routes',
+      (tester) async {
+    final container = _connectedContainer(title: 'Shawshank');
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const HarborCompanionApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Push a route so the pop-to-root is observable.
+    await tester.tap(find.byIcon(Icons.settings));
+    await tester.pumpAndSettle();
+    expect(find.text('Settings'), findsOneWidget);
+
+    // The background module signals the request (a notification body tap).
+    container.read(openRemoteRequestProvider.notifier).request();
+    await tester.pumpAndSettle();
+
+    expect(container.read(shellControllerProvider).activeTab, ShellTab.remote);
+    expect(find.text('Settings'), findsNothing);
+  });
+
+  testWidgets('the first connect offers the rationale before the OS prompt',
+      (tester) async {
+    final platform =
+        _StubBackgroundPlatform(NotificationPermissionStatus.denied);
+    final container = ProviderContainer(
+      overrides: [
+        connectionStatusProvider.overrideWith(ConnectionStatusController.new),
+        connectControllerProvider.overrideWith(_StubConnectController.new),
+        remoteControllerProvider
+            .overrideWith(() => _StubRemoteController(_holding('Shawshank'))),
+        backgroundPlatformProvider.overrideWithValue(platform),
+        ...shellOverrides(),
+      ],
+    );
+    addTearDown(container.dispose);
+    container
+        .read(connectionStatusProvider.notifier)
+        .set(ConnectionStatus.connected);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const HarborCompanionApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // The in-app rationale is up; Android has not been asked yet.
+    expect(find.text('Allow notifications'), findsOneWidget);
+    expect(platform.requestCalls, 0);
+
+    await tester.tap(find.text('Allow'));
+    await tester.pumpAndSettle();
+    expect(platform.requestCalls, 1);
+  });
+
+  testWidgets('resuming with the socket down shows a dismissible battery nudge',
+      (tester) async {
+    var nowMs = 0;
+    final platform =
+        _StubBackgroundPlatform(NotificationPermissionStatus.granted);
+    final container = ProviderContainer(
+      overrides: [
+        connectionStatusProvider.overrideWith(ConnectionStatusController.new),
+        connectControllerProvider.overrideWith(_StubConnectController.new),
+        remoteControllerProvider
+            .overrideWith(() => _StubRemoteController(_holding('Shawshank'))),
+        backgroundPlatformProvider.overrideWithValue(platform),
+        backgroundClockProvider.overrideWithValue(() => nowMs),
+        ...shellOverrides(),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const HarborCompanionApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Background → resume after a long stretch, with the socket down.
+    final background = container.read(backgroundControllerProvider.notifier);
+    nowMs = 1000;
+    background.setForegrounded(false);
+    await tester.pump();
+    nowMs = 1000 + kBatteryNudgeBackgroundThresholdMs;
+    background.setForegrounded(true);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('battery optimization'), findsOneWidget);
+
+    // The action dismisses the notice and leads to Settings, where the
+    // battery/OEM guidance lives.
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    expect(container.read(backgroundControllerProvider).batteryNudgeVisible,
+        isFalse);
+    expect(find.widgetWithText(AppBar, 'Settings'), findsOneWidget);
+  });
+
+  testWidgets('the battery nudge is withheld on Remote and shows on leaving it',
+      (tester) async {
+    var nowMs = 0;
+    final platform =
+        _StubBackgroundPlatform(NotificationPermissionStatus.granted);
+    final container = ProviderContainer(
+      overrides: [
+        connectionStatusProvider.overrideWith(ConnectionStatusController.new),
+        connectControllerProvider.overrideWith(_StubConnectController.new),
+        remoteControllerProvider
+            .overrideWith(() => _StubRemoteController(_holding('Shawshank'))),
+        backgroundPlatformProvider.overrideWithValue(platform),
+        backgroundClockProvider.overrideWithValue(() => nowMs),
+        ...shellOverrides(),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const HarborCompanionApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Sit on Remote, then resume with the socket down after a long stretch.
+    container.read(shellControllerProvider.notifier).selectTab(ShellTab.remote);
+    await tester.pump();
+
+    final background = container.read(backgroundControllerProvider.notifier);
+    nowMs = 1000;
+    background.setForegrounded(false);
+    await tester.pump();
+    nowMs = 1000 + kBatteryNudgeBackgroundThresholdMs;
+    background.setForegrounded(true);
+    await tester.pumpAndSettle();
+
+    // ADR-0007: never a banner on Remote. The flag stays pending.
+    expect(find.byType(SnackBar), findsNothing);
+    expect(find.textContaining('battery optimization'), findsNothing);
+    expect(container.read(backgroundControllerProvider).batteryNudgeVisible,
+        isTrue);
+
+    // Leaving Remote surfaces the pending nudge.
+    container.read(shellControllerProvider.notifier).selectTab(ShellTab.home);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('battery optimization'), findsOneWidget);
   });
 }

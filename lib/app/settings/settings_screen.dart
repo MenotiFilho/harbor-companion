@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../background/background_controller.dart';
+import '../background/background_platform.dart';
+import '../background/notification_permission_dialog.dart';
 import '../connect/connect_controller.dart';
 import '../connect/connect_reducer.dart';
 import '../routes.dart';
@@ -22,6 +25,14 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   @override
+  void initState() {
+    super.initState();
+    // Reflect the current OS exemption state when the screen opens; the user
+    // may have changed it in Android settings since the last check.
+    ref.read(backgroundControllerProvider.notifier).checkBatteryExemption();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final state = ref.watch(connectControllerProvider);
     final ctrl = ref.read(connectControllerProvider.notifier);
@@ -29,6 +40,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final updateCtrl = ref.read(selfUpdateControllerProvider.notifier);
     final settings = ref.watch(settingsControllerProvider);
     final settingsCtrl = ref.read(settingsControllerProvider.notifier);
+    final background = ref.watch(backgroundControllerProvider);
+    final backgroundCtrl = ref.read(backgroundControllerProvider.notifier);
 
     // Show the warning gate as a blocking dialog whenever the reducer holds it.
     ref.listen(connectControllerProvider, (previous, next) {
@@ -59,6 +72,30 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           const SizedBox(height: 24),
           _sectionHeader('Find hosts'),
           _ScanSection(state: state, onScan: ctrl.startScan, onPick: (c) => _pickCandidate(ctrl, c)),
+          const SizedBox(height: 24),
+          _sectionHeader('Connection'),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Keep connection in background'),
+            subtitle: const Text(
+              'Keep the Harbor connection alive with the screen off. Shows a '
+              'persistent notification while connected.',
+            ),
+            value: settings.keepConnectionInBackground,
+            onChanged: settingsCtrl.setKeepConnectionInBackground,
+          ),
+          _NotificationAccessTile(
+            status: background.notificationPermission,
+            onTap: () =>
+                _requestNotificationAccess(background.notificationPermission),
+          ),
+          _BatterySection(
+            exempt: background.batteryExempt,
+            onRequestExemption: backgroundCtrl.requestBatteryExemption,
+            onOpenOptimizationList:
+                backgroundCtrl.openBatteryOptimizationSettings,
+            onOpenBatterySettings: backgroundCtrl.openBatterySettings,
+          ),
           const SizedBox(height: 24),
           _sectionHeader('Playback'),
           _PlaybackSection(
@@ -143,6 +180,26 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ],
       ),
     );
+  }
+
+  /// The permanent "Notification access" row. Re-asks while Android still
+  /// allows it (in-app rationale, then the OS prompt) and deep-links to the
+  /// app's notification settings when it will no longer ask (ADR-0007). A
+  /// granted permission has nothing left to do.
+  Future<void> _requestNotificationAccess(
+    NotificationPermissionStatus status,
+  ) async {
+    final background = ref.read(backgroundControllerProvider.notifier);
+    switch (status) {
+      case NotificationPermissionStatus.granted:
+        return;
+      case NotificationPermissionStatus.denied:
+        final accepted = await showNotificationPermissionRationale(context);
+        if (!mounted || !accepted) return;
+        background.requestNotificationPermission();
+      case NotificationPermissionStatus.permanentlyDenied:
+        background.openNotificationSettings();
+    }
   }
 
   Future<void> _addHost(ConnectController ctrl) =>
@@ -447,6 +504,141 @@ class _ScanSection extends StatelessWidget {
               ),
             ),
         ],
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Notification access row (ticket 67)
+// ---------------------------------------------------------------------------
+
+/// The one permanent surface for `POST_NOTIFICATIONS` (ADR-0007). It is honest
+/// about what the OS will allow: re-askable when Android still shows the prompt,
+/// a settings deep-link when it no longer will.
+class _NotificationAccessTile extends StatelessWidget {
+  final NotificationPermissionStatus status;
+  final VoidCallback onTap;
+  const _NotificationAccessTile({required this.status, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final (subtitle, trailing) = switch (status) {
+      NotificationPermissionStatus.granted => (
+          'Allowed — the connection notification is shown.',
+          Icon(Icons.check_circle, color: Colors.green),
+        ),
+      NotificationPermissionStatus.denied => (
+          'Not allowed. Tap to ask Android again.',
+          const Icon(Icons.chevron_right),
+        ),
+      NotificationPermissionStatus.permanentlyDenied => (
+          'Blocked in Android settings. Tap to open notification settings.',
+          const Icon(Icons.chevron_right),
+        ),
+    };
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(
+        Icons.notifications_outlined,
+        color: status == NotificationPermissionStatus.granted
+            ? scheme.primary
+            : scheme.onSurfaceVariant,
+      ),
+      title: const Text('Notification access'),
+      subtitle: Text(subtitle),
+      trailing: trailing,
+      onTap: status == NotificationPermissionStatus.granted ? null : onTap,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Battery / OEM onboarding (ticket 68, ADR-0007)
+// ---------------------------------------------------------------------------
+
+/// The battery-exemption row plus the static OEM tips block. The direct request
+/// (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`) is the primary action with
+/// the optimization list as the fallback; the generic battery-settings action
+/// backs the tips. The tips are static text pinned to MIUI/Samsung/Xiaomi —
+/// there is deliberately no runtime manufacturer detection.
+class _BatterySection extends StatelessWidget {
+  final bool exempt;
+  final VoidCallback onRequestExemption;
+  final VoidCallback onOpenOptimizationList;
+  final VoidCallback onOpenBatterySettings;
+  const _BatterySection({
+    required this.exempt,
+    required this.onRequestExemption,
+    required this.onOpenOptimizationList,
+    required this.onOpenBatterySettings,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 8),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+            Icons.battery_saver_outlined,
+            color: exempt ? scheme.primary : scheme.onSurfaceVariant,
+          ),
+          title: const Text('Battery optimization'),
+          subtitle: Text(
+            exempt
+                ? 'Exempt — Android will not optimize the connection while the '
+                    'screen is off.'
+                : 'Not exempt — Android may kill the connection while the '
+                    'screen is off.',
+          ),
+          trailing: exempt
+              ? const Icon(Icons.check_circle, color: Colors.green)
+              : null,
+        ),
+        if (!exempt)
+          Wrap(
+            spacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              FilledButton.tonalIcon(
+                onPressed: onRequestExemption,
+                icon: const Icon(Icons.battery_charging_full),
+                label: const Text('Request exemption'),
+              ),
+              TextButton(
+                onPressed: onOpenOptimizationList,
+                child: const Text('Open optimization list'),
+              ),
+            ],
+          ),
+        const SizedBox(height: 12),
+        Text(
+          'If the connection still drops',
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Aggressive battery managers can stop background apps. On MIUI, set '
+          'Harbor Companion to “No restrictions” and enable Autostart. On '
+          'Samsung, remove it from “Sleeping apps” and turn off “Put unused '
+          'apps to sleep”. On Xiaomi, allow Autostart and set the battery saver '
+          'to “No restrictions”.',
+          style: Theme.of(context)
+              .textTheme
+              .bodySmall
+              ?.copyWith(color: scheme.onSurfaceVariant),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: onOpenBatterySettings,
+          icon: const Icon(Icons.settings_power_outlined),
+          label: const Text('Open battery settings'),
+        ),
       ],
     );
   }

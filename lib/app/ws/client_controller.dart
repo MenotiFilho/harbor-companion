@@ -3,7 +3,7 @@
 // Thin glue between the pure reducer (client_reducer.dart) and the outside
 // world. Drains the reducer's `outgoing` buffer onto a [WsTransport], folds
 // inbound frames back in as [Frame] events, owns the reconnect timer (armed on
-// `reconnectAt`, paused while backgrounded), persists host keys through a
+// `reconnectAt`, independent of app lifecycle), persists host keys through a
 // [HostKeyStore], and mirrors the effective connection status into the shell
 // seam so the UI can un-gate.
 
@@ -100,10 +100,6 @@ class WsClientController extends Notifier<ClientState> {
     _dispatch(SendCommand(clock(), action, payload));
   }
 
-  void setBackgrounded(bool value) {
-    _dispatch(SetBackgrounded(clock(), value));
-  }
-
   Duration clock() => ref.read(wsClockProvider)();
 
   /// The one place state mutates: reduce, publish, then run the side effects
@@ -177,7 +173,7 @@ class WsClientController extends Notifier<ClientState> {
   void _syncReconnectTimer(ClientState s) {
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
-    if (!_autoReconnect || s.status != WsStatus.reconnecting || s.backgrounded) return;
+    if (!_autoReconnect || s.status != WsStatus.reconnecting) return;
     final at = s.reconnectAt;
     if (at == null) return;
     final delay = at - clock();

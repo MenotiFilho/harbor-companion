@@ -54,6 +54,63 @@ void main() {
     expect(container.read(settingsControllerProvider).showPlaybackLocation, isTrue);
   });
 
+  test('defaults keepConnectionInBackground to on', () async {
+    final container = await make();
+    addTearDown(container.dispose);
+    expect(
+      container.read(settingsControllerProvider).keepConnectionInBackground,
+      isTrue,
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      container.read(settingsControllerProvider).keepConnectionInBackground,
+      isTrue,
+    );
+  });
+
+  test('setKeepConnectionInBackground updates state and persists', () async {
+    final store = InMemorySettingsStore();
+    final container = ProviderContainer(
+      overrides: [settingsStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(container.dispose);
+
+    container
+        .read(settingsControllerProvider.notifier)
+        .setKeepConnectionInBackground(false);
+    expect(
+      container.read(settingsControllerProvider).keepConnectionInBackground,
+      isFalse,
+    );
+    expect(await store.loadKeepConnectionInBackground(), isFalse);
+
+    container
+        .read(settingsControllerProvider.notifier)
+        .setKeepConnectionInBackground(true);
+    expect(await store.loadKeepConnectionInBackground(), isTrue);
+  });
+
+  test('restores a persisted keepConnectionInBackground=false on startup',
+      () async {
+    final store = InMemorySettingsStore();
+    await store.saveKeepConnectionInBackground(false);
+    final container = ProviderContainer(
+      overrides: [settingsStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(container.dispose);
+
+    // The default (on) holds until the async restore resolves.
+    expect(
+      container.read(settingsControllerProvider).keepConnectionInBackground,
+      isTrue,
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      container.read(settingsControllerProvider).keepConnectionInBackground,
+      isFalse,
+    );
+  });
+
   test('defaults the Letterboxd config: no URL, watchlist/recommended/popular on',
       () async {
     final container = await make();

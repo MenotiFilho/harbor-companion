@@ -2,6 +2,27 @@
     <!-- The companion is a LAN client: WS (/api/remote), catalog HTTP fetches,
          and the subnet scan all need network access. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Persistent connection (#64): the WebSocket is held alive in the
+         background by a foreground service of type `connectedDevice`.
+         `CHANGE_WIFI_STATE` is the install-time runtime prerequisite Android 14+
+         checks for the `connectedDevice` type; `FOREGROUND_SERVICE` is the base
+         permission every FGS needs. `POST_NOTIFICATIONS` is declared explicitly
+         (Android 13+) and requested contextually at the first successful
+         connect, behind an in-app rationale (#67, ADR-0007). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
+    <!-- Android 17 (API 37) local network protection: a LAN client needs this
+         runtime permission ("Nearby devices" group) once it targets API 37.
+         Declaring it is inert on every earlier version, where LAN sockets are
+         ungated; the runtime check/request lives behind the BackgroundPlatform
+         seam (#69) and is a no-op below 37. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Battery / OEM onboarding (#68, ADR-0007): the direct
+         ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS prompt needs this. Being
+         sideloaded, Play's restriction on the permission does not bind us. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <application
         android:label="Harbor Companion"
         android:name="${applicationName}"
@@ -33,6 +54,14 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Persistent-connection foreground service (#64). The plugin does not
+             declare the service itself; the app must, and must set the
+             connectedDevice type or Android 14+ refuses the start. The name is
+             the plugin's service class and must not change. -->
+        <service
+            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+            android:foregroundServiceType="connectedDevice"
+            android:exported="false" />
         <!-- ota_update FileProvider: exposes the downloaded APK to the system
              installer via a content:// URI. The authority must match the
              plugin's default (`${applicationId}.ota_update_provider`). -->

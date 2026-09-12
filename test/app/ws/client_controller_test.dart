@@ -1,6 +1,6 @@
 // Thin wiring tests for the WS client controller (ticket 02). The reducer is
 // the decision seam; these pin the glue: URL building, hello-on-open, frame
-// folding, key persistence, reconnect timer ownership, backgrounding pause,
+// folding, key persistence, reconnect timer ownership (lifecycle-independent),
 // and the shell connection-status mirror.
 
 import 'dart:async';
@@ -168,33 +168,40 @@ void main() {
     });
   });
 
-  test('reconnect timer is cancelled while backgrounded', () {
+  test('reconnect timer runs regardless of app lifecycle (no pause)', () {
     fakeAsync((async) {
       container = makeContainer();
       controller().connect('192.168.1.50');
       async.flushMicrotasks();
+      // The socket drops and there is no foreground/background signal left to
+      // send; the timer must still fire on the floor backoff (ADR-0006).
       transport.connections.single.close();
       async.flushMicrotasks();
-      controller().setBackgrounded(true);
-      async.elapse(const Duration(seconds: 30));
+      async.elapse(const Duration(milliseconds: 399));
       expect(transport.openedUrls, hasLength(1));
+      async.elapse(const Duration(milliseconds: 1));
+      async.flushMicrotasks();
+      expect(transport.openedUrls, hasLength(2));
     });
   });
 
-  test('foregrounding resumes the reconnect timer', () {
+  test('a failing reconnect keeps re-arming while the app stays backgrounded', () {
     fakeAsync((async) {
       container = makeContainer();
       controller().connect('192.168.1.50');
       async.flushMicrotasks();
+      transport.failOpen = true;
       transport.connections.single.close();
       async.flushMicrotasks();
-      controller().setBackgrounded(true);
-      async.elapse(const Duration(seconds: 5));
-      controller().setBackgrounded(false);
-      async.flushMicrotasks();
+      // 400 + 800 + 1600 ms of backoff with no lifecycle input: three more
+      // reopen attempts, so four total.
       async.elapse(const Duration(milliseconds: 400));
       async.flushMicrotasks();
-      expect(transport.openedUrls, hasLength(2));
+      async.elapse(const Duration(milliseconds: 800));
+      async.flushMicrotasks();
+      async.elapse(const Duration(milliseconds: 1600));
+      async.flushMicrotasks();
+      expect(transport.openedUrls, hasLength(4));
     });
   });
 

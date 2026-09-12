@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../background/background_controller.dart';
+import '../background/notification_permission_dialog.dart';
+import '../background/open_remote_request.dart';
 import '../home/home_screen.dart';
 import '../library/library_screen.dart';
 import '../profile/profile_screen.dart';
@@ -53,6 +56,46 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
       if (next.awaitingInstallPermission &&
           !(previous?.awaitingInstallPermission ?? false)) {
         _showSnack('Allow "Install unknown apps" to update Harbor Companion');
+      }
+    });
+
+    // A notification body tap (background module) requests the Remote tab; do
+    // the same pop-to-root + select the mini-player does. A monotonically
+    // increasing counter means every request is observed, and the first build
+    // (0) never fires.
+    ref.listen(openRemoteRequestProvider, (previous, next) {
+      if (next > (previous ?? 0)) _openRemote();
+    });
+
+    // The background module decides when the notification rationale is due
+    // (#67): the first successful connect with the toggle on, behind this
+    // in-app dialog. The reducer never fires the OS prompt cold.
+    ref.listen(backgroundControllerProvider, (previous, next) {
+      if (next.rationaleVisible && previous?.rationaleVisible != true) {
+        _showNotificationRationale();
+      }
+      // The reactive battery nudge (#68) is a dismissible shell notice shown
+      // over the current screen. ADR-0007 is explicit that it is *never* a
+      // banner on the Remote, where the transport already lives: while the
+      // Remote tab is active the flag stays pending (the throttle already ran)
+      // and the shell surfaces it as soon as the user leaves Remote. The
+      // decision lives in the background reducer; the shell only presents it.
+      if (next.batteryNudgeVisible &&
+          previous?.batteryNudgeVisible != true &&
+          ref.read(shellControllerProvider).activeTab != ShellTab.remote) {
+        _showBatteryNudge();
+      }
+    });
+
+    // A nudge withheld on the Remote tab surfaces on the first tab change away
+    // from Remote. The pending flag is not a dismissal, so the existing
+    // dismissal/throttle semantics still apply once it is shown.
+    ref.listen(shellControllerProvider, (previous, next) {
+      final leftRemote = previous?.activeTab == ShellTab.remote &&
+          next.activeTab != ShellTab.remote;
+      if (leftRemote &&
+          ref.read(backgroundControllerProvider).batteryNudgeVisible) {
+        _showBatteryNudge();
       }
     });
 
@@ -125,10 +168,61 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
     );
   }
 
+  /// Shows the in-app rationale and folds the user's answer back in: accepting
+  /// emits the real OS prompt, declining cancels it without one.
+  Future<void> _showNotificationRationale() async {
+    final accepted = await showNotificationPermissionRationale(context);
+    if (!mounted) return;
+    final background = ref.read(backgroundControllerProvider.notifier);
+    if (accepted) {
+      background.acceptNotificationRationale();
+    } else {
+      background.declineNotificationRationale();
+    }
+  }
+
+  /// Presents the reactive battery nudge (ADR-0007) and folds its dismissal
+  /// back in. Dismissal (the action, a swipe, or the timeout) clears the flag
+  /// and feeds the throttle, so the notice cannot spam.
+  void _showBatteryNudge() {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    final controller = messenger.showSnackBar(
+      SnackBar(
+        content: const Text(
+          'Android may have paused the connection while Harbor Companion was in '
+          'the background. Exempt it from battery optimization to keep it alive '
+          'with the screen off.',
+        ),
+        action: SnackBarAction(
+          label: 'Settings',
+          onPressed: () {
+            ref
+                .read(backgroundControllerProvider.notifier)
+                .dismissBatteryNudge();
+            Navigator.of(context).pushNamed(AppRoutes.settings);
+          },
+        ),
+      ),
+    );
+    controller.closed.then((_) {
+      if (mounted) {
+        ref.read(backgroundControllerProvider.notifier).dismissBatteryNudge();
+      }
+    });
+  }
+
   void _showSnack(String message) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// Opens the Remote tab, popping any pushed route (settings/detail) first so
+  /// the tab is actually visible. Mirrors [PlayerBar]'s open-Remote.
+  void _openRemote() {
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    ref.read(shellControllerProvider.notifier).selectTab(ShellTab.remote);
   }
 
   Widget _tabBody(ShellTab tab) => switch (tab) {
