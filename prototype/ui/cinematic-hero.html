@@ -1,0 +1,685 @@
+<!doctype html>
+<!--
+  PROTÓTIPO DESCARTÁVEL — não é código de produção.
+
+  Pergunta: "Qual layout de destaque de capa (hero cinematográfico) devemos
+  adotar na tela de detalhes, e como a linguagem se estende para Home/Remote?"
+
+  Três variantes estruturais da tela de Detalhe, trocáveis por ?variant=A|B|C,
+  navegáveis pela barra flutuante inferior ou pelas setas do teclado (← →).
+  Home e Remote são telas de contexto, únicas, para avaliar a coerência.
+
+  Rodar: abra este arquivo no navegador (duplo clique) ou
+         python3 -m http.server -d prototype/ui 8000  ->  http://localhost:8000/cinematic-hero.html
+-->
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harbor Companion · Protótipo UI (hero cinematográfico)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:ital,wght@0,600;0,700;1,600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0a0a0f;
+    --surface:#16161f;
+    --surface-2:#1e1e2a;
+    --line:rgba(255,255,255,.08);
+    --text:#f5f5f7;
+    --muted:#9b9baa;
+    --accent:#6d7bff;
+    --accent-2:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%}
+  body{
+    font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    color:var(--text);
+    background:
+      radial-gradient(1200px 700px at 72% -10%, rgba(109,123,255,.18), transparent 60%),
+      radial-gradient(900px 620px at 8% 112%, rgba(167,139,250,.14), transparent 60%),
+      #05050a;
+  }
+  button{font-family:inherit}
+
+  /* ---------------- chrome da página (fora do app) ---------------- */
+  .topbar{
+    position:sticky;top:0;z-index:60;display:flex;align-items:center;gap:18px;
+    padding:11px 22px;background:rgba(8,8,14,.74);backdrop-filter:blur(16px);
+    border-bottom:1px solid rgba(255,255,255,.06);
+  }
+  .brand{font-weight:700;letter-spacing:.01em;font-size:14px}
+  .brand small{display:block;font-weight:400;color:var(--muted);font-size:11px;margin-top:1px}
+  .screens{display:flex;gap:6px;margin-left:auto}
+  .screens button{
+    border:1px solid transparent;background:transparent;color:var(--muted);
+    padding:7px 14px;border-radius:999px;font-size:13px;font-weight:600;cursor:pointer;
+  }
+  .screens button:hover{color:var(--text)}
+  .screens button.active{color:#fff;background:rgba(109,123,255,.18);border-color:rgba(109,123,255,.4)}
+  .hint{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+  .stage{display:flex;gap:40px;align-items:flex-start;justify-content:center;padding:34px 22px 130px;flex-wrap:wrap}
+  .phone{
+    width:390px;height:844px;max-height:88vh;flex:0 0 auto;position:relative;overflow:hidden;
+    background:#0a0a0f;border-radius:48px;border:11px solid #17171f;
+    box-shadow:0 44px 100px rgba(0,0,0,.65), 0 0 0 1px rgba(255,255,255,.05);
+  }
+  .notch{position:absolute;top:9px;left:50%;transform:translateX(-50%);width:118px;height:25px;background:#000;border-radius:20px;z-index:50}
+  .screen{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--bg)}
+  .screen .scroll{flex:1;overflow-y:auto;overflow-x:hidden;position:relative;scrollbar-width:none}
+  .screen .scroll::-webkit-scrollbar{display:none}
+  .screen .dock{flex:0 0 auto;position:relative;z-index:20}
+
+  /* ---------------- notas ---------------- */
+  .notes{width:352px;max-width:100%;flex:0 0 auto}
+  .notes .card{
+    background:rgba(20,20,29,.9);border:1px solid var(--line);border-radius:22px;
+    padding:22px 22px 24px;box-shadow:0 30px 70px rgba(0,0,0,.45);
+  }
+  .notes .tag{display:inline-block;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);font-weight:700}
+  .notes h2{margin:10px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .notes p{margin:0 0 14px;color:#c3c3ce;font-size:13.5px;line-height:1.6}
+  .notes h4{margin:16px 0 7px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .notes ul{margin:0;padding-left:18px;color:#cfcfd9;font-size:13px;line-height:1.65}
+  .notes ul.pros li::marker{color:#5ee0a8}
+  .notes ul.cons li::marker{color:#ff9a9a}
+  .notes .foot{margin-top:18px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px;line-height:1.55}
+
+  /* ---------------- switcher flutuante ---------------- */
+  .switcher{
+    position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:200;
+    display:flex;align-items:center;gap:14px;padding:7px 9px;border-radius:999px;
+    background:rgba(245,245,247,.97);color:#0a0a0f;font-weight:700;font-size:13px;
+    box-shadow:0 16px 44px rgba(0,0,0,.55);white-space:nowrap;
+  }
+  .switcher button{
+    width:34px;height:34px;border-radius:50%;border:none;background:#0a0a0f;color:#fff;
+    font-size:15px;line-height:1;cursor:pointer;display:grid;place-items:center;
+  }
+  .switcher button:hover{background:#33333f}
+  .switcher .lbl{min-width:150px;text-align:center;font-variant-numeric:tabular-nums}
+  .switcher .lbl em{font-style:normal;color:#66667a;font-weight:600}
+
+  /* ---------------- componentes do app ---------------- */
+  .statusbar{display:flex;justify-content:space-between;align-items:center;padding:15px 24px 4px;font-size:13px;font-weight:600;position:relative;z-index:40}
+  .statusbar.overlay{position:absolute;top:0;left:0;right:0;color:#fff;text-shadow:0 1px 8px rgba(0,0,0,.6)}
+  .statusbar .sbi{display:flex;gap:6px;align-items:center;opacity:.95}
+  .statusbar .sbi span{width:15px;height:10px;border:1.4px solid currentColor;border-radius:3px;display:inline-block}
+  .statusbar .sbi span::after{content:"";display:block;width:60%;height:100%;background:currentColor;border-radius:1px}
+  .ico{width:20px;height:20px;display:block}
+
+  .appbar{display:flex;align-items:center;gap:12px;padding:8px 16px 8px;min-height:52px}
+  .appbar .ttl{font-weight:700;font-size:16px}
+  .appbar .spacer{flex:1}
+  .iconbtn{
+    width:38px;height:38px;border-radius:50%;border:1px solid transparent;background:transparent;color:var(--text);
+    display:grid;place-items:center;cursor:pointer;flex:0 0 auto;
+  }
+  .iconbtn:hover{background:rgba(255,255,255,.08)}
+  .iconbtn.on-art{background:rgba(0,0,0,.34);border-color:rgba(255,255,255,.16);backdrop-filter:blur(10px)}
+
+  .pillrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .pill{font-size:11px;padding:4px 9px;border-radius:999px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.15);backdrop-filter:blur(6px);white-space:nowrap}
+  .pill.rating{background:rgba(109,123,255,.24);border-color:rgba(109,123,255,.45);color:#ccd2ff;font-weight:600}
+  .pill.heavy{background:rgba(0,0,0,.4);border-color:rgba(255,255,255,.18)}
+
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:none;cursor:pointer;font-weight:650;font-size:14px;border-radius:13px;padding:12px 18px}
+  .btn .ico{width:19px;height:19px}
+  .btn-primary{background:#f5f5f7;color:#0a0a0f}
+  .btn-primary:hover{background:#fff}
+  .btn-accent{background:linear-gradient(135deg,var(--accent),var(--accent-2));color:#fff;box-shadow:0 12px 30px rgba(109,123,255,.35)}
+  .btn-ghost{background:rgba(255,255,255,.14);color:#fff;border:1px solid rgba(255,255,255,.18);backdrop-filter:blur(10px)}
+  .btn-ghost:hover{background:rgba(255,255,255,.22)}
+  .btn-wide{width:100%}
+  .btn-text{background:none;color:#fff;padding:13px 0;justify-content:flex-start}
+  .btn-text:hover{color:var(--accent)}
+
+  .synopsis{margin:0;font-size:13.5px;line-height:1.65;color:#c7c7d2}
+  .section-title{margin:26px 0 10px;font-size:15px;font-weight:650}
+
+  .rail{margin-top:24px}
+  .rail-head{display:flex;align-items:baseline;justify-content:space-between;padding:0 20px 11px}
+  .rail-head h3{margin:0;font-size:15px;font-weight:650}
+  .rail-head span{font-size:12px;color:var(--muted);font-weight:600}
+  .rail-scroll{display:flex;gap:12px;overflow-x:auto;padding:0 20px 6px;scrollbar-width:none}
+  .rail-scroll::-webkit-scrollbar{display:none}
+  .card{flex:0 0 auto;width:132px;cursor:pointer}
+  .card .art{
+    width:132px;height:198px;border-radius:14px;overflow:hidden;position:relative;
+    background:linear-gradient(145deg,#2a2b3d,#12121a);border:1px solid rgba(255,255,255,.05);
+    box-shadow:0 10px 26px rgba(0,0,0,.45);transition:transform .18s ease, box-shadow .18s ease;
+  }
+  .card:hover .art{transform:translateY(-4px) scale(1.02);box-shadow:0 18px 38px rgba(0,0,0,.6)}
+  .card .art img{width:100%;height:100%;object-fit:cover;display:block}
+  .card .art .badge{position:absolute;left:8px;bottom:8px;font-size:10px;padding:3px 7px;border-radius:8px;background:rgba(0,0,0,.62);backdrop-filter:blur(6px);font-weight:600}
+  .card .name{margin-top:8px;font-size:12px;line-height:1.32;color:#d7d7e0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+  .chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;scrollbar-width:none}
+  .chips::-webkit-scrollbar{display:none}
+  .chip{flex:0 0 auto;font-size:12.5px;font-weight:600;padding:8px 15px;border-radius:999px;background:var(--surface-2);color:var(--muted);border:1px solid transparent;cursor:pointer}
+  .chip.active{background:rgba(109,123,255,.2);color:#dfe2ff;border-color:rgba(109,123,255,.45)}
+
+  .episodes{margin-top:10px;border-top:1px solid var(--line)}
+  .ep{display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--line);align-items:center}
+  .ep .num{color:var(--muted);font-variant-numeric:tabular-nums;font-size:13px;width:16px;text-align:right;flex:0 0 auto}
+  .ep .thumb{width:98px;height:55px;border-radius:9px;flex:0 0 auto;overflow:hidden;background:#20202c;position:relative}
+  .ep .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .ep .info{flex:1;min-width:0}
+  .ep .info .t{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ep .info .d{font-size:11px;color:var(--muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ep .play{flex:0 0 auto;color:var(--muted)}
+
+  /* dock: mini player + navbar */
+  .playerbar{
+    margin:0 12px 8px;padding:6px 8px;border-radius:16px;display:flex;align-items:center;gap:10px;
+    background:rgba(30,30,42,.92);backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.07);
+    box-shadow:0 12px 32px rgba(0,0,0,.5);
+  }
+  .playerbar .pp{width:34px;height:48px;border-radius:8px;overflow:hidden;flex:0 0 auto;background:#20202c}
+  .playerbar .pp img{width:100%;height:100%;object-fit:cover}
+  .playerbar .meta{flex:1;min-width:0}
+  .playerbar .meta .t{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .playerbar .meta .s{font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .navbar{display:flex;align-items:center;padding:6px 4px 16px;background:rgba(12,12,18,.94);backdrop-filter:blur(18px);border-top:1px solid var(--line)}
+  .navitem{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:10px;font-weight:600;color:var(--muted)}
+  .navitem .ico{width:22px;height:22px}
+  .navitem.active{color:var(--accent)}
+
+  /* ---------- variante A: backdrop hero ---------- */
+  .heroA{position:relative;height:60%;min-height:360px}
+  .heroA .media{position:absolute;inset:0}
+  .heroA .media img{width:100%;height:100%;object-fit:cover;display:block}
+  .heroA .scrim{position:absolute;inset:0;background:linear-gradient(to top,var(--bg) 1%,rgba(10,10,15,.88) 24%,rgba(10,10,15,.32) 60%,rgba(10,10,15,.5) 100%)}
+  .heroA .toprow{position:absolute;top:48px;left:0;right:0;padding:0 16px;display:flex;justify-content:space-between;align-items:center;z-index:6}
+  .heroA .content{position:absolute;left:0;right:0;bottom:0;padding:0 20px 18px;z-index:6}
+  .heroA .eyebrow{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#c9cdff;font-weight:700;margin-bottom:8px}
+  .title-xl{font-size:38px;line-height:1;letter-spacing:-.02em;font-weight:800;margin:0 0 12px;text-shadow:0 2px 20px rgba(0,0,0,.5)}
+  .heroA .cta{display:flex;gap:10px;margin-top:16px}
+  .bodyA{padding:18px 20px 26px}
+
+  /* ---------- variante B: poster focus ---------- */
+  .amb{position:absolute;inset:0;z-index:0;overflow:hidden}
+  .amb img{width:100%;height:100%;object-fit:cover;filter:blur(52px) saturate(1.5) brightness(.42);transform:scale(1.4)}
+  .amb .veil{position:absolute;inset:0;background:linear-gradient(180deg,rgba(10,10,15,.5),rgba(10,10,15,.82) 42%,var(--bg) 72%)}
+  .screenB .scroll,.screenB .dock{position:relative;z-index:2}
+  .bhead{padding:2px 26px 20px;display:flex;flex-direction:column;align-items:center;text-align:center}
+  .poster-xl{width:172px;height:258px;border-radius:18px;overflow:hidden;flex:0 0 auto;background:linear-gradient(145deg,#2a2b3d,#12121a);
+    box-shadow:0 28px 64px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.09)}
+  .poster-xl img{width:100%;height:100%;object-fit:cover;display:block}
+  .btitle{font-size:27px;font-weight:800;letter-spacing:-.02em;margin:18px 0 10px}
+  .bhead .pillrow{justify-content:center}
+  .bhead .btn-wide{margin-top:20px}
+  .bsub{display:flex;gap:10px;margin-top:12px}
+  .bhead .pillrow + .bsub{margin-top:18px}
+  .sheet{margin-top:6px;padding:22px 22px 8px;background:linear-gradient(180deg,rgba(22,22,31,.55),transparent 30%);border-top:1px solid var(--line)}
+
+  /* ---------- variante C: editorial ---------- */
+  .edband{position:relative;height:44%;min-height:290px}
+  .edband img{width:100%;height:100%;object-fit:cover;display:block}
+  .edband .scrim{position:absolute;inset:0;background:linear-gradient(to top,var(--bg) 2%,rgba(10,10,15,.5) 42%,rgba(10,10,15,.12) 100%)}
+  .edband .toprow{position:absolute;top:48px;left:0;right:0;padding:0 16px;display:flex;justify-content:space-between;z-index:6}
+  .edcontent{padding:0 24px 28px;margin-top:-58px;position:relative;z-index:6}
+  .edkicker{font-size:10.5px;letter-spacing:.26em;text-transform:uppercase;color:var(--accent);font-weight:700}
+  .edtitle{font-family:'Playfair Display',Georgia,serif;font-size:42px;line-height:1.02;margin:10px 0 12px;font-weight:700}
+  .edrule{height:1px;background:linear-gradient(90deg,rgba(255,255,255,.55),transparent);margin:16px 0}
+  .edmeta{font-size:12px;color:var(--muted);letter-spacing:.05em}
+  .edrow{display:flex;gap:16px;margin-top:18px}
+  .poster-md{width:106px;height:159px;border-radius:12px;overflow:hidden;flex:0 0 auto;background:linear-gradient(145deg,#2a2b3d,#12121a);box-shadow:0 16px 36px rgba(0,0,0,.5)}
+  .poster-md img{width:100%;height:100%;object-fit:cover;display:block}
+  .edsyn{font-size:13px;line-height:1.68;color:#c6c6d1}
+  .edlist .ep{border-bottom:1px solid var(--line)}
+  .edlist .ep .thumb{display:none}
+
+  /* ---------- Home / Remote (contexto) ---------- */
+  .hhero{position:relative;height:52%;min-height:340px}
+  .hhero img{width:100%;height:100%;object-fit:cover;display:block}
+  .hhero .scrim{position:absolute;inset:0;background:linear-gradient(to top,var(--bg) 2%,rgba(10,10,15,.8) 30%,rgba(10,10,15,.15) 72%,rgba(10,10,15,.45) 100%)}
+  .hhero .content{position:absolute;left:0;right:0;bottom:0;padding:0 20px 16px;z-index:6}
+  .hhero h1{font-size:29px;font-weight:800;letter-spacing:-.02em;margin:0 0 10px}
+  .hhero .cta{display:flex;gap:10px;margin-top:15px}
+
+  .remote{position:relative;flex:1;overflow:hidden;display:flex;flex-direction:column}
+  .rmbg{position:absolute;inset:0;z-index:0;overflow:hidden}
+  .rmbg img{width:100%;height:100%;object-fit:cover;filter:blur(58px) saturate(1.6) brightness(.4);transform:scale(1.45)}
+  .rmbg .veil{position:absolute;inset:0;background:linear-gradient(180deg,rgba(10,10,15,.45),rgba(10,10,15,.86) 55%,var(--bg))}
+  .rmcontent{position:relative;z-index:2;flex:1;overflow-y:auto;padding:6px 24px 20px;display:flex;flex-direction:column;align-items:center;scrollbar-width:none}
+  .rmcontent::-webkit-scrollbar{display:none}
+  .rmlabel{font-size:10.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--muted);font-weight:700;margin:6px 0 14px}
+  .npposter{width:158px;height:237px;border-radius:18px;overflow:hidden;flex:0 0 auto;background:linear-gradient(145deg,#2a2b3d,#12121a);
+    box-shadow:0 28px 64px rgba(0,0,0,.72), 0 0 0 1px rgba(255,255,255,.09)}
+  .npposter img{width:100%;height:100%;object-fit:cover;display:block}
+  .rmtitle{font-size:21px;font-weight:750;margin:18px 0 4px;text-align:center}
+  .rmep{font-size:12.5px;color:var(--muted);text-align:center}
+  .rmsrc{font-size:11px;color:#6f6f80;margin-top:6px}
+  .progress{width:100%;height:5px;border-radius:999px;background:rgba(255,255,255,.16);margin-top:18px;position:relative}
+  .progress i{position:absolute;top:0;bottom:0;left:0;width:38%;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--accent-2))}
+  .times{width:100%;display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:7px;font-variant-numeric:tabular-nums}
+  .transport{display:flex;align-items:center;justify-content:center;gap:30px;margin-top:20px}
+  .transport .side{width:46px;height:46px;border-radius:50%;border:none;background:transparent;color:#dcdce4;display:grid;place-items:center;cursor:pointer}
+  .transport .side:hover{background:rgba(255,255,255,.08)}
+  .transport .big{width:72px;height:72px;border-radius:50%;border:none;background:#f5f5f7;color:#0a0a0f;display:grid;place-items:center;cursor:pointer;box-shadow:0 14px 34px rgba(0,0,0,.5)}
+  .transport .big .ico{width:32px;height:32px}
+  .volrow{display:flex;align-items:center;gap:12px;width:100%;margin-top:22px}
+  .volrow .ico{color:var(--muted);flex:0 0 auto}
+  .vol{flex:1;height:5px;border-radius:999px;background:rgba(255,255,255,.16);position:relative}
+  .vol i{position:absolute;top:0;bottom:0;left:0;width:64%;border-radius:999px;background:#dcdce4}
+  .rmtoggle{display:flex;gap:10px;margin-top:22px}
+  .rmnote{width:100%;margin-top:22px;padding:13px 15px;border-radius:14px;background:rgba(109,123,255,.12);border:1px solid rgba(109,123,255,.3);font-size:12px;color:#c9cdff;line-height:1.55}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">Harbor Companion<small>protótipo de UI · capa em destaque</small></div>
+  <nav class="screens" id="screens"></nav>
+  <div class="hint" id="hint">?variant=A</div>
+</header>
+
+<main class="stage">
+  <div class="phone">
+    <div class="notch"></div>
+    <div id="app" style="position:absolute;inset:0"></div>
+  </div>
+  <aside class="notes"><div class="card" id="notes"></div></aside>
+</main>
+
+<div class="switcher">
+  <button data-step="-1" title="Variante anterior">‹</button>
+  <div class="lbl" id="swlabel"></div>
+  <button data-step="1" title="Próxima variante">›</button>
+</div>
+
+<script>
+/* ============================================================
+   PROTÓTIPO — dados fictícios, imagens placeholder (picsum).
+   ============================================================ */
+
+const I = {
+  back:  '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+  gear:  '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.1-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1.1 1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z"/></svg>',
+  play:  '<svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72c0 .8.87 1.3 1.56.9l11.1-6.86a1.05 1.05 0 0 0 0-1.8L9.56 4.24A1.05 1.05 0 0 0 8 5.14z"/></svg>',
+  pause: '<svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4h4v16H7zM13 4h4v16h-4z"/></svg>',
+  prev:  '<svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5h2.5v14H7zM19 5.6v12.8c0 .8-.9 1.3-1.6.85l-8.2-5.02a1 1 0 0 1 0-1.7l8.2-5.02A1 1 0 0 1 19 5.6z"/></svg>',
+  next:  '<svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M14.5 5H17v14h-2.5zM5 5.6v12.8c0 .8.9 1.3 1.6.85l8.2-5.02a1 1 0 0 0 0-1.7L6.6 4.75A1 1 0 0 0 5 5.6z"/></svg>',
+  plus:  '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  heart: '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20.8 5.6a5 5 0 0 0-7.1 0L12 7.3l-1.7-1.7a5 5 0 1 0-7.1 7.1L12 21l8.8-8.3a5 5 0 0 0 0-7.1z"/></svg>',
+  share: '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="M16 6l-4-4-4 4M12 2v13"/></svg>',
+  down:  '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-4"/><path d="M7 10l5 5 5-5M12 15V3"/></svg>',
+  info:  '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+  search:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>',
+  home:  '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.6 12 3l9 7.6"/><path d="M5.5 9.4V21h13V9.4"/></svg>',
+  tv:    '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4.5" width="19" height="12.5" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
+  bookmark:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg>',
+  person:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></svg>',
+  star:  '<svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l2.7 5.7 6.3.9-4.6 4.4 1.1 6.2L12 17.3 6.5 20.2l1.1-6.2L3 9.6l6.3-.9z"/></svg>',
+};
+
+const FEATURE = {
+  title: 'Ruptura',
+  kind: 'Série',
+  year: '2022',
+  rating: '8.7',
+  seasons: '2 temporadas',
+  genre: 'Ficção científica · Mistério',
+  runtime: '~50 min/ep',
+  synopsis: 'Mark, funcionário da Lumon Industries, aceita um procedimento que separa suas memórias de trabalho das pessoais. Aos poucos, ele descobre que a empresa esconde muito mais do que promete.',
+  poster: 'https://picsum.photos/seed/harbor-ruptura-poster/420/630',
+  backdrop: 'https://picsum.photos/seed/harbor-ruptura-back/1280/720',
+  episodes: [
+    ['1', 'Good News About Hell', 'Mark acorda num escritório sem lembrança de como chegou.'],
+    ['2', 'Half Loop', 'A equipe recebe uma nova funcionária e o protocolo muda.'],
+    ['3', 'In Perpetuity', 'Marcos externos começam a se perguntar o que fazem lá dentro.'],
+    ['4', 'The You You Are', 'Um livro proibido circula pelo andar.'],
+  ],
+};
+
+const RAILS = [
+  ['Continuar assistindo', 'Ver tudo', [
+    ['Duna: Parte Dois', 'harbor-duna', '1h12 restantes'],
+    ['Oppenheimer', 'harbor-opp', '2h04 restantes'],
+    ['Pobres Criaturas', 'harbor-pobres', '38 min restantes'],
+    ['Anatomia de uma Queda', 'harbor-anatomia', '1h41 restantes'],
+  ]],
+  ['Em alta esta semana', 'Ver mais', [
+    ['Godzilla Minus One', 'harbor-godzilla', null],
+    ['Past Lives', 'harbor-pastlives', null],
+    ['Zona de Interesse', 'harbor-zona', null],
+    ['Ficção Americana', 'harbor-ficcao', null],
+  ]],
+  ['Séries para maratonar', 'Ver mais', [
+    ['Ruptura', 'harbor-ruptura-poster', null],
+    ['The Bear', 'harbor-bear', null],
+    ['Succession', 'harbor-succession', null],
+    ['Andor', 'harbor-andor', null],
+  ]],
+];
+
+const NAMES = { A: 'Backdrop Hero', B: 'Poster Focus', C: 'Editorial Cinema' };
+const SCREENS = [['home', 'Home'], ['detail', 'Detalhe'], ['remote', 'Remote']];
+
+const NOTES = {
+  A: {
+    tag: 'Variante A',
+    title: 'Backdrop Hero',
+    intro: 'A capa larga (backdrop 16:9) ocupa o topo em sangria total, com scrim em gradiente e o título sobreposto à arte. É o padrão Netflix/Disney+/Max.',
+    pros: ['A capa é literalmente o herói da tela', 'Alta imersão e leitura fácil do título sobre a arte', 'A CTA nasce dentro do hero, acima da dobra'],
+    cons: ['Consome ~60% da tela antes do conteúdo', 'Se o backdrop for fraco/ausente, o hero cai junto'],
+  },
+  B: {
+    tag: 'Variante B',
+    title: 'Poster Focus',
+    intro: 'O pôster retrato é o protagonista: grande, centrado, com sombra. O fundo da tela é a própria arte borrada e escurecida (efeito "ultrablur" do Plex).',
+    pros: ['Máximo destaque ao pôster retrato', 'Fundo ambiente dá identidade à tela inteira', 'Conteúdo (sinopse/temporadas) começa mais cedo'],
+    cons: ['Menos "cinema" que o backdrop largo', 'Pôster grande + fundo borrado pode competir por atenção'],
+  },
+  C: {
+    tag: 'Variante C',
+    title: 'Editorial Cinema',
+    intro: 'Duas escalas da capa: uma faixa cinematográfica no topo e o pôster entrando por baixo dela, com tipografia editorial (serifada) e muito respiro. Referência Mubi/Apple TV+.',
+    pros: ['Sofisticado e memorável; foge do clone de Netflix', 'Hierarquia tipográfica forte, menos ruído'],
+    cons: ['Herói menos óbvio que A/B', 'Menos denso: informação exige mais rolagem'],
+  },
+  home: {
+    tag: 'Contexto',
+    title: 'Home cinematográfica',
+    intro: 'A linguagem compartilhada: um hero com o destaque do momento no topo e, abaixo, trilhos com cards maiores (132×198), cantos arredondados e sombra. O mesmo backdrop que hoje é ignorado vira o herói da Home.',
+    pros: ['A capa larga finalmente aparece na Home', 'Cards maiores vendem melhor o acervo'],
+    cons: ['Menos itens visíveis por dobra', 'Hero precisa de um "destaque" escolhido pela fonte'],
+  },
+  remote: {
+    tag: 'Contexto',
+    title: 'Remote ambiente',
+    intro: 'A tela do controle remoto ganha fundo ambiente com a arte da mídia atual desfocada, pôster grande, progresso e transporte — a "capa" também domina o momento de reprodução.',
+    pros: ['Sensação de "filme ligado" mesmo no controle', 'Pôster grande identifica a mídia de longe'],
+    cons: ['Fundo borrado precisa de contraste garantido para os controles'],
+  },
+};
+
+/* ---------- pedaços reutilizáveis ---------- */
+const img = (src, cls = '') =>
+  `<img class="${cls}" src="${src}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`;
+
+const statusbar = (overlay = false) =>
+  `<div class="statusbar${overlay ? ' overlay' : ''}"><span>9:41</span><span class="sbi"><span></span><span></span></span></div>`;
+
+const navbar = (active) => `
+  <div class="navbar">
+    ${[['home', I.home, 'Home'], ['search', I.search, 'Busca'], ['remote', I.tv, 'Remote'], ['myStuff', I.bookmark, 'Biblioteca'], ['profile', I.person, 'Perfil']]
+      .map(([k, ic, label]) => `<div class="navitem${k === active ? ' active' : ''}">${ic}<span>${label}</span></div>`).join('')}
+  </div>`;
+
+const playerbar = (playing = true) => `
+  <div class="playerbar">
+    <div class="pp">${img(FEATURE.poster)}</div>
+    <div class="meta"><div class="t">${FEATURE.title}</div><div class="s">S1 · E3 · In Perpetuity</div></div>
+    <button class="iconbtn" title="${playing ? 'Pausar' : 'Reproduzir'}">${playing ? I.pause : I.play}</button>
+  </div>`;
+
+const dock = (active) => `<div class="dock">${playerbar()}<div class="navbar-wrap">${navbar(active)}</div></div>`;
+
+const pills = () => `
+  <span class="pill rating">${I.star} ${FEATURE.rating}</span>
+  <span class="pill">${FEATURE.year}</span>
+  <span class="pill">${FEATURE.seasons}</span>
+  <span class="pill">${FEATURE.runtime}</span>`;
+const pillrow = () => `<div class="pillrow">${pills()}</div>`;
+
+const seasonChips = () => `<div class="chips"><span class="chip active">Temporada 1</span><span class="chip">Temporada 2</span></div>`;
+
+const episodes = (withThumb = true) => `<div class="episodes">${FEATURE.episodes.map(([n, t, d]) =>
+  `<div class="ep">${withThumb ? `<div class="thumb">${img('https://picsum.photos/seed/harbor-ep' + n + '/200/120')}</div>` : ''}
+     <div class="num">${n}</div>
+     <div class="info"><div class="t">${t}</div><div class="d">${d}</div></div>
+     <span class="play">${I.play}</span>
+   </div>`).join('')}</div>`;
+
+const rail = ([title, more, items]) => `
+  <section class="rail">
+    <div class="rail-head"><h3>${title}</h3><span>${more} ›</span></div>
+    <div class="rail-scroll">
+      ${items.map(([name, seed, badge]) => `
+        <div class="card" data-screen="detail">
+          <div class="art">${img('https://picsum.photos/seed/' + seed + '/300/450')}${badge ? `<div class="badge">${badge}</div>` : ''}</div>
+          <div class="name">${name}</div>
+        </div>`).join('')}
+    </div>
+  </section>`;
+
+/* ---------- telas ---------- */
+function homeScreen() {
+  return `
+  <div class="screen">
+    <div class="scroll">
+      ${statusbar(true)}
+      <div class="hhero">
+        ${img(FEATURE.backdrop)}
+        <div class="scrim"></div>
+        <div class="toprow" style="position:absolute;top:48px;left:0;right:0;padding:0 16px;display:flex;justify-content:flex-end;z-index:6">
+          <button class="iconbtn on-art">${I.search}</button>
+          <button class="iconbtn on-art" style="margin-left:8px">${I.gear}</button>
+        </div>
+        <div class="content">
+          <div class="pillrow" style="margin-bottom:10px"><span class="pill rating">${I.star} ${FEATURE.rating}</span><span class="pill heavy">${FEATURE.kind} · ${FEATURE.year}</span></div>
+          <h1>${FEATURE.title}</h1>
+          <div class="cta">
+            <button class="btn btn-accent">${I.play} Continuar S1 E3</button>
+            <button class="btn btn-ghost">${I.info} Detalhes</button>
+          </div>
+        </div>
+      </div>
+      ${RAILS.map(rail).join('')}
+      <div style="height:18px"></div>
+    </div>
+    ${dock('home')}
+  </div>`;
+}
+
+function detailA() {
+  return `
+  <div class="screen">
+    <div class="scroll">
+      <div class="heroA">
+        ${img(FEATURE.backdrop)}
+        <div class="scrim"></div>
+        ${statusbar(true)}
+        <div class="toprow">
+          <button class="iconbtn on-art" data-screen="home">${I.back}</button>
+          <div>
+            <button class="iconbtn on-art" style="display:inline-grid">${I.heart}</button>
+            <button class="iconbtn on-art" style="display:inline-grid;margin-left:8px">${I.down}</button>
+          </div>
+        </div>
+        <div class="content">
+          <div class="eyebrow">${FEATURE.kind} · ${FEATURE.genre}</div>
+          <h1 class="title-xl">${FEATURE.title}</h1>
+          <div class="pillrow">${pills()}</div>
+          <div class="cta">
+            <button class="btn btn-accent">${I.play} Assistir T1 E1</button>
+            <button class="btn btn-ghost">${I.plus} Minha lista</button>
+          </div>
+        </div>
+      </div>
+      <div class="bodyA">
+        <p class="synopsis">${FEATURE.synopsis}</p>
+        <div class="section-title">Temporadas</div>
+        ${seasonChips()}
+        ${episodes(true)}
+      </div>
+    </div>
+    ${dock(null)}
+  </div>`;
+}
+
+function detailB() {
+  return `
+  <div class="screen screenB">
+    <div class="scroll">
+      <div class="amb">${img(FEATURE.backdrop)}<div class="veil"></div></div>
+      ${statusbar(false)}
+      <div class="appbar">
+        <button class="iconbtn" data-screen="home">${I.back}</button>
+        <div class="spacer"></div>
+        <button class="iconbtn">${I.share}</button>
+        <button class="iconbtn">${I.down}</button>
+      </div>
+      <div class="bhead">
+        <div class="poster-xl">${img(FEATURE.poster)}</div>
+        <h1 class="btitle">${FEATURE.title}</h1>
+        ${pillrow()}
+        <button class="btn btn-accent btn-wide">${I.play} Assistir T1 E1</button>
+        <div class="bsub">
+          <button class="btn btn-ghost">${I.plus} Minha lista</button>
+          <button class="btn btn-ghost">${I.info} Trailer</button>
+        </div>
+      </div>
+      <div class="sheet">
+        <p class="synopsis">${FEATURE.synopsis}</p>
+        <div class="section-title">Temporadas</div>
+        ${seasonChips()}
+        ${episodes(true)}
+      </div>
+    </div>
+    ${dock(null)}
+  </div>`;
+}
+
+function detailC() {
+  return `
+  <div class="screen">
+    <div class="scroll">
+      <div class="edband">
+        ${img(FEATURE.backdrop)}
+        <div class="scrim"></div>
+        ${statusbar(true)}
+        <div class="toprow">
+          <button class="iconbtn on-art" data-screen="home">${I.back}</button>
+          <button class="iconbtn on-art">${I.share}</button>
+        </div>
+      </div>
+      <div class="edcontent">
+        <div class="edkicker">Harbor Selection</div>
+        <h1 class="edtitle">${FEATURE.title}</h1>
+        <div class="edmeta">${FEATURE.kind} · ${FEATURE.year} · ${FEATURE.genre} · ★ ${FEATURE.rating}</div>
+        <div class="edrule"></div>
+        <div class="edrow">
+          <div class="poster-md">${img(FEATURE.poster)}</div>
+          <div class="edsyn">${FEATURE.synopsis}</div>
+        </div>
+        <button class="btn btn-text">${I.play} Assistir à primeira temporada</button>
+        <div class="edrule" style="margin-top:4px"></div>
+        <div class="section-title" style="margin-top:8px">Episódios</div>
+        <div class="edlist">${episodes(false)}</div>
+      </div>
+    </div>
+    ${dock(null)}
+  </div>`;
+}
+
+function remoteScreen() {
+  return `
+  <div class="screen">
+    <div class="remote">
+      <div class="rmbg">${img(FEATURE.backdrop)}<div class="veil"></div></div>
+      <div class="rmcontent">
+        ${statusbar(false)}
+        <div class="rmlabel">Reproduzindo agora</div>
+        <div class="npposter">${img(FEATURE.poster)}</div>
+        <div class="rmtitle">${FEATURE.title}</div>
+        <div class="rmep">T1 · E3 · In Perpetuity</div>
+        <div class="rmsrc">1080p · WEB-DL · Servidor local</div>
+        <div class="progress"><i></i></div>
+        <div class="times"><span>19:04</span><span>47:31</span></div>
+        <div class="transport">
+          <button class="side">${I.prev}</button>
+          <button class="big">${I.pause}</button>
+          <button class="side">${I.next}</button>
+        </div>
+        <div class="volrow">${I.tv}<div class="vol"><i></i></div><button class="iconbtn">${I.pause}</button></div>
+        <div class="rmtoggle">
+          <button class="btn btn-ghost">Legendas: ligadas</button>
+          <button class="btn btn-ghost">${I.tv} Esta TV</button>
+        </div>
+        <div class="rmnote">No protótipo, os controles existentes do Remote (d-pad, texto, cast) continuam iguais — só o fundo, a capa e o progresso ganham este tratamento.</div>
+        <div style="height:10px"></div>
+      </div>
+    </div>
+    ${dock('remote')}
+  </div>`;
+}
+
+/* ---------- roteamento / switcher ---------- */
+const q = new URLSearchParams(location.search);
+const state = {
+  screen: ['home', 'detail', 'remote'].includes(q.get('screen')) ? q.get('screen') : 'detail',
+  variant: ['A', 'B', 'C'].includes((q.get('variant') || 'A').toUpperCase()) ? (q.get('variant') || 'A').toUpperCase() : 'A',
+};
+
+function renderScreen() {
+  if (state.screen === 'home') return homeScreen();
+  if (state.screen === 'remote') return remoteScreen();
+  return state.variant === 'A' ? detailA() : state.variant === 'B' ? detailB() : detailC();
+}
+
+function syncUrl() {
+  try {
+    const u = new URL(location.href);
+    u.searchParams.set('screen', state.screen);
+    u.searchParams.set('variant', state.variant);
+    history.replaceState(null, '', u);
+  } catch (_) { /* file:// ocasionalmente bloqueia; sem problema */ }
+}
+
+function render() {
+  document.getElementById('app').innerHTML = renderScreen();
+
+  document.getElementById('screens').innerHTML = SCREENS
+    .map(([k, label]) => `<button data-screen="${k}" class="${state.screen === k ? 'active' : ''}">${label}</button>`).join('');
+
+  const note = state.screen === 'detail' ? NOTES[state.variant] : NOTES[state.screen];
+  document.getElementById('notes').innerHTML = `
+    <span class="tag">${note.tag}</span>
+    <h2>${note.title}</h2>
+    <p>${note.intro}</p>
+    <h4>Pontos fortes</h4>
+    <ul class="pros">${note.pros.map((x) => `<li>${x}</li>`).join('')}</ul>
+    <h4>Pontos de atenção</h4>
+    <ul class="cons">${note.cons.map((x) => `<li>${x}</li>`).join('')}</ul>
+    <div class="foot">Imagens são placeholders (picsum). A capa que hoje não é renderizada é <code>Meta.background</code> — o backdrop 16:9 já entregue por Cinemeta/TMDB.</div>`;
+
+  document.getElementById('swlabel').innerHTML =
+    state.screen === 'detail'
+      ? `${state.variant} <em>· ${NAMES[state.variant]}</em>`
+      : `${state.variant} <em>· afeta só o Detalhe</em>`;
+
+  document.getElementById('hint').textContent = `?screen=${state.screen}&variant=${state.variant}`;
+  syncUrl();
+}
+
+function cycle(step) {
+  const order = ['A', 'B', 'C'];
+  const i = order.indexOf(state.variant);
+  state.variant = order[(i + step + order.length) % order.length];
+  if (state.screen !== 'detail') state.screen = 'detail';
+  render();
+}
+
+document.addEventListener('click', (e) => {
+  const step = e.target.closest('[data-step]');
+  if (step) { cycle(Number(step.dataset.step)); return; }
+  const screen = e.target.closest('[data-screen]');
+  if (screen) { state.screen = screen.dataset.screen; render(); }
+});
+
+document.addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (e.key === 'ArrowLeft') cycle(-1);
+  if (e.key === 'ArrowRight') cycle(1);
+});
+
+render();
+</script>
+</body>
+</html>

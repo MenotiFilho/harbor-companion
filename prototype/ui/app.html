@@ -1,0 +1,711 @@
+<!doctype html>
+<!--
+  PROTÓTIPO FINAL — descartável, não é código de produção.
+
+  Direção: Editorial Cinema (variante C) + Cinemascope com sangria no Remote.
+  Paleta escura com acento testável (indigo padrão). Vidro discreto onde couber.
+
+  Seletor de destaque: bolinhas na pílula flutuante, setas ← → ou ?accent=<key>.
+  Telas: aba superior. Rodar:
+    python3 -m http.server -d prototype/ui 8000  ->  http://localhost:8000/app.html
+-->
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harbor Companion · Protótipo final</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Cormorant+Garamond:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* ============ tokens ============ */
+  :root{
+    --bg:#08080b;
+    --bg-elev:#0e0e13;
+    --solid:#13131a;
+    --solid-2:#1a1a23;
+    --ink:#f2f2f4;
+    --ink-2:#b6b6c0;
+    --ink-3:#787884;
+    --hair:rgba(255,255,255,.09);
+    --hair-2:rgba(255,255,255,.055);
+    /* acento — trocado em runtime pelo seletor */
+    --accent:#8f97ff;
+    --accent-2:color-mix(in srgb, var(--accent) 62%, #ffffff);
+    --accent-dim:color-mix(in srgb, var(--accent) 16%, transparent);
+    --accent-line:color-mix(in srgb, var(--accent) 40%, transparent);
+    --accent-ink:color-mix(in srgb, var(--accent) 70%, #ffffff);
+    --on-accent:#0a0a0f;
+    --glass:rgba(255,255,255,.045);
+    --glass-2:rgba(255,255,255,.075);
+    --glass-hair:rgba(255,255,255,.11);
+    --blur:blur(18px) saturate(140%);
+    --radius:20px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%}
+  body{
+    font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    color:var(--ink);
+    background:
+      radial-gradient(1100px 640px at 78% -12%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 62%),
+      radial-gradient(820px 560px at 4% 112%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%),
+      #050507;
+    transition:background .25s ease;
+    -webkit-font-smoothing:antialiased;
+  }
+  button{font-family:inherit}
+  .serif{font-family:'Cormorant Garamond',Georgia,'Times New Roman',serif}
+  .glass{background:var(--glass);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border:1px solid var(--glass-hair)}
+  @media (prefers-reduced-motion: reduce){*{animation-duration:.001ms !important;transition-duration:.001ms !important}}
+
+  /* ============ chrome da página ============ */
+  .topbar{position:sticky;top:0;z-index:80;display:flex;align-items:center;gap:16px;padding:10px 18px;background:rgba(6,6,9,.8);backdrop-filter:blur(18px);border-bottom:1px solid rgba(255,255,255,.05)}
+  .brand{font-weight:600;font-size:13px;letter-spacing:.02em;white-space:nowrap}
+  .brand small{display:block;font-weight:400;color:var(--ink-3);font-size:10.5px;margin-top:1px}
+  .screens{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;margin-left:auto;padding:2px}
+  .screens::-webkit-scrollbar{display:none}
+  .screens button{border:1px solid transparent;background:transparent;color:var(--ink-3);padding:6px 12px;border-radius:999px;font-size:12px;font-weight:500;cursor:pointer;white-space:nowrap}
+  .screens button:hover{color:var(--ink-2)}
+  .screens button.active{color:var(--on-accent);background:var(--accent);border-color:var(--accent)}
+  .hint{color:var(--ink-3);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+  .stage{display:flex;gap:44px;align-items:flex-start;justify-content:center;padding:30px 22px 130px;flex-wrap:wrap}
+  .phone{width:390px;height:844px;max-height:88vh;flex:0 0 auto;position:relative;overflow:hidden;background:var(--bg);border-radius:48px;border:11px solid #14141a;box-shadow:0 44px 100px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.04)}
+  .notch{position:absolute;top:9px;left:50%;transform:translateX(-50%);width:116px;height:24px;background:#000;border-radius:20px;z-index:60}
+  .screen{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--bg)}
+  .screen .scroll{flex:1;overflow-y:auto;overflow-x:hidden;position:relative;z-index:2;scrollbar-width:none}
+  .screen .scroll::-webkit-scrollbar{display:none}
+  .screen .dock{flex:0 0 auto;position:relative;z-index:40}
+  .screen .wash{position:absolute;inset:0;z-index:0;overflow:hidden}
+
+  /* notas */
+  .notes{width:364px;max-width:100%;flex:0 0 auto}
+  .notes .card{background:rgba(16,16,22,.88);border:1px solid var(--hair);border-radius:22px;padding:22px;box-shadow:0 30px 70px rgba(0,0,0,.5)}
+  .notes .tag{font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent);font-weight:600}
+  .notes h2{margin:9px 0 7px;font-size:19px;font-weight:600;letter-spacing:-.01em}
+  .notes p{margin:0 0 12px;color:var(--ink-2);font-size:13px;line-height:1.62}
+  .notes h4{margin:15px 0 6px;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+  .notes ul{margin:0;padding-left:16px;color:var(--ink-2);font-size:12.5px;line-height:1.6}
+  .notes ul.good li::marker{color:#7fd6a8}
+  .notes ul.watch li::marker{color:#e0b487}
+  .notes .foot{margin-top:16px;padding-top:13px;border-top:1px solid var(--hair-2);color:var(--ink-3);font-size:11.5px;line-height:1.55}
+
+  /* switcher de acento */
+  .switcher{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:200;display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:999px;background:rgba(240,240,245,.97);backdrop-filter:blur(20px);color:#0a0a0d;font-weight:600;font-size:12px;box-shadow:0 16px 44px rgba(0,0,0,.6);white-space:nowrap}
+  .switcher .lbl{min-width:104px}
+  .switcher .lbl em{font-style:normal;color:#6a6a72;font-weight:500;display:block;font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+  .dots{display:flex;gap:7px}
+  .dots button{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0;box-shadow:inset 0 0 0 1px rgba(0,0,0,.25)}
+  .dots button.on{border-color:#0a0a0d;box-shadow:inset 0 0 0 2px #f4f4f6}
+  .switcher .nav{width:30px;height:30px;border-radius:50%;border:none;background:#0a0a0d;color:#fff;font-size:14px;cursor:pointer;display:grid;place-items:center}
+  .switcher .nav:hover{background:#2c2c36}
+
+  /* ============ componentes do app ============ */
+  .statusbar{display:flex;justify-content:space-between;align-items:center;padding:14px 24px 4px;font-size:12.5px;font-weight:500;position:relative;z-index:30}
+  .statusbar.overlay{position:absolute;top:0;left:0;right:0;color:#fff;text-shadow:0 1px 10px rgba(0,0,0,.7)}
+  .sbi{display:flex;gap:5px;align-items:center;opacity:.9}
+  .sbi span{width:14px;height:9px;border:1.3px solid currentColor;border-radius:3px;display:inline-block}
+  .sbi span::after{content:"";display:block;width:60%;height:100%;background:currentColor;border-radius:1px}
+  .ico{width:20px;height:20px;display:block}
+
+  .appbar{display:flex;align-items:center;gap:10px;padding:6px 14px;min-height:50px;position:relative;z-index:20}
+  .appbar .tabtitle{font-size:15px;font-weight:600;letter-spacing:.01em}
+  .appbar .spacer{flex:1}
+  .iconbtn{width:38px;height:38px;border-radius:50%;border:1px solid transparent;background:transparent;color:var(--ink);display:grid;place-items:center;cursor:pointer;flex:0 0 auto}
+  .iconbtn:hover{background:rgba(255,255,255,.07)}
+  .iconbtn.glassbtn{background:var(--glass);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border:1px solid var(--glass-hair);color:#fff}
+
+  .kicker{font-size:10.5px;letter-spacing:.26em;text-transform:uppercase;color:var(--accent);font-weight:600}
+  .meta-dot{font-size:12px;color:var(--ink-3);letter-spacing:.02em}
+  .rule{height:1px;background:linear-gradient(90deg,var(--accent-line),transparent 78%);margin:16px 0}
+
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;border:1px solid transparent;cursor:pointer;font-weight:600;font-size:13.5px;border-radius:14px;padding:12px 18px;letter-spacing:.01em}
+  .btn .ico{width:18px;height:18px}
+  .btn-wide{width:100%}
+  .btn-accent{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+  .btn-accent:hover{background:var(--accent-2);border-color:var(--accent-2)}
+  .btn-ghost{background:transparent;border-color:var(--hair);color:var(--ink-2)}
+  .btn-ghost:hover{background:rgba(255,255,255,.06)}
+  .btn-glass{background:var(--glass);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border-color:var(--glass-hair);color:var(--ink)}
+
+  .seg{display:flex;gap:2px;padding:3px;border-radius:14px}
+  .seg button{flex:1;border:none;background:transparent;color:var(--ink-3);font-weight:600;font-size:12.5px;padding:8px 6px;border-radius:11px;cursor:pointer;white-space:nowrap}
+  .seg button.on{background:var(--accent-dim);color:var(--accent-ink);box-shadow:inset 0 0 0 1px var(--accent-line)}
+
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;padding:6px 12px;border-radius:999px;color:var(--ink-2)}
+  .chip.on{color:var(--accent-ink);border-color:var(--accent-line);background:var(--accent-dim)}
+  .tagchip{font-size:11px;font-weight:600;letter-spacing:.04em;color:var(--ink-3);border:1px solid var(--hair);padding:5px 11px;border-radius:999px}
+
+  .body-pad{padding:0 22px 24px}
+  .section-label{margin:26px 0 11px;font-size:10.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+
+  /* hero editorial */
+  .band{position:relative;height:306px;overflow:hidden}
+  .band>img{width:100%;height:100%;object-fit:cover;display:block;background:linear-gradient(150deg,#232433,#0c0c12)}
+  .band .scrim{position:absolute;inset:0;background:linear-gradient(to top,var(--bg) 1%,rgba(8,8,11,.74) 30%,rgba(8,8,11,.24) 62%,rgba(8,8,11,.42) 100%)}
+  .band .float-top{position:absolute;top:46px;left:0;right:0;padding:0 16px;display:flex;justify-content:space-between;z-index:8}
+
+  .edcontent{padding:0 22px 30px;margin-top:-52px;position:relative;z-index:8}
+  .edtitle{font-family:'Cormorant Garamond',Georgia,serif;font-size:40px;line-height:1.02;margin:9px 0 10px;font-weight:600;letter-spacing:.005em}
+  .edrow{display:flex;gap:16px;margin-top:16px}
+  .poster-sm{width:98px;height:147px;border-radius:10px;overflow:hidden;flex:0 0 auto;background:linear-gradient(150deg,#232433,#0c0c12);border:1px solid var(--hair-2)}
+  .poster-sm img{width:100%;height:100%;object-fit:cover;display:block}
+  .edsyn{font-size:12.8px;line-height:1.66;color:var(--ink-2);margin:0}
+
+  /* episódios */
+  .eplist{margin-top:6px;border-top:1px solid var(--hair-2)}
+  .eprow{display:flex;align-items:center;gap:13px;padding:12px 0;border-bottom:1px solid var(--hair-2)}
+  .eprow .still{width:104px;height:59px;border-radius:8px;overflow:hidden;flex:0 0 auto;position:relative;background:linear-gradient(150deg,#232433,#0c0c12);border:1px solid var(--hair-2)}
+  .eprow .still img{width:100%;height:100%;object-fit:cover;display:block}
+  .eprow .still .seen{position:absolute;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center;color:#fff}
+  .epno{font-variant-numeric:tabular-nums;font-size:12px;color:var(--accent);letter-spacing:.06em;width:18px;text-align:right;flex:0 0 auto}
+  .epmeta{flex:1;min-width:0}
+  .ept{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .eps{font-size:11px;color:var(--ink-3);margin-top:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+  /* elenco */
+  .castrow{display:flex;gap:16px;overflow-x:auto;padding-bottom:4px;scrollbar-width:none}
+  .castrow::-webkit-scrollbar{display:none}
+  .cast{width:62px;flex:0 0 auto;text-align:center}
+  .cast .av{width:56px;height:56px;border-radius:50%;overflow:hidden;margin:0 auto;background:linear-gradient(150deg,#232433,#0c0c12);border:1px solid var(--hair-2)}
+  .cast .av img{width:100%;height:100%;object-fit:cover}
+  .cast .nm{font-size:10.5px;color:var(--ink-2);margin-top:7px;line-height:1.3}
+  .cast .rl{font-size:9.5px;color:var(--ink-3);margin-top:2px}
+
+  /* home */
+  .hhero{position:relative;height:344px;overflow:hidden}
+  .hhero>img{width:100%;height:100%;object-fit:cover;display:block;background:linear-gradient(150deg,#232433,#0c0c12)}
+  .hhero .scrim{position:absolute;inset:0;background:linear-gradient(to top,var(--bg) 1%,rgba(8,8,11,.72) 30%,rgba(8,8,11,.15) 66%,rgba(8,8,11,.4) 100%)}
+  .hhero .content{position:absolute;left:0;right:0;bottom:0;padding:0 22px 18px;z-index:8}
+  .hhero h1{font-family:'Cormorant Garamond',Georgia,serif;font-size:34px;font-weight:600;margin:8px 0 8px;line-height:1.03}
+  .hhero .cta{display:flex;gap:10px;margin-top:14px}
+
+  .rail{margin-top:24px}
+  .rail-head{display:flex;align-items:baseline;justify-content:space-between;padding:0 22px 11px}
+  .rail-head h3{margin:0;font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-2);font-weight:600}
+  .rail-head span{font-size:11px;color:var(--ink-3)}
+  .rail-scroll{display:flex;gap:11px;overflow-x:auto;padding:0 22px 4px;scrollbar-width:none}
+  .rail-scroll::-webkit-scrollbar{display:none}
+  .card{flex:0 0 auto;width:126px;cursor:pointer}
+  .card .art{width:126px;height:189px;border-radius:12px;overflow:hidden;position:relative;background:linear-gradient(150deg,#232433,#0c0c12);border:1px solid var(--hair-2);transition:transform .2s ease,border-color .2s ease}
+  .card:hover .art{transform:translateY(-3px);border-color:var(--glass-hair)}
+  .card .art img{width:100%;height:100%;object-fit:cover;display:block}
+  .card .art .pbar{position:absolute;left:8px;right:8px;bottom:7px;height:3px;border-radius:999px;background:rgba(255,255,255,.3)}
+  .card .art .pbar i{display:block;height:100%;border-radius:999px;background:var(--accent)}
+  .card .art .badge{position:absolute;top:7px;left:7px;font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:3px 7px;border-radius:7px;background:rgba(0,0,0,.6);backdrop-filter:blur(6px)}
+  .card .name{margin-top:8px;font-size:11.5px;line-height:1.34;color:var(--ink-2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+  /* grade */
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .gtile{position:relative}
+  .gtile .art{aspect-ratio:2/3;border-radius:10px;overflow:hidden;background:linear-gradient(150deg,#232433,#0c0c12);border:1px solid var(--hair-2)}
+  .gtile .art img{width:100%;height:100%;object-fit:cover;display:block}
+  .gtile .name{margin-top:7px;font-size:11px;line-height:1.3;color:var(--ink-2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+  /* busca */
+  .searchfield{display:flex;align-items:center;gap:11px;padding:13px 15px;border-radius:16px;color:var(--ink-3)}
+  .searchfield input{flex:1;background:none;border:none;outline:none;color:var(--ink);font-size:14px;font-family:inherit}
+  .searchfield input::placeholder{color:var(--ink-3)}
+  .topmatch{padding:18px;border-radius:20px}
+  .tm-head{display:flex;align-items:center;gap:7px;color:var(--accent);font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase}
+  .tm-row{display:flex;gap:15px;margin-top:14px}
+  .poster-md{width:96px;height:144px;border-radius:10px;overflow:hidden;flex:0 0 auto;background:linear-gradient(150deg,#232433,#0c0c12);border:1px solid var(--hair-2)}
+  .poster-md img{width:100%;height:100%;object-fit:cover;display:block}
+
+  /* skeleton / spinner */
+  .sk{background:linear-gradient(100deg,rgba(255,255,255,.05) 30%,rgba(255,255,255,.11) 50%,rgba(255,255,255,.05) 70%);background-size:200% 100%;animation:sk 1.4s ease-in-out infinite;border-radius:10px}
+  @keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}
+  .spin{width:22px;height:22px;border-radius:50%;border:2px solid var(--accent-line);border-top-color:var(--accent);animation:rot .9s linear infinite}
+  @keyframes rot{to{transform:rotate(360deg)}}
+
+  /* lista */
+  .rowitem{display:flex;align-items:center;gap:14px;padding:13px 0;border-bottom:1px solid var(--hair-2)}
+  .rowitem .poster-xs{width:42px;height:63px;border-radius:6px;overflow:hidden;flex:0 0 auto;background:linear-gradient(150deg,#232433,#0c0c12);border:1px solid var(--hair-2)}
+  .rowitem .poster-xs img{width:100%;height:100%;object-fit:cover;display:block}
+  .rowitem .meta{flex:1;min-width:0}
+  .rowitem .t{font-size:13.5px;font-weight:500;line-height:1.3}
+  .rowitem .s{font-size:11px;color:var(--ink-3);margin-top:3px}
+  .rowitem .bar{height:3px;border-radius:999px;background:rgba(255,255,255,.14);margin-top:7px}
+  .rowitem .bar i{display:block;height:100%;border-radius:999px;background:var(--accent)}
+  .toggles{display:flex;gap:2px}
+  .toggles .iconbtn{width:34px;height:34px;color:var(--ink-3)}
+  .toggles .iconbtn.on{color:var(--accent)}
+
+  .profile-tile{display:flex;align-items:center;gap:15px;padding:15px 0;border-bottom:1px solid var(--hair-2)}
+  .avatar{width:48px;height:48px;border-radius:50%;display:grid;place-items:center;font-weight:600;font-size:17px;color:#0a0a0f;flex:0 0 auto}
+
+  /* ============ REMOTE · Cinemascope com sangria ============ */
+  .wash img.wash-full{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;filter:blur(96px) saturate(1.4) brightness(.5);opacity:.09}
+  .wash img.wash-glow{position:absolute;top:-60px;left:50%;width:460px;height:460px;transform:translateX(-50%);object-fit:cover;filter:blur(76px) saturate(1.5) brightness(.6);opacity:.2;
+    -webkit-mask-image:radial-gradient(circle at 50% 44%, #000 0%, transparent 68%);mask-image:radial-gradient(circle at 50% 44%, #000 0%, transparent 68%)}
+  .wash .veil{position:absolute;inset:0;background:linear-gradient(180deg,rgba(8,8,11,.25),rgba(8,8,11,.62) 52%,var(--bg) 86%)}
+
+  .l2band{position:relative;height:456px;overflow:hidden}
+  .l2band>img{width:100%;height:100%;object-fit:cover;display:block;background:linear-gradient(150deg,#232433,#0c0c12)}
+  .l2band .scrim{position:absolute;inset:0;background:linear-gradient(to top,var(--bg) 2%,rgba(8,8,11,.86) 24%,rgba(8,8,11,.3) 58%,rgba(8,8,11,.28) 100%)}
+  .l2band .top{position:absolute;top:46px;left:0;right:0;padding:0 16px;display:flex;justify-content:space-between;z-index:8}
+  .l2band .content{position:absolute;left:0;right:0;bottom:0;padding:0 24px 20px;z-index:8}
+  .l2band .rmtitle{font-family:'Cormorant Garamond',Georgia,serif;font-size:38px;font-weight:600;line-height:1.03;margin:9px 0 0}
+  .rmlabel{font-size:10.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--accent);font-weight:600}
+  .rmline{font-size:12px;color:var(--ink-2);margin-top:8px}
+  .rmtarget{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink-3);margin-top:10px}
+  .rmnext{display:flex;align-items:center;gap:10px;margin-top:14px;font-size:11.5px;color:var(--ink-2)}
+  .rmnext .th{width:52px;height:30px;border-radius:6px;overflow:hidden;flex:0 0 auto;border:1px solid var(--hair-2)}
+  .rmnext .th img{width:100%;height:100%;object-fit:cover}
+
+  .progress{position:relative;height:4px;border-radius:999px;background:rgba(255,255,255,.16);margin-top:18px}
+  .progress i{position:absolute;top:0;bottom:0;left:0;width:38%;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--accent-2))}
+  .progress .knob{position:absolute;top:50%;left:38%;transform:translate(-50%,-50%);width:12px;height:12px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px var(--accent-dim)}
+  .times{display:flex;justify-content:space-between;font-size:10.5px;color:var(--ink-3);margin-top:8px;font-variant-numeric:tabular-nums}
+  .transport{display:flex;align-items:center;justify-content:center;gap:30px;margin-top:22px}
+  .transport .side{width:48px;height:48px;border-radius:50%;border:1px solid var(--hair);background:transparent;color:var(--ink-2);display:grid;place-items:center;cursor:pointer}
+  .transport .side:hover{background:rgba(255,255,255,.06);color:var(--ink)}
+  .transport .big{width:70px;height:70px;border-radius:50%;border:none;background:var(--accent);color:var(--on-accent);display:grid;place-items:center;cursor:pointer;box-shadow:0 18px 40px color-mix(in srgb,var(--accent) 38%,transparent)}
+  .transport .big:hover{background:var(--accent-2)}
+  .transport .big .ico{width:30px;height:30px}
+
+  .below{margin-top:30px}
+  .volrow{display:flex;align-items:center;gap:12px}
+  .volrow .ico{color:var(--ink-3);flex:0 0 auto}
+  .vol{flex:1;height:4px;border-radius:999px;background:rgba(255,255,255,.16);position:relative}
+  .vol i{position:absolute;top:0;bottom:0;left:0;width:62%;border-radius:999px;background:var(--ink-2)}
+  .vol .knob{position:absolute;top:50%;left:62%;transform:translate(-50%,-50%);width:12px;height:12px;border-radius:50%;background:var(--ink);box-shadow:0 0 0 4px rgba(255,255,255,.1)}
+  .pillrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:20px}
+  .rmcard{margin-top:18px;border-radius:16px;overflow:hidden}
+  .rmcard-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;font-size:13px;font-weight:600}
+  .dpad{display:grid;grid-template-columns:repeat(3,52px);grid-template-rows:repeat(3,52px);gap:8px;justify-content:center;padding:6px 0 18px}
+  .dpad button{width:52px;height:52px;border-radius:16px;border:1px solid var(--glass-hair);background:var(--glass);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);color:var(--ink-2);display:grid;place-items:center;cursor:pointer}
+  .dpad button:hover{color:var(--ink)}
+  .dpad button.ctr{color:var(--on-accent);border-color:var(--accent);background:var(--accent)}
+  .dpad .up{grid-area:1/2}.dpad .left{grid-area:2/1}.dpad .ctr{grid-area:2/2}.dpad .right{grid-area:2/3}.dpad .down{grid-area:3/2}
+  .fieldrow{display:flex;gap:8px}
+  .fieldrow input{flex:1;background:transparent;border:none;border-radius:12px;padding:12px 6px;color:var(--ink);font-family:inherit;font-size:13px;outline:none}
+  .fieldrow input::placeholder{color:var(--ink-3)}
+
+  /* ============ ajustes ============ */
+  .hostcard{border-radius:20px;padding:16px;margin-top:6px}
+  .hostrow{display:flex;align-items:center;gap:12px}
+  .dot{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;flex:0 0 auto}
+  .dot.ok{background:var(--accent-dim);color:var(--accent-ink);border:1px solid var(--accent-line)}
+  .kv{display:flex;justify-content:space-between;gap:12px;padding:9px 0;font-size:12.5px}
+  .kv .k{color:var(--ink-3)}
+  .kv .v{color:var(--ink-2);text-align:right}
+  .switchrow{display:flex;align-items:center;gap:14px;padding:13px 0;border-bottom:1px solid var(--hair-2)}
+  .switchrow .meta{flex:1;min-width:0}
+  .switchrow .t{font-size:13.5px;font-weight:500}
+  .switchrow .s{font-size:11.5px;color:var(--ink-3);margin-top:3px;line-height:1.45}
+  .sw{width:44px;height:26px;border-radius:999px;background:rgba(255,255,255,.16);position:relative;flex:0 0 auto;cursor:pointer}
+  .sw.on{background:var(--accent-dim);border:1px solid var(--accent-line)}
+  .sw i{position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#e8e8ee;transition:.2s}
+  .sw.on i{left:20px;background:var(--accent-ink)}
+  .listrow{display:flex;align-items:center;gap:13px;padding:13px 0;border-bottom:1px solid var(--hair-2)}
+  .listrow .meta{flex:1;min-width:0}
+  .listrow .t{font-size:13.5px;font-weight:500}
+  .listrow .s{font-size:11.5px;color:var(--ink-3);margin-top:3px}
+
+  /* connect-first */
+  .connectwrap{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:0 30px;text-align:center;position:relative}
+  .connectwrap .glow{position:absolute;top:-60px;width:320px;height:320px;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--accent) 22%,transparent),transparent 68%);filter:blur(20px)}
+  .connectcard{border-radius:24px;padding:28px 24px;position:relative;z-index:2;width:100%}
+
+  /* dock */
+  .playerbar{margin:0 12px 8px;padding:6px 8px;border-radius:16px;display:flex;align-items:center;gap:11px;
+    background:rgba(255,255,255,.075);backdrop-filter:blur(30px) saturate(160%);-webkit-backdrop-filter:blur(30px) saturate(160%);
+    border:1px solid rgba(255,255,255,.16);box-shadow:0 14px 36px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.12)}
+  .playerbar .pp{width:32px;height:45px;border-radius:6px;overflow:hidden;flex:0 0 auto;background:#1c1c25}
+  .playerbar .pp img{width:100%;height:100%;object-fit:cover}
+  .playerbar .meta{flex:1;min-width:0}
+  .playerbar .meta .t{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .playerbar .meta .s{font-size:10.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .playerbar .pbar{height:2px;border-radius:999px;background:rgba(255,255,255,.2);margin-top:5px}
+  .playerbar .pbar i{display:block;height:100%;border-radius:999px;background:var(--accent)}
+  .navbar{display:flex;align-items:center;padding:7px 4px 15px;border-top:1px solid var(--hair-2)}
+  .navitem{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:9.5px;font-weight:600;letter-spacing:.04em;color:var(--ink-3)}
+  .navitem .ico{width:21px;height:21px}
+  .navitem.active{color:var(--accent-ink)}
+  .navind{width:4px;height:4px;border-radius:50%;background:var(--accent);margin-top:1px;opacity:0}
+  .navitem.active .navind{opacity:1}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">Harbor Companion<small>protótipo final · cinematic editorial + acento testável</small></div>
+  <nav class="screens" id="screens"></nav>
+  <div class="hint" id="hint"></div>
+</header>
+
+<main class="stage">
+  <div class="phone">
+    <div class="notch"></div>
+    <div id="app" style="position:absolute;inset:0"></div>
+  </div>
+  <aside class="notes"><div class="card" id="notes"></div></aside>
+</main>
+
+<div class="switcher">
+  <button class="nav" data-step="-1" title="Cor anterior">‹</button>
+  <div class="lbl"><em>Destaque</em><span id="accname">Índigo</span></div>
+  <div class="dots" id="dots"></div>
+  <button class="nav" data-step="1" title="Próxima cor">›</button>
+</div>
+
+<script>
+/* ============================================================
+   PROTÓTIPO FINAL — dados dos prints; imagens placeholders.
+   ============================================================ */
+
+const I = {
+  back:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+  gear:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.1-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1.1 1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z"/></svg>',
+  search:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/></svg>',
+  eye:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg>',
+  play:'<svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M8.2 5.4c0-.8.9-1.3 1.6-.85l9.3 5.6a1 1 0 0 1 0 1.7l-9.3 5.6a1 1 0 0 1-1.6-.85z"/></svg>',
+  pause:'<svg class="ico" viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="5" width="3.4" height="14" rx="1"/><rect x="13.6" y="5" width="3.4" height="14" rx="1"/></svg>',
+  prev:'<svg class="ico" viewBox="0 0 24 24" fill="currentColor"><rect x="6.6" y="5.5" width="2.2" height="13" rx="1"/><path d="M18.8 5.9v12.2c0 .8-.9 1.3-1.6.85l-7.7-4.7a1 1 0 0 1 0-1.7l7.7-4.7a1 1 0 0 1 1.6.85z"/></svg>',
+  next:'<svg class="ico" viewBox="0 0 24 24" fill="currentColor"><rect x="15.2" y="5.5" width="2.2" height="13" rx="1"/><path d="M5.2 5.9v12.2c0 .8.9 1.3 1.6.85l7.7-4.7a1 1 0 0 0 0-1.7L6.8 4.75a1 1 0 0 0-1.6.85z"/></svg>',
+  plus:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  bookmark:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 3.5h11a1 1 0 0 1 1 1V20l-6.5-3.7L5.5 20V4.5a1 1 0 0 1 1-1z"/></svg>',
+  bookmarkF:'<svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M6.5 3h11a1 1 0 0 1 1 1v16.2l-6.5-3.8-6.5 3.8V4a1 1 0 0 1 1-1z"/></svg>',
+  check:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M8.2 12.3l2.5 2.5 5-5.4"/></svg>',
+  checkF:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5" fill="currentColor" stroke="none"/><path d="M8.2 12.3l2.5 2.5 5-5.4" stroke="#0a0a0f"/></svg>',
+  heart:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 5.9a4.7 4.7 0 0 0-6.7 0L12 6.8l-1.9-1.9a4.7 4.7 0 1 0-6.7 6.7L12 20l8.6-8.4a4.7 4.7 0 0 0 0-6.7z"/></svg>',
+  heartF:'<svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M20.6 5.9a4.7 4.7 0 0 0-6.7 0L12 6.8l-1.9-1.9a4.7 4.7 0 1 0-6.7 6.7L12 20l8.6-8.4a4.7 4.7 0 0 0 0-6.7z"/></svg>',
+  home:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 10.6 12 3.6l8.5 7"/><path d="M5.8 9.4V20.4h12.4V9.4"/></svg>',
+  tv:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8.5 20.5h7M12 17v3.5"/></svg>',
+  person:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.7"/><path d="M4.8 20.3a7.2 7.2 0 0 1 14.4 0"/></svg>',
+  download:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5v11M7.5 10l4.5 4.5L16.5 10"/><path d="M4.5 19.5h15"/></svg>',
+  share:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="2.4"/><circle cx="17.5" cy="6" r="2.4"/><circle cx="17.5" cy="18" r="2.4"/><path d="M8.2 10.8 15.3 7M8.2 13.2l7.1 3.8"/></svg>',
+  chev:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
+  chevD:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
+  edit:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10.5-10.5a2 2 0 0 0-2.8-2.8L5 17.2z"/><path d="M13.5 6.8 17.2 10.5"/></svg>',
+  trash:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 6.5h15M9.5 6.5V4.8h5v1.7M6.5 6.5 7.5 20h9l1-13.5"/></svg>',
+  scan:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><circle cx="12" cy="12" r="3.2"/></svg>',
+  bell:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 9.5a5.5 5.5 0 0 1 11 0c0 5 2 6 2 6H4.5s2-1 2-6z"/><path d="M10.2 19.5a2 2 0 0 0 3.6 0"/></svg>',
+  battery:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7.5" width="16" height="9" rx="2"/><path d="M21 10.5v3"/><rect x="5" y="9.5" width="5" height="5" rx="1" fill="currentColor" stroke="none"/></svg>',
+  cast:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6.5A1.5 1.5 0 0 1 4.5 5h15A1.5 1.5 0 0 1 21 6.5v11A1.5 1.5 0 0 1 19.5 19H13"/><path d="M3 15.5a3.5 3.5 0 0 1 3.5 3.5M3 12a7 7 0 0 1 7 7"/></svg>',
+  subtitles:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M6.5 14h4M13 14h4.5M6.5 10.5h3M11.5 10.5h6"/></svg>',
+  volume:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3l4.5-3.6v12.2L7 14.5H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>',
+  up:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>',
+  left:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>',
+  right:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
+  down:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
+  info:'<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/></svg>',
+  star:'<svg class="ico" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l2.7 5.7 6.3.9-4.6 4.4 1.1 6.2L12 17.3 6.5 20.2l1.1-6.2L3 9.6l6.3-.9z"/></svg>',
+};
+
+const IMG = {
+  seriesPoster:'https://picsum.photos/seed/harbor-paradise/300/450',
+  seriesBack:'https://picsum.photos/seed/harbor-paradise-back/1280/720',
+  moviePoster:'https://picsum.photos/seed/harbor-coyote/300/450',
+  movieBack:'https://picsum.photos/seed/harbor-coyote-back/1280/720',
+  hacksPoster:'https://picsum.photos/seed/harbor-hacks/300/450',
+  hacksBack:'https://picsum.photos/seed/harbor-hacks-back/1280/720',
+  sunnyPoster:'https://picsum.photos/seed/harbor-sunny/300/450',
+};
+const seed = (s, w, h) => `https://picsum.photos/seed/${s}/${w}/${h}`;
+
+const SERIES = {
+  title:'Paradise Hotel', kind:'Série', year:'2009', genre:'Reality · Romance', rating:'6.4', seasons:'4 temporadas',
+  synopsis:'Norwegian girls and boys check in at the Paradise Hotel in Mexico, where Triana Iglesias is the hotel manager. The hotel has great views and a fantastic pool. Cameras with a full view of the idyllic site tell the story.',
+  poster:IMG.seriesPoster, backdrop:IMG.seriesBack, seasonNames:['T1','T2','T3','T4'],
+  episodes:[
+    ['Episode 1','48 min','Check-in: os hóspedes chegam e a competição começa.',true],
+    ['Episode 2','45 min','A primeira eliminação agita a casa.',false],
+    ['Episode 3','47 min','Alianças se formam à beira da piscina.',false],
+    ['Episode 4','44 min','Uma prova muda o jogo por completo.',false],
+    ['Episode 5','49 min','O jantar de gala termina em confronto.',false],
+  ],
+  cast:[['Triana Iglesias','Apresentadora','harbor-c1'],['Mari Molvik','Hóspede','harbor-c2'],['Erik Røine','Hóspede','harbor-c3'],['Amalie Olsen','Hóspede','harbor-c4']],
+};
+const MOVIE = {
+  title:'Coyote vs. Acme', kind:'Filme', year:'2026', genre:'Animação · Comédia', rating:'7.1', runtime:'1h 42min',
+  synopsis:'After Acme products fail him one too many times in his dogged pursuit of the Roadrunner, Wile E. Coyote decides to hire a billboard lawyer to sue the Acme Corporation.',
+  poster:IMG.moviePoster, backdrop:IMG.movieBack,
+  cast:[['Will Forte','Advogado','harbor-c5'],['John Cena','Advogado da Acme','harbor-c6'],['Lana Condor','Estagiária','harbor-c7']],
+};
+const NP = { title:'Hacks', episode:"S1 · E4  D'Jewelry", source:'1080p · DD+ 5.1', target:'MENOTI-W11', poster:IMG.hacksPoster, backdrop:IMG.hacksBack, pos:'05:26', dur:'29:36', next:"S1 · E5  'A Vibe'", nextStill:'harbor-next' };
+
+const CONTINUE = [
+  ['Duna: Parte Dois','harbor-duna','42%',42], ['Hacks','harbor-hacks','82%',82], ['Pobres Criaturas','harbor-pobres','18%',18], ['Anatomia de uma Queda','harbor-anatomia','67%',67],
+];
+const UPCOMING = [['Coyote vs. Acme','harbor-u1'],['Mutiny','harbor-u2'],['Colony','harbor-u3'],['The Runner','harbor-u4'],['Ghost in the Cell','harbor-u5'],['Above & Below','harbor-u6'],['Pinocchio: Unstrung','harbor-u7'],['Under Your Feet','harbor-u8'],['Disclosure Day','harbor-u9']];
+const TRENDING = [['Mutiny','harbor-u2'],['Colony','harbor-u3'],['The Runner','harbor-u4'],['Above & Below','harbor-u6'],['Disclosure Day','harbor-u9']];
+const MOVIES_ROW = [['Ghost in the Cell','harbor-u5'],['Pinocchio: Unstrung','harbor-u7'],['Under Your Feet','harbor-u8'],['Hope','harbor-hope']];
+const SERIES_ROW = [['Hacks','harbor-hacks'],['Paradise Hotel','harbor-paradise'],['The Bear','harbor-bear'],['Andor','harbor-andor']];
+const SIMILAR = [['The Bear','harbor-bear'],['Succession','harbor-succession'],['Andor','harbor-andor'],['Severance','harbor-severance']];
+const LIBRARY = [
+  ['Nimrods','movie','harbor-l1',true,false,false,null],
+  ['Seekers of Infinite Love','movie','harbor-l2',true,false,false,null],
+  ['Teenage Sex and Death at Camp Miasma','movie','harbor-l3',true,false,false,null],
+  ['The Doom Generation','movie','harbor-l4',true,false,false,null],
+  ['Gail Daughtry and the Celebrity Sex Pass','movie','harbor-l5',true,true,false,null],
+];
+const HISTORY = [
+  ['Hacks','series','harbor-hacks',false,true,false,82],
+  ['Coyote vs. Acme','movie','harbor-coyote',false,true,false,100],
+];
+const PROFILES = [['menotifilho','#9bd35f','M',true],['Sala','#7fb4ff','S',false],['Kids','#e0b487','K',false]];
+const ROWS = [['Cinema',true],['Trending',true],['Popular movies',true],['Popular series',true],['Top rated',false],['Anime',false]];
+const SEARCH_RESULTS = [["It's Always Sunny in Philadelphia",'harbor-s1'],["It's always sunny in philadelphia",'harbor-s2'],["It's Always a Sunny Day",'harbor-s3']];
+
+const SCREENS = [
+  ['home','Home'],['detail-series','Detalhe · Série'],['detail-movie','Detalhe · Filme'],
+  ['search-idle','Busca vazia'],['search-loading','Busca · carregando'],['search-results','Busca · resultados'],
+  ['mystuff','Minha Lista'],['profile','Perfil'],['remote','Remote'],['grid','Grade'],
+  ['settings','Ajustes'],['homerows','Home rows'],['connect','Conectar'],['connect-scanning','Conectar · escaneando'],
+];
+
+/* ============ notas ============ */
+const NOTES = {
+  home:{tag:'Tab',title:'Home',p:'Herói editorial com o backdrop da fonte + trilhos com progresso no card. Acento muda com o seletor.',good:['“Continue assistindo” com barra de progresso e badge','Herói com capa larga, botão primário no acento'],watch:['Herói de 344px deixa ~1,5 trilho na primeira dobra']},
+  'detail-series':{tag:'Rota empurrada',title:'Detalhe · Série',p:'Backdrop com scrim, título serifado, ficha, elenco, temporadas e episódios com miniatura e resumo. Régua no acento.',good:['Capa em duas escalas: faixa + pôster','Episódios com still, duração, resumo e estado “visto”','Elenco em rolagem horizontal'],watch:['Página fica longa; avaliar “ver mais” na sinopse']},
+  'detail-movie':{tag:'Rota empurrada',title:'Detalhe · Filme',p:'Mesmo esqueleto sem episódios, com elenco e “você também pode gostar” para preencher.',good:['Elenco e similares dão corpo ao filme','CTA acima da dobra'],watch:['Sem episódios, o acento aparece mais forte nos similares']},
+  'search-idle':{tag:'Tab',title:'Busca (vazia)',p:'Campo de vidro sobre o fundo, estado vazio calmo e centrado.',good:['Campo de vidro define o tom','Estado vazio sóbrio'],watch:['Ícone de olho precisa de rótulo acessível']},
+  'search-loading':{tag:'Tab',title:'Busca (carregando)',p:'Esqueleto shimmer nas posições finais (top match + grade), em vez de um spinner solitário.',good:['Sensação de velocidade','Layout não pula quando os dados chegam'],watch:['Shimmer precisa respeitar prefers-reduced-motion (já tratado)']},
+  'search-results':{tag:'Tab',title:'Busca (resultados)',p:'Top match em cartão de vidro com “Top match” no acento e grade 3 colunas.',good:['Hierarquia clara para o melhor resultado','Grade respira'],watch:['Diferenciar top match de resultado comum']},
+  mystuff:{tag:'Tab',title:'Minha Lista',p:'Segmented de vidro, “History” com barra de progresso nas linhas e toggles que acendem no acento.',good:['Fileiras limpas, o pôster volta a ser protagonista','Histórico mostra onde parou'],watch:['Três ícones por linha competem com o toque no título']},
+  profile:{tag:'Tab',title:'Perfil',p:'Quem está assistindo como lista sóbria, com múltiplos perfis e o ativo no acento.',good:['Consistente com a linguagem de lista','Escala para vários perfis'],watch:['Falta ação de adicionar/editar perfil']},
+  remote:{tag:'Remote · Cinemascope',title:'Remote (sangria total)',p:'A capa larga ocupa o topo em sangria, dessaturada pelo scrim, com título serifado e ficha sobre a arte. Seek e transporte logo abaixo; volume, legendas, “a seguir”, Navigate e texto vivem fora da primeira dobra.',good:['A capa domina a tela inteira, sem moldura','Navigate fora da dobra: controle limpo até rolar','Fundo com blur sutil da própria capa'],watch:['Se a fonte não tiver backdrop, o topo esvazia','Botão central no acento precisa manter contraste no texto']},
+  grid:{tag:'Rota empurrada',title:'Grade (Ver mais)',p:'Grade 3 colunas sem vidro, para rolagem longa leve.',good:['Vidro fora da rolagem longa','Capa domina, nomes em duas linhas'],watch:['Nove cards por dobra']},
+  settings:{tag:'Rota empurrada',title:'Ajustes',p:'Host conectado, hosts salvos, encontrar hosts e as seções de conexão/notificação/bateria em vidro com switches no acento.',good:['Agrupa sem divisórias duras','Switches e checks no acento'],watch:['Muito vidro empilhado pode baixar a leitura']},
+  homerows:{tag:'Rota empurrada',title:'Home rows',p:'Lista de trilhos com switches. Utilitária e direta.',good:['Direta','Mesmo switch do Ajustes'],watch:['Sem agrupamento por fonte']},
+  connect:{tag:'Estado vazio',title:'Conectar (connect-first)',p:'Brilho radial no acento e um cartão de vidro único com descobrir/adicionar host.',good:['Onboarding focado numa ação'],watch:['Precisa de estado de escaneamento (veja a próxima tela)']},
+  'connect-scanning':{tag:'Estado vazio',title:'Conectar · escaneando',p:'O mesmo cartão com spinner no acento e hosts encontrados na hora, prontos para tocar.',good:['Feedback imediato sem trocar de tela','Host encontrado aparece com um toque'],watch:['Precisa de estado “nada encontrado” e erro']},
+};
+
+/* ============ helpers ============ */
+const img = (src, cls = '') => `<img class="${cls}" src="${src}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`;
+const statusbar = (o) => `<div class="statusbar${o ? ' overlay' : ''}"><span>9:41</span><span class="sbi"><span></span><span></span></span></div>`;
+const navbar = (active) => `<div class="navbar">${[['home',I.home,'Home'],['search',I.search,'Busca'],['remote',I.tv,'Remote'],['myStuff',I.bookmark,'Minha Lista'],['profile',I.person,'Perfil']].map(([k,ic,l]) => `<div class="navitem${k===active?' active':''}">${ic}<span>${l}</span><div class="navind"></div></div>`).join('')}</div>`;
+const playerbar = () => `<div class="playerbar"><div class="pp">${img(NP.poster)}</div><div class="meta"><div class="t">${NP.title}</div><div class="s">${NP.episode}</div><div class="pbar"><i style="width:38%"></i></div></div><button class="iconbtn" title="Pausar">${I.pause}</button></div>`;
+const dock = (active, nav) => `<div class="dockwrap">${playerbar()}${nav ? navbar(active) : ''}</div>`;
+const appbar = (title, { back=false, gear=false } = {}) => `<header class="appbar">${back?`<button class="iconbtn" data-screen="home">${I.back}</button>`:''}<div class="tabtitle">${title}</div><div class="spacer"></div>${gear?`<button class="iconbtn" data-screen="settings" title="Ajustes">${I.gear}</button>`:''}</header>`;
+const card = (name, s, { progress, badge, go='detail-movie' } = {}) => `<div class="card" data-screen="${go}"><div class="art">${img(seed(s,300,450))}${badge?`<div class="badge">${badge}</div>`:''}${progress!=null?`<div class="pbar"><i style="width:${progress}%"></i></div>`:''}</div><div class="name">${name}</div></div>`;
+const rail = (title, more, items) => `<section class="rail"><div class="rail-head"><h3>${title}</h3><span>${more} ›</span></div><div class="rail-scroll">${items.map((it) => Array.isArray(it) ? card(it[0], it[1], it[2]||{}) : it).join('')}</div></section>`;
+const grid3 = (items, go) => `<div class="grid3">${items.map(([name,s]) => `<div class="gtile"${go?` data-screen="${go}"`:''}><div class="art">${img(seed(s,300,450))}</div><div class="name">${name}</div></div>`).join('')}</div>`;
+const castRow = (list) => `<div class="castrow">${list.map(([n,r,s]) => `<div class="cast"><div class="av">${img(seed(s,120,120))}</div><div class="nm">${n}</div><div class="rl">${r}</div></div>`).join('')}</div>`;
+
+function episodeList() {
+  return `<div class="eplist">${SERIES.episodes.map(([t,d,o,seen],i) => `<div class="eprow">
+    <div class="still">${img(seed('harbor-ep'+(i+1),240,135))}${seen?`<div class="seen">${I.check.replace('class="ico"','class="ico" style="width:18px;height:18px"')}</div>`:''}</div>
+    <span class="epno">${String(i+1).padStart(2,'0')}</span>
+    <div class="epmeta"><div class="ept">${t}</div><div class="eps">${o}</div></div>
+    <button class="iconbtn" title="Reproduzir">${I.play}</button></div>`).join('')}</div>`;
+}
+
+/* ============ telas ============ */
+function homeScreen() {
+  return `<div class="screen"><div class="scroll">${statusbar(true)}
+    <div class="hhero">${img(IMG.seriesBack)}<div class="scrim"></div>
+      <div class="float-top" style="position:absolute;top:46px;left:0;right:0;padding:0 16px;display:flex;justify-content:flex-end;z-index:8">
+        <button class="iconbtn glassbtn" data-screen="search-idle">${I.search}</button>
+        <button class="iconbtn glassbtn" style="margin-left:8px" data-screen="settings">${I.gear}</button></div>
+      <div class="content"><div class="kicker">Continue assistindo</div><h1>${SERIES.title}</h1><div class="meta-dot">${SERIES.kind} · ${SERIES.year} · T1 E3 · faltam 21 min</div>
+        <div class="cta"><button class="btn btn-accent">${I.play} Retomar</button><button class="btn btn-glass">${I.info} Detalhes</button></div></div>
+    </div>
+    <div style="padding-top:4px">
+      ${rail('Continuar assistindo','Ver tudo', CONTINUE.map(([n,s,pct,w]) => card(n,s,{progress:w,badge:pct,go:'detail-movie'})))}
+      ${rail('Em alta esta semana','Ver mais', TRENDING)}
+      ${rail('Filmes para hoje','Ver mais', MOVIES_ROW)}
+      ${rail('Séries','Ver mais', SERIES_ROW)}
+    </div><div style="height:16px"></div></div>${dock('home',true)}</div>`;
+}
+
+function detailScreen(kind) {
+  const d = kind === 'movie' ? MOVIE : SERIES;
+  const isSeries = kind !== 'movie';
+  return `<div class="screen"><div class="scroll">
+    <div class="band">${img(d.backdrop)}<div class="scrim"></div>${statusbar(true)}
+      <div class="float-top"><button class="iconbtn glassbtn" data-screen="home">${I.back}</button><button class="iconbtn glassbtn">${I.share}</button></div></div>
+    <div class="edcontent">
+      <div class="kicker">Harbor Selection</div>
+      <h1 class="edtitle">${d.title}</h1>
+      <div class="meta-dot">${d.kind} · ${d.year} · ${d.genre} · ★ ${d.rating}${isSeries?` · ${d.seasons}`:` · ${d.runtime}`}</div>
+      <div class="rule"></div>
+      <div class="edrow"><div class="poster-sm">${img(d.poster)}</div><p class="edsyn">${d.synopsis}</p></div>
+      <button class="btn btn-accent btn-wide" style="margin-top:18px">${I.play} ${isSeries?'Assistir T1 E1':'Assistir'}</button>
+      <div style="display:flex;gap:10px;margin-top:10px"><button class="btn btn-ghost" style="flex:1">${I.plus} Minha lista</button><button class="btn btn-ghost" style="flex:1">${I.download} Baixar</button></div>
+      <div class="section-label">Elenco</div>${castRow(d.cast)}
+      ${isSeries?`<div class="section-label">Episódios</div><div class="seg glass">${SERIES.seasonNames.map((s,i)=>`<button class="${i===0?'on':''}">${s}</button>`).join('')}</div>${episodeList()}`:''}
+      <div class="section-label">Você também pode gostar</div>
+      <div class="rail-scroll" style="padding-left:0;padding-right:0">${SIMILAR.map(([n,s])=>card(n,s,{go:'detail-series'})).join('')}</div>
+    </div></div>${dock(null,false)}</div>`;
+}
+
+function searchIdle() {
+  return `<div class="screen"><div class="scroll">${statusbar(false)}${appbar('Busca',{gear:true})}<div class="body-pad">
+    <div class="searchfield glass">${I.search}<input placeholder="Filmes, séries, anime" readonly>${I.eye}</div>
+    <div style="height:64px"></div>
+    <div style="text-align:center;color:var(--ink-3);font-size:12.5px;line-height:1.7">Busque em filmes, séries e anime ao mesmo tempo.<br>Os resultados aparecem conforme cada fonte responde.</div>
+  </div></div>${dock('search',true)}</div>`;
+}
+
+function searchLoading() {
+  return `<div class="screen"><div class="scroll">${statusbar(false)}${appbar('Busca',{gear:true})}<div class="body-pad">
+    <div class="searchfield glass" style="color:var(--ink)">${I.search}<input value="always sunny" readonly style="color:var(--ink)"><span class="spin"></span></div>
+    <div class="topmatch glass" style="margin-top:14px"><div class="sk" style="width:104px;height:16px"></div>
+      <div class="tm-row"><div class="sk" style="width:96px;height:144px"></div>
+        <div style="flex:1"><div class="sk" style="width:70%;height:16px"></div><div class="sk" style="width:40%;height:11px;margin-top:9px"></div>
+          <div class="sk" style="width:100%;height:11px;margin-top:14px"></div><div class="sk" style="width:92%;height:11px;margin-top:6px"></div><div class="sk" style="width:60%;height:11px;margin-top:6px"></div></div></div>
+      <div class="sk" style="width:104px;height:38px;margin-top:16px"></div></div>
+    <div class="section-label">Resultados</div>
+    <div class="grid3">${Array.from({length:6}).map(()=>`<div><div class="sk" style="aspect-ratio:2/3"></div><div class="sk" style="width:80%;height:10px;margin-top:7px"></div></div>`).join('')}</div>
+  </div></div>${dock('search',true)}</div>`;
+}
+
+function searchResults() {
+  return `<div class="screen"><div class="scroll">${statusbar(false)}${appbar('Busca',{gear:true})}<div class="body-pad">
+    <div class="searchfield glass" style="color:var(--ink)">${I.search}<input value="always sunny" readonly style="color:var(--ink)">${I.eye}</div>
+    <div class="topmatch glass" style="margin-top:14px"><div class="tm-head">${I.info} Top match</div>
+      <div class="tm-row" data-screen="detail-series" style="cursor:pointer"><div class="poster-md">${img(IMG.sunnyPoster)}</div>
+        <div><div style="font-size:15px;font-weight:600;line-height:1.25">It's Always Sunny in Philadelphia</div><div class="meta-dot" style="margin-top:4px">2005 · Série · ★ 8.8</div>
+        <p class="edsyn" style="margin-top:9px">Four egocentric friends run a neighborhood Irish pub in Philadelphia and try to find their way through the adult world of work and relationships…</p></div></div>
+      <button class="btn btn-ghost" style="margin-top:14px" data-screen="detail-series">${I.info} Detalhes</button></div>
+    <div class="section-label">Resultados</div>${grid3(SEARCH_RESULTS,true)}
+  </div><div style="height:10px"></div></div>${dock('search',true)}</div>`;
+}
+
+function myStuff() {
+  const rows = [...LIBRARY, ...HISTORY].map(([name,type,s,w,h,f,prog]) => `<div class="rowitem"><div class="poster-xs">${img(seed(s,120,180))}</div>
+    <div class="meta"><div class="t">${name}</div><div class="s">${type}${prog!=null?` · ${prog}%`:''}</div>${prog!=null?`<div class="bar"><i style="width:${prog}%"></i></div>`:''}</div>
+    <div class="toggles"><button class="iconbtn ${w?'on':''}">${w?I.bookmarkF:I.bookmark}</button><button class="iconbtn ${h?'on':''}">${h?I.checkF:I.check}</button><button class="iconbtn ${f?'on':''}">${f?I.heartF:I.heart}</button></div></div>`).join('');
+  return `<div class="screen"><div class="scroll">${statusbar(false)}${appbar('Minha Lista',{gear:true})}<div class="body-pad">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><span style="font-size:11.5px;color:var(--ink-3)">Vinculado:</span><span class="tagchip">stremio</span><span class="tagchip">trakt</span></div>
+    <div class="seg glass"><button class="on">Watchlist</button><button>History</button><button>Favorites</button></div>
+    <div style="margin-top:6px">${rows}</div>
+  </div><div style="height:8px"></div></div>${dock('myStuff',true)}</div>`;
+}
+
+function profile() {
+  return `<div class="screen"><div class="scroll">${statusbar(false)}${appbar('Perfil',{gear:true})}<div class="body-pad">
+    ${PROFILES.map(([n,c,ini,active]) => `<div class="profile-tile"><div class="avatar" style="background:${c}">${ini}</div><div class="meta" style="flex:1"><div class="t" style="font-size:15px;font-weight:600">${n}</div>${active?`<div class="s" style="font-size:11.5px;color:var(--accent-ink);margin-top:3px">Assistindo</div>`:''}</div>${active?`<span style="color:var(--accent)">${I.checkF}</span>`:`<button class="btn btn-ghost" style="padding:8px 12px;font-size:12px">Trocar</button>`}</div>`).join('')}
+    <div style="margin-top:18px"><button class="btn btn-ghost btn-wide">${I.plus} Adicionar perfil</button></div>
+  </div></div>${dock('profile',true)}</div>`;
+}
+
+function remoteScreen() {
+  return `<div class="screen">
+    <div class="wash">${img(NP.poster,'wash-full')}${img(NP.poster,'wash-glow')}<div class="veil"></div></div>
+    <div class="scroll">
+      <div class="l2band">${img(NP.backdrop)}<div class="scrim"></div>${statusbar(true)}
+        <div class="top"><button class="iconbtn glassbtn" data-screen="home">${I.back}</button><button class="iconbtn glassbtn" data-screen="settings">${I.gear}</button></div>
+        <div class="content">
+          <div class="rmlabel">Reproduzindo agora</div>
+          <h1 class="rmtitle">${NP.title}</h1>
+          <div class="rmline">${NP.episode} · ${NP.source}</div>
+          <div class="rmtarget">${I.tv} ${NP.target}</div>
+          <div class="progress"><i></i><div class="knob"></div></div>
+          <div class="times"><span>${NP.pos}</span><span>${NP.dur}</span></div>
+          <div class="transport"><button class="side" title="Anterior">${I.prev}</button><button class="big" title="Pausar">${I.pause}</button><button class="side" title="Próximo">${I.next}</button></div>
+        </div>
+      </div>
+      <div class="body-pad" style="padding-top:0">
+        <div class="below">
+          <div class="rmnext">${I.play}<span>Próximo · ${NP.next}</span><div class="th">${img(seed(NP.nextStill,120,72))}</div></div>
+          <div class="volrow" style="margin-top:20px">${I.volume}<div class="vol"><i></i><div class="knob"></div></div>${I.volume}</div>
+          <div class="pillrow"><span class="chip on glass">${I.subtitles} Legendas: PT-BR</span><span class="chip glass">${I.cast} ${NP.target}</span></div>
+          <div class="rmcard glass"><div class="rmcard-head">Navegar <span>${I.chevD}</span></div><div class="dpad">
+            <button class="up">${I.up}</button><button class="left">${I.left}</button><button class="ctr">${I.check}</button><button class="right">${I.right}</button><button class="down">${I.down}</button></div></div>
+          <div class="glass" style="margin-top:16px;border-radius:14px;padding:4px 14px"><div class="fieldrow"><input placeholder="Texto para o host…"><button class="btn btn-accent" style="padding:10px 16px">Enviar</button></div></div>
+        </div>
+      </div>
+    </div>${dock('remote',true)}</div>`;
+}
+
+function gridScreen() {
+  return `<div class="screen"><div class="scroll">${statusbar(false)}${appbar('Upcoming',{back:true})}<div class="body-pad">${grid3(UPCOMING,true)}</div><div style="height:12px"></div></div>${dock(null,false)}</div>`;
+}
+
+function settings() {
+  return `<div class="screen"><div class="scroll">${statusbar(false)}${appbar('Ajustes',{back:true})}<div class="body-pad">
+    <div class="hostcard glass"><div class="hostrow"><div class="dot ok">${I.check}</div><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Conectado a menoti pc</div></div><button class="btn btn-ghost" style="padding:8px 12px;font-size:12px">Desconectar</button></div>
+      <div class="rule" style="margin:13px 0"></div><div class="kv"><span class="k">Endereço</span><span class="v">192.168.200.100:11471</span></div><div class="kv"><span class="k">Status</span><span class="v">conectado a menoti pc</span></div><div class="kv"><span class="k">Versão do host</span><span class="v">v0.9.118</span></div></div>
+    <div class="section-label">Hosts salvos</div>
+    <div class="listrow"><div class="dot ok" style="width:22px;height:22px">${I.check}</div><div class="meta"><div class="t">menoti pc</div><div class="s">192.168.200.100:11471</div></div><button class="iconbtn">${I.edit}</button><button class="iconbtn">${I.trash}</button></div>
+    <div class="section-label">Encontrar hosts</div><button class="btn btn-glass">${I.scan} Escanear rede local</button>
+    <div class="section-label">Conexão</div>
+    <div class="switchrow"><div class="meta"><div class="t">Manter conexão em segundo plano</div><div class="s">Mantém a conexão viva com a tela desligada. Mostra uma notificação enquanto conectado.</div></div><div class="sw on"><i></i></div></div>
+    <div class="switchrow"><div class="iconbtn" style="width:26px;color:var(--ink-3)">${I.bell}</div><div class="meta"><div class="t">Acesso a notificações</div><div class="s">Permitido — a notificação de conexão é exibida.</div></div><span style="color:var(--accent)">${I.checkF}</span></div>
+    <div class="switchrow" style="border-bottom:none"><div class="iconbtn" style="width:26px;color:var(--ink-3)">${I.battery}</div><div class="meta"><div class="t">Otimização de bateria</div><div class="s">Exima o app para manter a conexão com a tela desligada.</div></div><button class="iconbtn">${I.chev}</button></div>
+    <div style="height:8px"></div></div></div>${dock(null,false)}</div>`;
+}
+
+function homeRows() {
+  return `<div class="screen"><div class="scroll">${statusbar(false)}${appbar('Home rows',{back:true})}<div class="body-pad"><div class="meta-dot" style="margin-bottom:8px">Escolha quais trilhos aparecem na Home.</div>${ROWS.map(([r,on])=>`<div class="switchrow"><div class="meta"><div class="t">${r}</div></div><div class="sw ${on?'on':''}"><i></i></div></div>`).join('')}</div></div>${dock(null,false)}</div>`;
+}
+
+function connect() {
+  return `<div class="screen"><div class="connectwrap"><div class="glow"></div>${statusbar(false)}
+    <div class="connectcard glass"><div style="color:var(--accent)">${I.cast}</div><div class="kicker" style="margin-top:14px">Harbor Companion</div>
+      <h1 class="serif" style="font-size:30px;font-weight:600;margin:8px 0 8px;line-height:1.05">Conecte a um host</h1>
+      <p class="edsyn" style="margin-bottom:20px">Este app é um controle: a reprodução roda no seu computador. Adicione ou selecione um host para continuar.</p>
+      <button class="btn btn-accent btn-wide">${I.scan} Escanear rede local</button><button class="btn btn-ghost btn-wide" style="margin-top:10px">${I.plus} Adicionar host</button></div></div></div>`;
+}
+
+function connectScanning() {
+  return `<div class="screen"><div class="connectwrap"><div class="glow"></div>${statusbar(false)}
+    <div class="connectcard glass"><div style="display:flex;justify-content:center"><span class="spin"></span></div><div class="kicker" style="margin-top:16px">Procurando…</div>
+      <h1 class="serif" style="font-size:28px;font-weight:600;margin:8px 0 16px;line-height:1.05">Escaneando a rede local</h1>
+      <div class="listrow" style="text-align:left"><div class="dot ok">${I.check}</div><div class="meta"><div class="t">menoti pc</div><div class="s">192.168.200.100:11471</div></div><button class="btn btn-accent" style="padding:9px 14px;font-size:12.5px">Usar</button></div>
+      <div class="listrow"><div class="dot" style="border:1px dashed var(--hair)"></div><div class="meta"><div class="t">Sala-TV</div><div class="s">192.168.200.142:11471</div></div><button class="btn btn-ghost" style="padding:9px 14px;font-size:12.5px">Usar</button></div>
+      <button class="btn btn-ghost btn-wide" style="margin-top:18px">Cancelar</button></div></div></div>`;
+}
+
+const RENDER = {
+  home:homeScreen, 'detail-series':()=>detailScreen('series'), 'detail-movie':()=>detailScreen('movie'),
+  'search-idle':searchIdle, 'search-loading':searchLoading, 'search-results':searchResults,
+  mystuff:myStuff, profile, remote:remoteScreen, grid:gridScreen, settings, homerows:homeRows,
+  connect, 'connect-scanning':connectScanning,
+};
+
+/* ============ acento / estado ============ */
+const ACCENTS = [
+  ['indigo','Índigo','#8f97ff'], ['violet','Violeta','#b98cff'], ['gold','Dourado','#e3b768'],
+  ['coral','Coral','#ff7a6b'], ['teal','Turquesa','#5fd3c6'], ['green','Verde','#86d9a4'], ['sky','Céu','#6fb6ff'],
+];
+const ACC = Object.fromEntries(ACCENTS.map(([k,n,h]) => [k,{name:n,hex:h}]));
+
+const q = new URLSearchParams(location.search);
+const state = {
+  screen: RENDER[q.get('screen')] ? q.get('screen') : 'remote',
+  accent: ACC[q.get('accent')] ? q.get('accent') : 'indigo',
+};
+
+function applyAccent() {
+  document.documentElement.style.setProperty('--accent', ACC[state.accent].hex);
+}
+
+function render() {
+  applyAccent();
+  document.getElementById('app').innerHTML = RENDER[state.screen]();
+  document.getElementById('screens').innerHTML = SCREENS.map(([k,l]) => `<button data-screen="${k}" class="${state.screen===k?'active':''}">${l}</button>`).join('');
+  const n = NOTES[state.screen];
+  document.getElementById('notes').innerHTML = `<span class="tag">${n.tag}</span><h2>${n.title}</h2><p>${n.p}</p>
+    <h4>O que ganha</h4><ul class="good">${n.good.map((x)=>`<li>${x}</li>`).join('')}</ul>
+    <h4>O que vigiar</h4><ul class="watch">${n.watch.map((x)=>`<li>${x}</li>`).join('')}</ul>
+    <div class="foot">Protótipo final. Remote em Cinemascope com sangria; Navigate fora da primeira dobra; fundo com blur sutil da capa; miniplayer de vidro. Acento: <b style="color:${ACC[state.accent].hex}">${ACC[state.accent].name}</b>. Posters são placeholders.</div>`;
+  document.getElementById('accname').textContent = ACC[state.accent].name;
+  document.getElementById('dots').innerHTML = ACCENTS.map(([k,,h]) => `<button data-accent="${k}" title="${ACC[k].name}" class="${state.accent===k?'on':''}" style="background:${h}"></button>`).join('');
+  document.getElementById('hint').textContent = `?screen=${state.screen}&accent=${state.accent}`;
+  try { const u=new URL(location.href); u.searchParams.set('screen',state.screen); u.searchParams.set('accent',state.accent); history.replaceState(null,'',u); } catch(_) {}
+}
+
+function setAccent(k) { if (ACC[k]) { state.accent = k; render(); } }
+function cycleAccent(step) { const i = ACCENTS.findIndex((a)=>a[0]===state.accent); state.accent = ACCENTS[(i+step+ACCENTS.length)%ACCENTS.length][0]; render(); }
+
+document.addEventListener('click', (e) => {
+  const st = e.target.closest('[data-step]'); if (st) { cycleAccent(Number(st.dataset.step)); return; }
+  const ac = e.target.closest('[data-accent]'); if (ac) { setAccent(ac.dataset.accent); return; }
+  const s = e.target.closest('[data-screen]'); if (s && RENDER[s.dataset.screen]) { state.screen = s.dataset.screen; render(); }
+});
+document.addEventListener('keydown', (e) => {
+  const t=e.target; if (t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
+  if (e.key==='ArrowLeft') cycleAccent(-1);
+  if (e.key==='ArrowRight') cycleAccent(1);
+});
+render();
+</script>
+</body>
+</html>
