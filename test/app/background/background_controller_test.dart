@@ -127,6 +127,12 @@ class FakeBackgroundPlatform implements BackgroundPlatform {
   int batteryListCalls = 0;
   int batterySettingsCalls = 0;
 
+  /// Local network / Android 17 readiness (#69) the fake records.
+  LocalNetworkPermissionStatus localNetworkStatus =
+      LocalNetworkPermissionStatus.granted;
+  int localNetworkCheckCalls = 0;
+  int localNetworkRequestCalls = 0;
+
   final StreamController<BackgroundAction> _actions =
       StreamController<BackgroundAction>.broadcast();
 
@@ -184,6 +190,18 @@ class FakeBackgroundPlatform implements BackgroundPlatform {
 
   @override
   Future<void> openBatterySettings() async => batterySettingsCalls++;
+
+  @override
+  Future<LocalNetworkPermissionStatus> checkLocalNetworkPermission() async {
+    localNetworkCheckCalls++;
+    return localNetworkStatus;
+  }
+
+  @override
+  Future<LocalNetworkPermissionStatus> requestLocalNetworkPermission() async {
+    localNetworkRequestCalls++;
+    return localNetworkStatus;
+  }
 
   @override
   Stream<BackgroundAction> get actions => _actions.stream;
@@ -244,6 +262,28 @@ void main() {
       expect(platform.startCalls, hasLength(1));
       expect(platform.startCalls.single.title, 'Harbor Companion');
       expect(platform.startCalls.single.text, 'Connected to desk');
+      expect(
+        container.read(backgroundControllerProvider).serviceStatus,
+        BackgroundServiceStatus.running,
+      );
+    });
+  });
+
+  test('the connect path never checks or requests the Android 17 local '
+      'network permission (#69)', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      container.read(backgroundControllerProvider.notifier);
+      connect();
+      async.flushMicrotasks();
+
+      connectTo('desk');
+      async.flushMicrotasks();
+
+      // On current versions the permission is a no-op behind the seam; the
+      // connection must never be gated or delayed by it.
+      expect(platform.localNetworkCheckCalls, 0);
+      expect(platform.localNetworkRequestCalls, 0);
       expect(
         container.read(backgroundControllerProvider).serviceStatus,
         BackgroundServiceStatus.running,

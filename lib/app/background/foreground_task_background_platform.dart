@@ -32,6 +32,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'background_platform.dart';
 import 'battery_settings.dart';
+import 'local_network_permission.dart';
 import 'media_surface_channel.dart';
 import 'notification_permission.dart';
 
@@ -110,9 +111,12 @@ class FlutterForegroundTaskBackgroundPlatform implements BackgroundPlatform {
     this.mediaSurface,
     NotificationPermissionBridge? notificationPermission,
     BatterySettingsBridge? batterySettings,
+    LocalNetworkPermissionBridge? localNetworkPermission,
   })  : notificationPermission =
             notificationPermission ?? MethodChannelNotificationPermission(),
-        batterySettings = batterySettings ?? MethodChannelBatterySettings() {
+        batterySettings = batterySettings ?? MethodChannelBatterySettings(),
+        localNetworkPermission =
+            localNetworkPermission ?? MethodChannelLocalNetworkPermission() {
     FlutterForegroundTask.addTaskDataCallback(_onTaskData);
     // App-lifetime adapter: the broadcast subscription lives as long as it does.
     mediaSurface?.actions.listen(_actions.add);
@@ -121,6 +125,7 @@ class FlutterForegroundTaskBackgroundPlatform implements BackgroundPlatform {
   final MediaSurfaceChannel? mediaSurface;
   final NotificationPermissionBridge notificationPermission;
   final BatterySettingsBridge batterySettings;
+  final LocalNetworkPermissionBridge localNetworkPermission;
 
   final StreamController<BackgroundAction> _actions =
       StreamController<BackgroundAction>.broadcast();
@@ -286,6 +291,16 @@ class FlutterForegroundTaskBackgroundPlatform implements BackgroundPlatform {
 
   @override
   Future<void> openBatterySettings() => batterySettings.openBatterySettings();
+
+  // -- Local network / Android 17 readiness (#69) ---------------------------
+
+  @override
+  Future<LocalNetworkPermissionStatus> checkLocalNetworkPermission() =>
+      localNetworkPermission.checkStatus();
+
+  @override
+  Future<LocalNetworkPermissionStatus> requestLocalNetworkPermission() =>
+      localNetworkPermission.request();
 
   void _throwIfFailed(ServiceRequestResult result, String operation) {
     if (result is ServiceRequestFailure) {

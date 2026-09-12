@@ -102,6 +102,14 @@ class FakeBackgroundPlatform implements BackgroundPlatform {
   Future<void> openBatterySettings() async => batterySettingsCalls++;
 
   @override
+  Future<LocalNetworkPermissionStatus> checkLocalNetworkPermission() async =>
+      LocalNetworkPermissionStatus.granted;
+
+  @override
+  Future<LocalNetworkPermissionStatus> requestLocalNetworkPermission() async =>
+      LocalNetworkPermissionStatus.granted;
+
+  @override
   Future<void> startService(BackgroundNotification notification) async {}
 
   @override

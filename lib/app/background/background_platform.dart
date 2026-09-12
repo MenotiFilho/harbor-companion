@@ -14,6 +14,9 @@
 // carries a [BackgroundMediaSurface] (title + episode line, plus the poster and
 // transport metadata #66 consumes). #66 adds the transport action vocabulary
 // (play/pause, previous, next, seek) and the native `MediaSession` re-anchor.
+// #67 adds the notification-permission operations, #68 the battery ones, and
+// #69 the Android 17 local-network-permission readiness (declaration now,
+// check/request behind this seam, no-op on versions that do not gate LAN).
 
 import 'dart:async';
 
@@ -243,6 +246,28 @@ enum NotificationPermissionStatus {
       };
 }
 
+/// The Android 17 (API 37) local-network-permission state (#69).
+///
+/// A LAN client only gains this gate once it targets API 37, where a missing
+/// `ACCESS_LOCAL_NETWORK` grant makes LAN sockets fail. On versions that do not
+/// gate LAN access — everything below 37, and the no-op seam default — this is
+/// always [granted], so the connection path is never blocked on it. The shape
+/// mirrors [NotificationPermissionStatus] so the future runtime request can be
+/// wired without re-plumbing.
+enum LocalNetworkPermissionStatus {
+  granted,
+  denied,
+  permanentlyDenied;
+
+  /// Maps the native bridge's wire string. Unknown values fall back to
+  /// [denied] — treat it as re-askable rather than silently permanent.
+  static LocalNetworkPermissionStatus fromWire(String? raw) => switch (raw) {
+        'granted' => granted,
+        'permanently_denied' => permanentlyDenied,
+        _ => denied,
+      };
+}
+
 /// Raised by an adapter when the platform refuses to start/update/stop the
 /// service: Android 12+ forbids a background foreground-service start, Android
 /// 14+ throws when the service type's permission is missing, and the plugin can
@@ -305,6 +330,21 @@ abstract interface class BackgroundPlatform {
   /// Open the generic system battery-settings screen (the OEM tips action).
   Future<void> openBatterySettings();
 
+  // -- Local network / Android 17 readiness (#69) ---------------------------
+
+  /// The current `ACCESS_LOCAL_NETWORK` state (Android 17 / API 37+). On
+  /// versions that do not gate LAN access this is always
+  /// [LocalNetworkPermissionStatus.granted], so the connection path is never
+  /// blocked on it.
+  Future<LocalNetworkPermissionStatus> checkLocalNetworkPermission();
+
+  /// Fire the native `ACCESS_LOCAL_NETWORK` prompt (Android 17+) and report the
+  /// result. A no-op returning [LocalNetworkPermissionStatus.granted] on
+  /// versions that do not gate LAN access. The caller shows the rationale
+  /// first; it is never called from the connect path, so a current-version
+  /// connection cannot be delayed by it.
+  Future<LocalNetworkPermissionStatus> requestLocalNetworkPermission();
+
   /// Actions the user performs on the notification.
   Stream<BackgroundAction> get actions;
 }
@@ -352,6 +392,16 @@ class NoopBackgroundPlatform implements BackgroundPlatform {
 
   @override
   Future<void> openBatterySettings() async {}
+
+  // Report local network access as already granted: the no-op default must never
+  // gate or delay the LAN connection on any version (including Android 17+).
+  @override
+  Future<LocalNetworkPermissionStatus> checkLocalNetworkPermission() async =>
+      LocalNetworkPermissionStatus.granted;
+
+  @override
+  Future<LocalNetworkPermissionStatus> requestLocalNetworkPermission() async =>
+      LocalNetworkPermissionStatus.granted;
 
   @override
   Stream<BackgroundAction> get actions => const Stream<BackgroundAction>.empty();

@@ -12,6 +12,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
+    <!-- Android 17 (API 37) local network protection: a LAN client needs this
+         runtime permission ("Nearby devices" group) once it targets API 37.
+         Declaring it is inert on every earlier version, where LAN sockets are
+         ungated; the runtime check/request lives behind the BackgroundPlatform
+         seam (#69) and is a no-op below 37. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- Battery / OEM onboarding (#68, ADR-0007): the direct
          ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS prompt needs this. Being

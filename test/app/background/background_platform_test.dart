@@ -109,6 +109,33 @@ void main() {
     });
   });
 
+  group('LocalNetworkPermissionStatus.fromWire (#69)', () {
+    test('maps the native strings', () {
+      expect(LocalNetworkPermissionStatus.fromWire('granted'),
+          LocalNetworkPermissionStatus.granted);
+      expect(LocalNetworkPermissionStatus.fromWire('denied'),
+          LocalNetworkPermissionStatus.denied);
+      expect(LocalNetworkPermissionStatus.fromWire('permanently_denied'),
+          LocalNetworkPermissionStatus.permanentlyDenied);
+    });
+
+    test('an unknown value is treated as re-askable, never permanent', () {
+      expect(LocalNetworkPermissionStatus.fromWire(null),
+          LocalNetworkPermissionStatus.denied);
+      expect(LocalNetworkPermissionStatus.fromWire('weird'),
+          LocalNetworkPermissionStatus.denied);
+    });
+  });
+
+  test('the no-op platform reports local network access as granted (#69)',
+      () async {
+    const platform = NoopBackgroundPlatform();
+    expect(await platform.checkLocalNetworkPermission(),
+        LocalNetworkPermissionStatus.granted);
+    expect(await platform.requestLocalNetworkPermission(),
+        LocalNetworkPermissionStatus.granted);
+  });
+
   test('the no-op platform reports granted so nothing is ever requested', () async {
     const platform = NoopBackgroundPlatform();
     expect(await platform.checkNotificationPermission(),
