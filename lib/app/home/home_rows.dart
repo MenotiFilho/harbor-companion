@@ -19,12 +19,20 @@ class BuiltInRow {
   final String path;
   final String type; // 'movie' | 'series'
   final String title;
+
+  /// Whether the source documents a pagination cursor for this row's catalog
+  /// (Cinemeta `skip`, TMDB list `page`). TMDB's two `/trending/*` references
+  /// expose no `page`, so those rows are page-1-only and never report `hasMore`
+  /// (ticket 75, ADR-0009).
+  final bool paginatable;
+
   const BuiltInRow({
     required this.id,
     required this.source,
     required this.path,
     required this.type,
     required this.title,
+    this.paginatable = true,
   });
 }
 
@@ -44,8 +52,8 @@ const List<BuiltInRow> kCinemetaRows = [
 
 /// TMDB rails (keyed), mirroring the beta mobile home.
 const List<BuiltInRow> kTmdbRows = [
-  BuiltInRow(id: 'tmdb:trending-movies', source: 'tmdb', path: '/trending/movie/week', type: 'movie', title: 'Trending Movies'),
-  BuiltInRow(id: 'tmdb:trending-series', source: 'tmdb', path: '/trending/tv/week', type: 'series', title: 'Trending Series'),
+  BuiltInRow(id: 'tmdb:trending-movies', source: 'tmdb', path: '/trending/movie/week', type: 'movie', title: 'Trending Movies', paginatable: false),
+  BuiltInRow(id: 'tmdb:trending-series', source: 'tmdb', path: '/trending/tv/week', type: 'series', title: 'Trending Series', paginatable: false),
   BuiltInRow(id: 'tmdb:popular-movies', source: 'tmdb', path: '/movie/popular', type: 'movie', title: 'Popular Movies'),
   BuiltInRow(id: 'tmdb:top-rated-movies', source: 'tmdb', path: '/movie/top_rated', type: 'movie', title: 'Top Rated Movies'),
   BuiltInRow(id: 'tmdb:now-playing', source: 'tmdb', path: '/movie/now_playing', type: 'movie', title: 'Now Playing'),
@@ -138,6 +146,11 @@ class HomeRowEntry {
     required this.isLetterboxd,
   });
 }
+
+/// The display label for [key] before its fetch resolves (the skeleton and a
+/// failed-without-copy retry card): the built-in title or the Letterboxd
+/// toggle's label, falling back to the raw key.
+String homeRowLabel(String key) => homeRowEntry(key)?.label ?? key;
 
 HomeRowEntry? homeRowEntry(String key) {
   final builtIn = builtInRowById(key);

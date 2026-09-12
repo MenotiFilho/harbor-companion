@@ -4,4 +4,5 @@ abstract final class AppRoutes {
   static const settings = '/settings';
   static const homeRows = '/settings/home-rows';
   static const detail = '/detail';
+  static const railGrid = '/rail-grid';
 }

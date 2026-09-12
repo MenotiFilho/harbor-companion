@@ -1,14 +1,17 @@
 // Tests for the Home/catalog state model (lib/app/home/home_reducer.dart).
 //
-// Pins the ticket 04 acceptance criteria: TMDB-if-key-else-Cinemeta rows with
-// auto-upgrade when a tmdbKey arrives (and downgrade when it leaves), the
-// stale-fetch guard, detail loading with the requested-meta guard, and the
-// host-driven playMeta encoding (movie / series first episode / specific
-// episode, `resume` always true, anime coerced to series).
+// Pins the ticket 71 per-rail acceptance criteria: the fetcher emits one
+// loaded/failed/absent per planned `rowKey`, each committed atomically (loaded
+// even-empty replaces, failed keeps the previous copy, absent drops), a rail is
+// never assembled from two rounds (the round id guards), and the global empty /
+// everything-failed states are derived from the per-rail state. Plus the ticket
+// 04 detail + playMeta behavior, unchanged.
 
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harbor_companion/app/home/catalog_request.dart';
+import 'package:harbor_companion/app/home/home_cache_store.dart';
+import 'package:harbor_companion/app/home/home_rail.dart';
 import 'package:harbor_companion/app/home/home_reducer.dart';
 import 'package:harbor_companion/app/home/home_rows.dart';
 import 'package:harbor_companion/app/letterboxd/letterboxd.dart';
@@ -20,8 +23,8 @@ Meta movie({String id = 'tt0000001', String name = 'The Matrix'}) =>
 Meta series({String id = 'tt0000002', String name = 'Breaking Bad'}) =>
     Meta(id: id, type: 'series', name: name, poster: 'http://p/$id.jpg');
 
-HomeRow row(String title, [int n = 3]) =>
-    HomeRow(title, [for (var i = 0; i < n; i++) movie(id: '$title:$i')]);
+List<Meta> items(String prefix, [int n = 3]) =>
+    [for (var i = 0; i < n; i++) movie(id: '$prefix:$i')];
 
 CatalogRequest req({
   String? key,
@@ -42,126 +45,497 @@ List<String> drain(HomeState s) {
   return e;
 }
 
+/// Starts the first round and returns the state with the effect drained.
+HomeState started([CatalogRequest? request]) {
+  final s = homeReduce(HomeState(request: request ?? req()), const LoadHome());
+  drain(s);
+  return s;
+}
+
+/// Folds [outcome] into [s] for the round/request [s] is currently on.
+HomeState fold(HomeState s, HomeRailOutcome outcome) =>
+    homeReduce(s, RailOutcomeReceived(outcome, s.request, s.round));
+
 void main() {
-  group('rows: load & status', () {
-    test('LoadHome from idle fetches and enters loading', () {
+  const firstKey = 'cinemeta:top-movies';
+
+  group('round start', () {
+    test('LoadHome plans every rail pending and emits fetch:rails', () {
       final s = homeReduce(HomeState(), const LoadHome());
-      expect(s.status, HomeStatus.loading);
-      expect(drain(s), ['fetch:rows']);
+      expect(s.round, 1);
+      expect(drain(s), ['fetch:rails']);
+      expect(s.plannedKeys, isNotEmpty);
+      expect(s.rails.keys, containsAll(s.plannedKeys));
+      expect(s.hasPending, isTrue);
+      expect(s.renderKeys, s.plannedKeys);
     });
 
-    test('LoadHome while ready is a no-op (no refetch on tab re-entry)', () {
-      var s = homeReduce(HomeState(), const LoadHome());
-      drain(s);
-      s = homeReduce(s, RowsLoaded([row('Top Movies')], req()));
-      drain(s);
-      final after = homeReduce(s, const LoadHome());
-      expect(after.status, HomeStatus.ready);
+    test('a second LoadHome is a no-op (no refetch on tab re-entry)', () {
+      final after = homeReduce(started(), const LoadHome());
+      expect(after.round, 1);
       expect(drain(after), isEmpty);
     });
 
-    test('LoadHome while loading is a no-op', () {
-      final loading = homeReduce(HomeState(), const LoadHome());
-      drain(loading);
-      final after = homeReduce(loading, const LoadHome());
-      expect(drain(after), isEmpty);
-    });
-
-    test('LoadHome after a failure retries', () {
-      var s = homeReduce(HomeState(), const LoadHome());
-      drain(s);
-      s = homeReduce(s, RowsFailed(Exception('boom'), req()));
-      drain(s);
-      expect(s.status, HomeStatus.failed);
-      final after = homeReduce(s, const LoadHome());
-      expect(after.status, HomeStatus.loading);
-      expect(drain(after), ['fetch:rows']);
-    });
-
-    test('RefreshHome forces a fetch even while ready with zero rows', () {
-      var s = homeReduce(HomeState(), const LoadHome());
-      drain(s);
-      s = homeReduce(s, RowsLoaded(const [], req()));
-      drain(s);
-      expect(s.status, HomeStatus.ready);
+    test('RefreshHome starts a new round even after the first settled', () {
+      var s = started();
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailAbsent(key));
+      }
       final after = homeReduce(s, const RefreshHome());
-      expect(after.status, HomeStatus.loading);
-      expect(drain(after), ['fetch:rows']);
+      expect(after.round, 2);
+      expect(drain(after), ['fetch:rails']);
+      expect(after.isPending(firstKey), isTrue);
     });
 
-    test('RowsLoaded with the current key publishes rows', () {
-      var s = homeReduce(HomeState(), const LoadHome());
-      drain(s);
-      s = homeReduce(s, RowsLoaded([row('Top Movies')], req()));
-      expect(s.status, HomeStatus.ready);
-      expect(s.rows.single.title, 'Top Movies');
-      expect(drain(s), isEmpty);
+    test('KeyChanged starts a keyed round; a stale keyless outcome is dropped',
+        () {
+      var s = started();
+      final keyed = homeReduce(s, const KeyChanged('tmdb-key'));
+      drain(keyed);
+      expect(keyed.tmdbKey, 'tmdb-key');
+      expect(keyed.round, 2);
+      // The keyless result now returns for round 1 — dropped.
+      final stale = homeReduce(
+        keyed,
+        RailOutcomeReceived(HomeRailLoaded('cinemeta:top-movies', 'Top Movies', items('old')), req(), 1),
+      );
+      expect(stale.rails['cinemeta:top-movies']?.hasItems ?? false, isFalse);
+      // A keyed result for round 2 applies.
+      final fresh = homeReduce(
+        keyed,
+        RailOutcomeReceived(HomeRailLoaded('tmdb:trending-movies', 'Trending', items('new')), keyed.request, 2),
+      );
+      expect(fresh.rails['tmdb:trending-movies']!.items, isNotEmpty);
     });
 
-    test('RowsFailed with the current key enters failed', () {
-      var s = homeReduce(HomeState(), const LoadHome());
-      drain(s);
-      s = homeReduce(s, RowsFailed(Exception('down'), req()));
-      expect(s.status, HomeStatus.failed);
-      expect(s.rows, isEmpty);
-      expect(s.lastError, contains('down'));
+    test('an unchanged key is a no-op; changed sources start a round', () {
+      final same = homeReduce(HomeState(request: req(key: 'k')), const KeyChanged('k'));
+      expect(drain(same), isEmpty);
+      final changed = homeReduce(
+        HomeState(),
+        CatalogSourcesChanged(req(letterboxd: const LetterboxdConfig(
+          manifestUrl: 'https://x/manifest.json',
+          enabledCatalogIds: {'letterboxd-watchlist'},
+        ))),
+      );
+      expect(drain(changed), ['fetch:rails']);
     });
   });
 
-  group('rows: TMDB-if-key-else-Cinemeta + auto-upgrade', () {
-    test('a keyless host fetches cinemeta (no key in state)', () {
-      var s = homeReduce(HomeState(), const LoadHome());
-      drain(s);
-      s = homeReduce(s, RowsLoaded([row('Action'), row('Drama')], req()));
-      expect(s.tmdbKey, isNull);
-      expect(s.rows, hasLength(2));
+  group('per-rail commit', () {
+    test('loaded with items publishes the rail under its rowKey', () {
+      final s = fold(started(), HomeRailLoaded(firstKey, 'Top Movies', items('a')));
+      final rail = s.rails[firstKey]!;
+      expect(rail.status, RailStatus.loaded);
+      expect(rail.title, 'Top Movies');
+      expect(rail.items, hasLength(3));
+      expect(s.isPending(firstKey), isFalse);
     });
 
-    test('a key arriving upgrades the rows (refetch keyed)', () {
-      var s = homeReduce(HomeState(), const LoadHome());
-      drain(s);
-      s = homeReduce(s, RowsLoaded([row('Top Movies')], req())); // cinemeta rows
-      drain(s);
-      final after = homeReduce(s, KeyChanged('tmdb-key'));
-      expect(after.tmdbKey, 'tmdb-key');
-      expect(after.status, HomeStatus.loading);
-      expect(drain(after), ['fetch:rows']);
+    test('loaded with zero items removes the rail', () {
+      final s = fold(started(), HomeRailLoaded(firstKey, 'Top Movies', const []));
+      expect(s.rails[firstKey]!.status, RailStatus.loaded);
+      expect(s.rails[firstKey]!.hasItems, isFalse);
+      expect(s.renderKeys, isNot(contains(firstKey)));
     });
 
-    test('a key leaving downgrades back to cinemeta', () {
-      var s = homeReduce(HomeState(request: req(key: 'tmdb-key')), const LoadHome());
-      drain(s);
-      s = homeReduce(s, RowsLoaded([row('Trending')], req(key: 'tmdb-key')));
-      drain(s);
-      final after = homeReduce(s, KeyChanged(null));
-      expect(after.tmdbKey, isNull);
-      expect(drain(after), ['fetch:rows']);
+    test('loaded empty replaces a previous copy', () {
+      var s = fold(started(), HomeRailLoaded(firstKey, 'Top Movies', items('a')));
+      s = homeReduce(s, const RefreshHome());
+      s = fold(s, HomeRailLoaded(firstKey, 'Top Movies', const []));
+      expect(s.rails[firstKey]!.hasItems, isFalse);
+      expect(s.renderKeys, isNot(contains(firstKey)));
     });
 
-    test('an unchanged key is a no-op', () {
-      final s = homeReduce(HomeState(request: req(key: 'k')), KeyChanged('k'));
+    test('failed without a previous copy keeps no items (local retry card)', () {
+      final s = fold(started(), HomeRailFailed(firstKey, Exception('down')));
+      final rail = s.rails[firstKey]!;
+      expect(rail.status, RailStatus.failed);
+      expect(rail.hasItems, isFalse);
+      expect(rail.error, contains('down'));
+      expect(s.renderKeys, contains(firstKey));
+    });
+
+    test('failed keeps the previous copy and its title', () {
+      var s = fold(started(), HomeRailLoaded(firstKey, 'Top Movies', items('a')));
+      s = homeReduce(s, const RefreshHome());
+      s = fold(s, HomeRailFailed(firstKey, Exception('down')));
+      final rail = s.rails[firstKey]!;
+      expect(rail.status, RailStatus.failed);
+      expect(rail.title, 'Top Movies');
+      expect(rail.items, hasLength(3));
+      expect(s.hasContent, isTrue);
+      expect(s.renderKeys, contains(firstKey));
+    });
+
+    test('absent drops the rail and its previous copy', () {
+      var s = fold(started(), HomeRailLoaded(firstKey, 'Top Movies', items('a')));
+      s = homeReduce(s, const RefreshHome());
+      s = fold(s, HomeRailAbsent(firstKey));
+      expect(s.rails[firstKey]!.status, RailStatus.absent);
+      expect(s.rails[firstKey]!.hasItems, isFalse);
+      expect(s.renderKeys, isNot(contains(firstKey)));
+    });
+  });
+
+  group('never two rounds', () {
+    test('an outcome from a superseded round is dropped', () {
+      var s = started(); // round 1
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailAbsent(key));
+      }
+      s = homeReduce(s, const RefreshHome()); // round 2
+      final stale = homeReduce(
+        s,
+        RailOutcomeReceived(HomeRailLoaded(firstKey, 'Old', items('old')), s.request, 1),
+      );
+      expect(stale.rails[firstKey]!.hasItems, isFalse);
+      final fresh = homeReduce(
+        s,
+        RailOutcomeReceived(HomeRailLoaded(firstKey, 'Fresh', items('fresh')), s.request, 2),
+      );
+      expect(fresh.rails[firstKey]!.title, 'Fresh');
+    });
+
+    test('an outcome for a superseded request is dropped', () {
+      final s = homeReduce(started(), const KeyChanged('tmdb-key'));
+      final stale = homeReduce(
+        s,
+        RailOutcomeReceived(HomeRailLoaded('cinemeta:top-movies', 'Old', items('old')), req(), s.round),
+      );
+      expect(stale.rails['cinemeta:top-movies']?.hasItems ?? false, isFalse);
+    });
+
+    test('a stream failure fails every still-pending planned rail', () {
+      final s = homeReduce(
+        started(),
+        RailsFetchFailed(Exception('offline'), req(), 1),
+      );
+      expect(s.hasPending, isFalse);
+      expect(s.allFailed, isTrue);
+      expect(s.plannedKeys.every((k) => s.rails[k]!.status == RailStatus.failed), isTrue);
+    });
+  });
+
+  group('derived global states', () {
+    test('a fresh, unsettled plan is pending — not empty, not failed', () {
+      final s = started();
+      expect(s.isEmptyHome, isFalse);
+      expect(s.allFailed, isFalse);
+    });
+
+    test('everything failed with nothing on screen is the global failure', () {
+      var s = started();
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailFailed(key, Exception('x')));
+      }
+      expect(s.allFailed, isTrue);
+      expect(s.isEmptyHome, isFalse);
+      expect(s.firstError, isNotNull);
+    });
+
+    test('a settled plan with no content is the empty Home', () {
+      var s = started();
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailAbsent(key));
+      }
+      expect(s.isEmptyHome, isTrue);
+      expect(s.allFailed, isFalse);
+      expect(s.renderKeys, isEmpty);
+    });
+
+    test('an empty plan is the empty Home', () {
+      final s = homeReduce(
+        HomeState(request: req(disabledBuiltIn: {for (final r in kCinemetaRows) r.id})),
+        const LoadHome(),
+      );
+      expect(s.plannedKeys, isEmpty);
+      expect(s.isEmptyHome, isTrue);
+      expect(s.allFailed, isFalse);
+    });
+
+    test('an in-flight round keeps empty cache-seeded rails as skeletons', () {
+      final start = started();
+      final empty = {
+        for (final key in start.plannedKeys)
+          key: const CachedRail(items: [], updatedAt: 1000),
+      };
+      final s = homeReduce(start, CacheLoaded(start.request, empty));
+
+      expect(s.hasPending, isFalse, reason: 'cache seeding marks the rails loaded');
+      expect(s.roundInFlight, isTrue,
+          reason: 'the network outcomes are still pending');
+      expect(s.isEmptyHome, isFalse,
+          reason: 'never the empty screen while the round is in flight');
+      expect(s.renderKeys, start.plannedKeys,
+          reason: 'each empty seeded rail holds its skeleton seat');
+    });
+
+    test('an all-empty cache round settles into the empty Home', () {
+      var s = started();
+      final empty = {
+        for (final key in s.plannedKeys)
+          key: const CachedRail(items: [], updatedAt: 1000),
+      };
+      s = homeReduce(s, CacheLoaded(s.request, empty));
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailLoaded(key, homeRowLabel(key), const []));
+      }
+
+      expect(s.roundInFlight, isFalse);
+      expect(s.isEmptyHome, isTrue);
+      expect(s.renderKeys, isEmpty);
+    });
+
+    test('one loaded rail keeps the Home out of empty and failed', () {
+      var s = started();
+      s = fold(s, HomeRailLoaded(firstKey, 'Top Movies', items('a')));
+      for (final key in s.plannedKeys.where((k) => k != firstKey)) {
+        s = fold(s, HomeRailFailed(key, Exception('x')));
+      }
+      expect(s.hasContent, isTrue);
+      expect(s.allFailed, isFalse);
+      expect(s.isEmptyHome, isFalse);
+    });
+
+    test('failed-with-previous-copy counts as content, not all-failed', () {
+      var s = fold(started(), HomeRailLoaded(firstKey, 'Top Movies', items('a')));
+      s = homeReduce(s, const RefreshHome());
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailFailed(key, Exception('x')));
+      }
+      expect(s.allFailed, isFalse);
+      expect(s.hasContent, isTrue);
+    });
+  });
+
+  group('local retry', () {
+    test('RetryRail re-pends the rail and emits fetch:rail, keeping items', () {
+      var s = fold(started(), HomeRailFailed(firstKey, Exception('down')));
+      final after = homeReduce(s, const RetryRail(firstKey));
+      expect(drain(after), ['fetch:rail']);
+      expect(after.retryingRail, firstKey);
+      expect(after.isPending(firstKey), isTrue);
+      expect(after.renderKeys, contains(firstKey));
+    });
+
+    test('the retry outcome applies and clears retryingRail', () {
+      var s = homeReduce(
+        fold(started(), HomeRailFailed(firstKey, Exception('down'))),
+        const RetryRail(firstKey),
+      );
+      drain(s);
+      s = fold(s, HomeRailLoaded(firstKey, 'Top Movies', items('a')));
+      expect(s.rails[firstKey]!.status, RailStatus.loaded);
+      expect(s.retryingRail, isNull);
+    });
+
+    test('RetryRail for an unplanned key is a no-op', () {
+      final s = homeReduce(started(), const RetryRail('bogus:key'));
       expect(drain(s), isEmpty);
     });
+  });
 
-    test('a stale keyless result never overwrites keyed rows', () {
-      // key arrives mid-flight; the old keyless fetch returns late and is dropped
-      var s = homeReduce(HomeState(), const LoadHome()); // keyless fetch
-      drain(s);
-      s = homeReduce(s, KeyChanged('tmdb-key')); // upgrade
-      drain(s);
-      final stale = homeReduce(s, RowsLoaded([row('Top Movies')], req()));
-      expect(stale.status, HomeStatus.loading); // still awaiting the keyed fetch
-      expect(drain(stale), isEmpty);
+  group('cache-first (ticket 72)', () {
+    CachedRail cached(String prefix, {int updatedAt = 5000, bool hasMore = false}) =>
+        CachedRail(items: items(prefix), updatedAt: updatedAt, hasMore: hasMore);
+
+    test('CacheLoaded seeds a pending rail as fromCache with its age', () {
+      final start = started();
+      final s = homeReduce(
+        start,
+        CacheLoaded(start.request, {firstKey: cached('c', updatedAt: 7000)}),
+      );
+      final rail = s.rails[firstKey]!;
+      expect(rail.status, RailStatus.loaded);
+      expect(rail.items, hasLength(3));
+      expect(rail.title, 'Top Movies');
+      expect(rail.fromCache, isTrue);
+      expect(rail.updatedAt, 7000);
+      expect(s.renderKeys, contains(firstKey));
     });
 
-    test('the keyed result then lands and publishes', () {
-      var s = homeReduce(HomeState(), const LoadHome());
+    test('a fresh loaded outcome clears fromCache and the age (badge gone)', () {
+      var s = started();
+      s = homeReduce(s, CacheLoaded(s.request, {firstKey: cached('c')}));
+      s = fold(s, HomeRailLoaded(firstKey, 'Top Movies', items('fresh')));
+      expect(s.rails[firstKey]!.status, RailStatus.loaded);
+      expect(s.rails[firstKey]!.fromCache, isFalse);
+      expect(s.rails[firstKey]!.updatedAt, isNull);
+    });
+
+    test('cache does not clobber a rail that already has content', () {
+      var s = fold(started(), HomeRailLoaded(firstKey, 'Top Movies', items('fresh')));
+      s = homeReduce(s, const RefreshHome()); // pending, keeps the fresh copy
+      s = homeReduce(s, CacheLoaded(s.request, {firstKey: cached('old')}));
+      expect(s.rails[firstKey]!.items.first.id, 'fresh:0');
+      expect(s.rails[firstKey]!.fromCache, isFalse);
+    });
+
+    test('a failed revalidation keeps the cached copy and its badge', () {
+      var s = started();
+      s = homeReduce(s, CacheLoaded(s.request, {firstKey: cached('c', updatedAt: 900)}));
+      s = fold(s, HomeRailFailed(firstKey, Exception('down')));
+      final rail = s.rails[firstKey]!;
+      expect(rail.status, RailStatus.failed);
+      expect(rail.items, hasLength(3));
+      expect(rail.fromCache, isTrue);
+      expect(rail.updatedAt, 900);
+    });
+
+    test('a stale CacheLoaded for a superseded request is dropped', () {
+      var s = started();
+      s = homeReduce(s, const KeyChanged('tmdb-key'));
+      s = homeReduce(s, CacheLoaded(req(), {firstKey: cached('c')}));
+      expect(s.rails[firstKey]?.hasItems ?? false, isFalse);
+    });
+
+    test('hasMore rides through the loaded commit', () {
+      var s = fold(
+        started(),
+        const HomeRailLoaded('cinemeta:top-movies', 'Top Movies', [], hasMore: true),
+      );
+      expect(s.rails[firstKey]!.hasMore, isTrue);
+    });
+  });
+
+  group('refresh triggers (ticket 74)', () {
+    /// Settles the round [s] is on by dropping every planned rail absent.
+    HomeState settle(HomeState s) {
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailAbsent(key));
+      }
+      return s;
+    }
+
+    test('the automatic round fires once and arms the process latch', () {
+      final s = homeReduce(HomeState(request: req()), const LoadHome());
+      expect(s.round, 1);
+      expect(s.autoRefreshDone, isTrue);
+      expect(s.roundManual, isFalse);
       drain(s);
-      s = homeReduce(s, KeyChanged('tmdb-key'));
+
+      final again = homeReduce(s, const LoadHome());
+      expect(again.round, 1);
+      expect(drain(again), isEmpty);
+    });
+
+    test('settling the automatic round does not clear the latch', () {
+      final s = settle(started());
+      final again = homeReduce(s, const LoadHome());
+      expect(again.round, s.round);
+      expect(drain(again), isEmpty);
+    });
+
+    test('the latch arms even when the first availability joins a round', () {
+      // A source-change round is already in flight before the Home opens.
+      var s = homeReduce(
+        HomeState(),
+        CatalogSourcesChanged(req(order: [firstKey])),
+      );
       drain(s);
-      s = homeReduce(s, RowsLoaded([row('Trending Movies')], req(key: 'tmdb-key')));
-      expect(s.status, HomeStatus.ready);
-      expect(s.rows.single.title, 'Trending Movies');
+      expect(s.roundInFlight, isTrue);
+      expect(s.autoRefreshDone, isFalse);
+
+      final joined = homeReduce(s, const LoadHome());
+      expect(joined.round, s.round);
+      expect(joined.autoRefreshDone, isTrue);
+      expect(drain(joined), isEmpty);
+    });
+
+    test('a manual pull during an in-flight round joins and marks it manual',
+        () {
+      final s = started();
+      expect(s.roundInFlight, isTrue);
+
+      final joined = homeReduce(s, const RefreshHome());
+      expect(joined.round, s.round);
+      expect(drain(joined), isEmpty);
+      expect(joined.roundManual, isTrue);
+      expect(joined.roundInFlight, isTrue);
+    });
+
+    test('a manual pull after settle starts a new manual round', () {
+      final done = settle(started());
+      expect(done.roundInFlight, isFalse);
+
+      final next = homeReduce(done, const RefreshHome());
+      expect(next.round, done.round + 1);
+      expect(drain(next), ['fetch:rails']);
+      expect(next.roundManual, isTrue);
+      expect(next.roundInFlight, isTrue);
+      expect(next.roundSummary, isNull, reason: 'the previous summary cleared');
+    });
+
+    test('cache seeding does not settle the round (network still in flight)',
+        () {
+      var s = started();
+      final cached = {
+        for (final key in s.plannedKeys)
+          key: CachedRail(items: items(key), updatedAt: 1000),
+      };
+      s = homeReduce(s, CacheLoaded(s.request, cached));
+
+      // Cached rails render (no skeletons) but the round is not done.
+      expect(s.hasPending, isFalse);
+      expect(s.roundInFlight, isTrue);
+      expect(s.roundSummary, isNull);
+    });
+
+    test('the summary reports a fully-failed manual round for feedback', () {
+      var s = settle(started());
+
+      // An all-failed automatic round is quiet.
+      var auto = started();
+      for (final key in auto.plannedKeys) {
+        auto = fold(auto, HomeRailFailed(key, Exception('x')));
+      }
+      expect(auto.roundSummary!.manual, isFalse);
+      expect(auto.roundSummary!.allFailed, isTrue);
+      expect(auto.roundSummary!.notifyFailure, isFalse);
+
+      s = homeReduce(s, const RefreshHome());
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailFailed(key, Exception('x')));
+      }
+      expect(s.roundSummary!.round, s.round);
+      expect(s.roundSummary!.manual, isTrue);
+      expect(s.roundSummary!.allFailed, isTrue);
+      expect(s.roundSummary!.notifyFailure, isTrue);
+    });
+
+    test('a partial failure never notifies', () {
+      var s = homeReduce(settle(started()), const RefreshHome());
+      for (final key in s.plannedKeys) {
+        s = fold(
+          s,
+          key == firstKey
+              ? HomeRailLoaded(key, 'Top Movies', items('a'))
+              : HomeRailFailed(key, Exception('x')),
+        );
+      }
+      expect(s.roundSummary!.allFailed, isFalse);
+      expect(s.roundSummary!.notifyFailure, isFalse);
+    });
+
+    test('a failed manual round with cache stays silent', () {
+      var s = started();
+      for (final key in s.plannedKeys) {
+        s = fold(
+          s,
+          key == firstKey
+              ? HomeRailLoaded(key, 'Top Movies', items('a'))
+              : HomeRailAbsent(key),
+        );
+      }
+      s = homeReduce(s, const RefreshHome());
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailFailed(key, Exception('x')));
+      }
+      expect(s.hasContent, isTrue);
+      expect(s.roundSummary!.manual, isTrue);
+      expect(s.roundSummary!.allFailed, isFalse);
+      expect(s.roundSummary!.notifyFailure, isFalse);
     });
   });
 
@@ -178,7 +552,7 @@ void main() {
       expect(s.detail!.tmdbKey, 'tmdb-key');
       // a keyless request stays keyless even if a key arrives mid-load
       final keyless = homeReduce(HomeState(), OpenDetail(movie()));
-      final upgraded = homeReduce(keyless, KeyChanged('tmdb-key'));
+      final upgraded = homeReduce(keyless, const KeyChanged('tmdb-key'));
       expect(upgraded.detail!.tmdbKey, isNull);
     });
 
@@ -232,13 +606,6 @@ void main() {
       expect(payload['resume'], true);
     });
 
-    test('a series first episode is just a specific season/episode', () {
-      final s = homeReduce(HomeState(), PlayMeta(series(), season: 1, episode: 1));
-      final payload = s.pendingPlay!.toPayload();
-      expect(payload['season'], 1);
-      expect(payload['episode'], 1);
-    });
-
     test('an anime metaType is coerced to series', () {
       final anime = Meta(id: 'kitsu:1', type: 'anime', name: 'Frieren');
       final s = homeReduce(HomeState(), PlayMeta(anime));
@@ -268,108 +635,391 @@ void main() {
     });
   });
 
-  group('catalog sources', () {
-    const active = LetterboxdConfig(
-      manifestUrl: 'https://x/manifest.json',
-      enabledCatalogIds: {'letterboxd-watchlist'},
-    );
-
-    test('a fresh state has built-ins on and an inactive Letterboxd config', () {
-      final s = HomeState();
-      expect(s.showBuiltInCatalogs, isTrue);
-      expect(s.letterboxd.isActive, isFalse);
-    });
-
-    test('CatalogSourcesChanged updates the sources and refetches', () {
-      final s = homeReduce(
-        HomeState(),
-        CatalogSourcesChanged(req(letterboxd: active)),
-      );
-      expect(s.letterboxd, active);
-      expect(s.status, HomeStatus.loading);
-      expect(drain(s), ['fetch:rows']);
-    });
-
-    test('disabling every built-in row refetches and clears showBuiltIn', () {
-      final s = homeReduce(
-        HomeState(),
-        CatalogSourcesChanged(
-          req(disabledBuiltIn: {for (final r in kAllBuiltInRows) r.id}),
-        ),
-      );
-      expect(s.showBuiltInCatalogs, isFalse);
-      expect(s.status, HomeStatus.loading);
-      expect(drain(s), ['fetch:rows']);
-    });
-
-    test('a reorder refetches', () {
+  group('plan order', () {
+    test('a reorder preserves the planned rail order', () {
       final reordered = [
-        'letterboxd:letterboxd-watchlist',
-        ...kDefaultHomeRowOrder.where((k) => k != 'letterboxd:letterboxd-watchlist'),
+        'cinemeta:top-series',
+        'cinemeta:top-movies',
+        ...kDefaultHomeRowOrder.where(
+          (k) => k != 'cinemeta:top-series' && k != 'cinemeta:top-movies',
+        ),
       ];
-      final s = homeReduce(
-        HomeState(),
-        CatalogSourcesChanged(req(order: reordered)),
-      );
-      expect(s.request.rowOrder.first, 'letterboxd:letterboxd-watchlist');
-      expect(drain(s), ['fetch:rows']);
+      var s = homeReduce(HomeState(), CatalogSourcesChanged(req(order: reordered)));
+      drain(s);
+      expect(s.plannedKeys.first, 'cinemeta:top-series');
+      expect(s.plannedKeys[1], 'cinemeta:top-movies');
+      // Outcomes arriving out of order still render in the user's order.
+      s = fold(s, HomeRailLoaded('cinemeta:top-movies', 'Top Movies', items('m')));
+      s = fold(s, HomeRailLoaded('cinemeta:top-series', 'Top Series', items('s')));
+      expect(s.renderKeys.first, 'cinemeta:top-series');
+      expect(s.renderKeys[1], 'cinemeta:top-movies');
+    });
+  });
+
+  group('rail cap + see-more trigger (ticket 75)', () {
+    test('visibleItems caps at 20 and keeps the full list in state', () {
+      final rail = RailState(rowKey: firstKey, items: items('x', 25));
+      expect(rail.items, hasLength(25), reason: 'the full list stays for the grid');
+      expect(rail.visibleItems, hasLength(kHomeRailCap));
+      expect(rail.visibleItems.first.id, 'x:0');
+      expect(rail.visibleItems.last.id, 'x:19');
     });
 
-    test('unchanged catalog sources are a no-op', () {
+    test('a rail at or under the cap keeps every item visible', () {
+      final rail = RailState(rowKey: firstKey, items: items('x', 20));
+      expect(rail.visibleItems, hasLength(20));
+    });
+
+    test('the card shows iff the rail was cut or the source has more', () {
+      expect(homeRailShowsSeeMore(itemCount: 5, hasMore: false), isFalse);
+      expect(homeRailShowsSeeMore(itemCount: 20, hasMore: false), isFalse);
+      expect(homeRailShowsSeeMore(itemCount: 20, hasMore: true), isTrue);
+      expect(homeRailShowsSeeMore(itemCount: 21, hasMore: false), isTrue);
+    });
+
+    test('a cached rail carries its persisted hasMore into state', () {
+      final start = started();
       final s = homeReduce(
-        HomeState(request: req(letterboxd: active)),
-        CatalogSourcesChanged(req(letterboxd: active)),
+        start,
+        CacheLoaded(start.request, {
+          firstKey: CachedRail(items: items('c'), hasMore: true, updatedAt: 1),
+        }),
       );
+      expect(s.rails[firstKey]!.hasMore, isTrue);
+      expect(s.rails[firstKey]!.showsSeeMore, isTrue);
+    });
+
+    test('the fetched hasMore drives the card for an exactly-20 rail', () {
+      final s = fold(
+        started(),
+        HomeRailLoaded(firstKey, 'Top Movies', items('x', 20), hasMore: true),
+      );
+      expect(s.rails[firstKey]!.visibleItems, hasLength(20));
+      expect(s.rails[firstKey]!.showsSeeMore, isTrue);
+    });
+
+    test('OpenRailGrid is the tap seam and emits no fetch effect', () {
+      final s = homeReduce(started(), const OpenRailGrid(firstKey));
       expect(drain(s), isEmpty);
+      expect(s.notice, contains(firstKey));
     });
+  });
 
-    test('RowsLoaded with the current request publishes', () {
-      var s = homeReduce(
-        HomeState(),
-        CatalogSourcesChanged(req(letterboxd: active)),
-      );
-      drain(s);
-      s = homeReduce(s, RowsLoaded([row('Watchlist')], req(letterboxd: active)));
-      expect(s.status, HomeStatus.ready);
-      expect(s.rows.single.title, 'Watchlist');
-    });
+  group('rail grid snapshot (ticket 76)', () {
+    const trendingKey = 'tmdb:trending-movies';
+    const letterboxdKey = 'letterboxd:letterboxd-watchlist';
 
-    test('RowsLoaded for a stale request is dropped', () {
-      var s = homeReduce(HomeState(), const LoadHome());
+    CatalogRequest letterboxdReq() => req(
+          letterboxd: const LetterboxdConfig(
+            manifestUrl: 'https://api.stremboxd.com/stremio/tok/manifest.json',
+            enabledCatalogIds: {'letterboxd-watchlist'},
+          ),
+        );
+
+    test('opens by capturing the full rail, source, request and cursor', () {
+      final request = req();
+      var s = homeReduce(HomeState(request: request), const LoadHome());
       drain(s);
-      // The user changes the sources mid-flight; the old fetch returns.
-      s = homeReduce(
+      s = fold(
         s,
-        CatalogSourcesChanged(req(letterboxd: active)),
+        HomeRailLoaded(firstKey, 'Top Movies', items('x', 50), hasMore: true),
       );
-      drain(s);
-      final stale = homeReduce(s, RowsLoaded([row('Old')], req()));
-      expect(stale.status, HomeStatus.loading);
-      expect(drain(stale), isEmpty);
+
+      final opened = homeReduce(s, const OpenRailGrid(firstKey));
+      expect(drain(opened), isEmpty, reason: 'instant open — no network effect');
+
+      final grid = opened.activeRailGrid!;
+      expect(grid.rowKey, firstKey);
+      expect(grid.title, 'Top Movies');
+      expect(grid.items, hasLength(50), reason: 'the whole downloaded page, uncapped');
+      expect(grid.items.first.id, 'x:0');
+      expect(grid.source, RailGridSource.cinemeta);
+      expect(grid.request, request);
+      expect(grid.cursor, 50, reason: 'skip-based sources resume at the loaded count');
+      expect(grid.hasMore, isTrue);
     });
 
-    test('RowsLoaded for a stale built-in toggle is dropped', () {
-      var s = homeReduce(HomeState(), const LoadHome());
+    test('a 20-only rail opens with exactly its 20 items', () {
+      var s = homeReduce(HomeState(request: req(key: 'k')), const LoadHome());
       drain(s);
-      s = homeReduce(
+      s = fold(s, HomeRailLoaded(trendingKey, 'Trending Movies', items('t', 20)));
+
+      final grid = homeReduce(s, const OpenRailGrid(trendingKey)).activeRailGrid!;
+      expect(grid.items, hasLength(20));
+      expect(grid.source, RailGridSource.tmdb);
+      expect(grid.cursor, 1, reason: 'TMDB resumes at the loaded page');
+    });
+
+    test('a Letterboxd rail captures its source and skip cursor', () {
+      var s = homeReduce(HomeState(request: letterboxdReq()), const LoadHome());
+      drain(s);
+      s = fold(
         s,
-        CatalogSourcesChanged(req(disabledBuiltIn: {'cinemeta:top-movies'})),
+        HomeRailLoaded(letterboxdKey, 'Watchlist', items('l', 100), hasMore: true),
       );
-      drain(s);
-      // The all-on fetch returns late; it must not overwrite the new state.
-      final stale = homeReduce(s, RowsLoaded([row('Old')], req()));
-      expect(stale.status, HomeStatus.loading);
-      expect(drain(stale), isEmpty);
+
+      final grid =
+          homeReduce(s, const OpenRailGrid(letterboxdKey)).activeRailGrid!;
+      expect(grid.source, RailGridSource.letterboxd);
+      expect(grid.cursor, 100);
+      expect(grid.hasMore, isTrue);
     });
 
-    test('KeyChanged preserves both source settings', () {
-      final s = homeReduce(
-        HomeState(request: req(letterboxd: active, disabledBuiltIn: {'cinemeta:top-movies'})),
-        const KeyChanged('tmdb-key'),
+    test('a Home round while the grid is open never mutates the snapshot', () {
+      var s = started();
+      s = fold(
+        s,
+        HomeRailLoaded(firstKey, 'Top Movies', items('old', 30), hasMore: true),
       );
-      expect(s.tmdbKey, 'tmdb-key');
-      expect(s.letterboxd, active);
-      expect(s.request.disabledBuiltInRowKeys, {'cinemeta:top-movies'});
+      s = homeReduce(s, const OpenRailGrid(firstKey));
+      final before = s.activeRailGrid!;
+
+      // A fresh round lands while the grid is open.
+      s = homeReduce(s, const RefreshHome());
+      s = fold(s, HomeRailLoaded(firstKey, 'Renamed', items('new', 5)));
+
+      final after = s.activeRailGrid!;
+      expect(identical(after, before), isTrue);
+      expect(after.items.first.id, 'old:0');
+      expect(after.items, hasLength(30));
+      expect(after.source, RailGridSource.cinemeta);
+      expect(after.cursor, 30);
+      expect(after.title, 'Top Movies');
+      expect(after.hasMore, isTrue);
+      expect(after.request, before.request);
+      // The rail itself did take the fresh round.
+      expect(s.rails[firstKey]!.title, 'Renamed');
+      expect(s.rails[firstKey]!.items, hasLength(5));
+    });
+
+    test('opening the grid leaves the rail cache age untouched', () {
+      var s = started();
+      s = homeReduce(s, CacheLoaded(s.request, {
+        firstKey: CachedRail(items: items('c'), updatedAt: 900, hasMore: true),
+      }));
+      final cachedRail = s.rails[firstKey]!;
+      final opened = homeReduce(s, const OpenRailGrid(firstKey));
+      final after = opened.rails[firstKey]!;
+      expect(after.fromCache, isTrue);
+      expect(after.updatedAt, 900);
+      expect(after.items, hasLength(3));
+      expect(identical(after, cachedRail), isTrue,
+          reason: 'the rail state is not rewritten by opening the grid');
+    });
+
+    test('snapshots are keyed per row and the last opened is active', () {
+      var s = started();
+      s = fold(s, HomeRailLoaded(firstKey, 'Top Movies', items('a')));
+      s = fold(s, HomeRailLoaded('cinemeta:top-series', 'Top Series', items('b')));
+      s = homeReduce(s, const OpenRailGrid(firstKey));
+      s = homeReduce(s, const OpenRailGrid('cinemeta:top-series'));
+
+      expect(s.railGrids.keys, containsAll([firstKey, 'cinemeta:top-series']));
+      expect(s.activeRailGrid!.rowKey, 'cinemeta:top-series');
+      expect(s.railGrids[firstKey]!.items.first.id, 'a:0');
+      expect(s.railGrids['cinemeta:top-series']!.items.first.id, 'b:0');
+    });
+  });
+
+  group('rail grid pagination (ticket 77)', () {
+    const cinemetaKey = 'cinemeta:top-movies';
+    const seriesKey = 'cinemeta:top-series';
+    const trendingKey = 'tmdb:trending-movies';
+    const tmdbKey = 'tmdb:popular-movies';
+    const letterboxdKey = 'letterboxd:letterboxd-watchlist';
+
+    CatalogRequest letterboxdReq() => req(
+          letterboxd: const LetterboxdConfig(
+            manifestUrl: 'https://api.stremboxd.com/stremio/tok/manifest.json',
+            enabledCatalogIds: {'letterboxd-watchlist'},
+          ),
+        );
+
+    /// A state with [key]'s rail loaded and its grid open (effects drained).
+    HomeState grid(
+      HomeState s,
+      String key,
+      List<Meta> loaded, {
+      required bool hasMore,
+    }) {
+      drain(s);
+      s = fold(s, HomeRailLoaded(key, 'Row $key', loaded, hasMore: hasMore));
+      return homeReduce(s, OpenRailGrid(key));
+    }
+
+    test('a scroll trigger marks a page in flight and emits fetch:railPage', () {
+      var s = grid(started(), cinemetaKey, items('x', 50), hasMore: true);
+      drain(s);
+      final requested = homeReduce(s, const RailGridScrolledToEnd());
+      expect(drain(requested), ['fetch:railPage']);
+      expect(requested.activeRailGrid!.loading, isTrue);
+      // Idempotent while the page is in flight.
+      final again = homeReduce(requested, const RailGridScrolledToEnd());
+      expect(drain(again), isEmpty);
+      expect(again.activeRailGrid!.loading, isTrue);
+    });
+
+    test('PageReceived appends, dedupes by id and advances the skip cursor', () {
+      var s = grid(started(), cinemetaKey, items('x', 3), hasMore: true);
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      drain(s);
+      s = homeReduce(s, RailGridPageReceived(
+        cinemetaKey,
+        [movie(id: 'x:2'), movie(id: 'x:3'), movie(id: 'x:4')],
+        hasMore: true,
+      ));
+
+      expect(
+        s.activeRailGrid!.items.map((m) => m.id),
+        ['x:0', 'x:1', 'x:2', 'x:3', 'x:4'],
+        reason: 'x:2 appeared twice — deduped by id',
+      );
+      expect(s.activeRailGrid!.cursor, 5, reason: 'skip advances by loaded count');
+      expect(s.activeRailGrid!.loading, isFalse);
+      expect(s.activeRailGrid!.ended, isFalse);
+      // The rail itself is untouched — the grid pages are session-only.
+      expect(s.rails[cinemetaKey]!.items, hasLength(3));
+    });
+
+    test('an empty page ends the grid', () {
+      var s = grid(started(), cinemetaKey, items('x', 3), hasMore: true);
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      s = homeReduce(s, RailGridPageReceived(cinemetaKey, const [], hasMore: true));
+      expect(s.activeRailGrid!.ended, isTrue);
+      expect(s.activeRailGrid!.loading, isFalse);
+    });
+
+    test('a page repeating only loaded ids ends the grid (no infinite scroll)', () {
+      var s = grid(started(), cinemetaKey, items('x', 3), hasMore: true);
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      s = homeReduce(s, RailGridPageReceived(cinemetaKey, items('x', 3), hasMore: true));
+      expect(s.activeRailGrid!.items, hasLength(3));
+      expect(s.activeRailGrid!.ended, isTrue);
+    });
+
+    test('a short Stremboxd page ends the grid', () {
+      var s = grid(
+        homeReduce(HomeState(request: letterboxdReq()), const LoadHome()),
+        letterboxdKey,
+        items('l', 100),
+        hasMore: true,
+      );
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      s = homeReduce(s, RailGridPageReceived(letterboxdKey, items('l2', 42), hasMore: false));
+      expect(s.activeRailGrid!.ended, isTrue);
+    });
+
+    test('a TMDB page advances the page cursor and ends at total_pages', () {
+      var s = grid(
+        homeReduce(HomeState(request: req(key: 'k')), const LoadHome()),
+        tmdbKey,
+        items('t', 20),
+        hasMore: true,
+      );
+      expect(s.activeRailGrid!.cursor, 1);
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      s = homeReduce(s, RailGridPageReceived(tmdbKey, items('t2', 20), hasMore: true));
+      expect(s.activeRailGrid!.cursor, 2, reason: 'TMDB cursor is the loaded page');
+      expect(s.activeRailGrid!.ended, isFalse);
+
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      s = homeReduce(s, RailGridPageReceived(tmdbKey, items('t3', 20), hasMore: false));
+      expect(s.activeRailGrid!.cursor, 3);
+      expect(s.activeRailGrid!.ended, isTrue);
+    });
+
+    test('the Cinemeta safety cap ends the grid', () {
+      var s = grid(
+        started(),
+        cinemetaKey,
+        items('x', kCinemetaGridCap - 2),
+        hasMore: true,
+      );
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      drain(s);
+      s = homeReduce(s, RailGridPageReceived(cinemetaKey, items('y', 10), hasMore: true));
+      expect(s.activeRailGrid!.items.length, greaterThanOrEqualTo(kCinemetaGridCap));
+      expect(s.activeRailGrid!.ended, isTrue);
+      final ignored = homeReduce(s, const RailGridScrolledToEnd());
+      expect(drain(ignored), isEmpty);
+    });
+
+    test('a /trending grid opens ended and never requests a page', () {
+      final s = grid(
+        homeReduce(HomeState(request: req(key: 'k')), const LoadHome()),
+        trendingKey,
+        items('t', 20),
+        hasMore: false,
+      );
+      expect(s.activeRailGrid!.ended, isTrue);
+      final requested = homeReduce(s, const RailGridScrolledToEnd());
+      expect(drain(requested), isEmpty);
+      expect(requested.activeRailGrid!.ended, isTrue);
+    });
+
+    test('a page failure keeps the items and offers the footer retry', () {
+      var s = grid(started(), cinemetaKey, items('x', 50), hasMore: true);
+      s = homeReduce(s, const RailGridScrolledToEnd());
+      drain(s);
+      s = homeReduce(s, RailGridPageFailed(cinemetaKey, Exception('boom')));
+      expect(s.activeRailGrid!.items, hasLength(50));
+      expect(s.activeRailGrid!.error, contains('boom'));
+      expect(s.activeRailGrid!.loading, isFalse);
+      expect(s.activeRailGrid!.ended, isFalse);
+
+      // A scroll while the error shows does not auto-retry.
+      final scrolled = homeReduce(s, const RailGridScrolledToEnd());
+      expect(drain(scrolled), isEmpty);
+      expect(scrolled.activeRailGrid!.error, contains('boom'));
+
+      // The footer retry clears the error and re-requests the same cursor.
+      final retried = homeReduce(s, const RetryRailGridPage());
+      expect(drain(retried), ['fetch:railPage']);
+      expect(retried.activeRailGrid!.loading, isTrue);
+      expect(retried.activeRailGrid!.error, isNull);
+      expect(retried.activeRailGrid!.cursor, 50);
+    });
+
+    test('a page for a grid that is not loading is dropped', () {
+      var s = grid(started(), cinemetaKey, items('x', 3), hasMore: true);
+      drain(s);
+      final stale = homeReduce(s, RailGridPageReceived(cinemetaKey, items('y', 3), hasMore: true));
+      expect(drain(stale), isEmpty);
+      expect(stale.activeRailGrid!.items, hasLength(3));
+    });
+
+    test('a page carrying another grid key is dropped', () {
+      var s = started();
+      s = fold(s, HomeRailLoaded(cinemetaKey, 'Top Movies', items('x', 3), hasMore: true));
+      s = fold(s, HomeRailLoaded(seriesKey, 'Top Series', items('z', 3), hasMore: true));
+      s = homeReduce(s, const OpenRailGrid(seriesKey));
+      final stale = homeReduce(s, RailGridPageReceived(cinemetaKey, items('y', 3), hasMore: true));
+      expect(drain(stale), isEmpty);
+      // The active grid (series) is untouched; the other key's page is ignored.
+      expect(stale.activeRailGrid!.rowKey, seriesKey);
+      expect(stale.activeRailGrid!.items, hasLength(3));
+    });
+
+    test('a grid with no downloaded items never requests skip=0', () {
+      final request = req();
+      var s = HomeState(
+        request: request,
+        railGrids: {
+          cinemetaKey: RailGridSnapshot(
+            rowKey: cinemetaKey,
+            title: 'Top Movies',
+            items: const [],
+            source: RailGridSource.cinemeta,
+            request: request,
+            cursor: 0,
+            hasMore: true,
+          ),
+        },
+        activeRailGridKey: cinemetaKey,
+      );
+      final requested = homeReduce(s, const RailGridScrolledToEnd());
+      expect(drain(requested), isEmpty);
+      expect(requested.activeRailGrid!.ended, isTrue);
     });
   });
 }

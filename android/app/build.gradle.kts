@@ -72,6 +72,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Distinct applicationId (`...harbor_companion.dev`) so a local
+            // debug build installs side by side with the official release.
+            applicationIdSuffix = ".dev"
+        }
         release {
             signingConfig = signingConfigs.getByName("release")
         }

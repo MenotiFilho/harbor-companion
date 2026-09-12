@@ -6,11 +6,12 @@
 //   - Stremboxd (`https://api.stremboxd.com/stremio/<token>/…`), the user's
 //     Letterboxd rails, only when a manifest URL is configured (ticket 41).
 //
-// `CatalogFetcher` is the seam the controller drains `fetch:rows` /
-// `fetch:detail` effects into; tests inject a fake. The real implementation
-// (dart:io) hits the upstreams directly — there is no `/api-proxy` on the LAN
-// (wire-contract §5, §6). The pure JSON→model mappers are top-level so tests
-// pin the wire shapes without network.
+// `CatalogFetcher` is the seam the controller drains `fetch:rails` /
+// `fetch:rail` / `fetch:detail` effects into; tests inject a fake. The real
+// implementation (dart:io) hits the upstreams directly — there is no
+// `/api-proxy` on the LAN (wire-contract §5, §6) — and emits one per-rail
+// outcome as each resolves (ticket 71), never a single blocking list. The pure
+// JSON→model mappers are top-level so tests pin the wire shapes without network.
 //
 // Wire contract: docs/wire-contract.md §5.1 (Cinemeta), §5.2 (TMDB).
 
@@ -20,12 +21,75 @@ import 'dart:io';
 
 import '../letterboxd/letterboxd.dart';
 import 'catalog_request.dart';
+import 'home_cache_store.dart';
+import 'home_rail.dart';
 import 'home_rows.dart';
 import 'meta.dart';
 
 const String cinemetaBase = 'https://v3-cinemeta.strem.io';
 const String tmdbBase = 'https://api.themoviedb.org/3';
 const String tmdbImageBase = 'https://image.tmdb.org/t/p';
+
+/// The Stremio addon protocol's standard catalog page size. Stremboxd (and
+/// Cinemeta, though it is unbounded) slices catalogs in windows of this size: a
+/// full page means there is more, a shorter one is the end of the catalog
+/// (ticket 75, ADR-0009).
+const int kStremboxdPageSize = 100;
+
+/// Whether a Stremboxd/Stremio catalog page has a continuation: a full
+/// [kStremboxdPageSize] page means more may exist, a short page is the end.
+bool stremboxdHasMore(int itemCount) => itemCount >= kStremboxdPageSize;
+
+/// One grid page fetched from a source (ticket 77, ADR-0009). [hasMore] is the
+/// source's own continuation signal: a Stremboxd page of 100, TMDB
+/// `page < total_pages`, and — for Cinemeta, which never ends naturally — always
+/// true, bounded by the grid's [kCinemetaGridCap].
+class RailPage {
+  final List<Meta> items;
+  final bool hasMore;
+
+  const RailPage({required this.items, this.hasMore = false});
+}
+
+/// Appends a Stremio catalog `:extra` segment (e.g. `skip=100`) to a catalog
+/// `.json` URL. The protocol packs every extra into one `/…` path segment joined
+/// by `&`, so an existing extra (`/genre=Action.json`) becomes
+/// `/genre=Action&skip=100.json` — the live Cinemeta shape the pagination
+/// research (#50) probed. A URL without a `.json` suffix is returned unchanged:
+/// never build a malformed cursor.
+String appendCatalogExtra(String url, String segment) {
+  final dot = url.lastIndexOf('.json');
+  if (dot == -1) return url;
+  final prefix = url.substring(0, dot);
+  final separator = prefix.contains('=') ? '&' : '/';
+  return '$prefix$separator$segment${url.substring(dot)}';
+}
+
+/// The next grid-page URL for a built-in [row], resuming at [cursor]. Cinemeta
+/// maps the cursor to `skip=<cursor>` — never `skip=0`, whose window differs
+/// from the default page — while TMDB maps it to `?page=<cursor + 1>` (the
+/// cursor is the page already loaded). Null when the row exposes no cursor (a
+/// `/trending/*` row) or a keyed source is missing its key.
+String? builtInRailPageUrl(BuiltInRow row, String? tmdbKey, int cursor) {
+  if (!row.paginatable) return null;
+  if (row.source == 'tmdb') {
+    if (tmdbKey == null) return null;
+    return '$tmdbBase${row.path}?api_key=$tmdbKey&page=${cursor + 1}';
+  }
+  return appendCatalogExtra('$cinemetaBase${row.path}', 'skip=$cursor');
+}
+
+/// The next grid-page URL for a Letterboxd [catalog], resuming at [cursor]:
+/// `<base>/catalog/<type>/<id>/skip=<cursor>.json`. Null when the manifest URL
+/// is unusable.
+String? letterboxdRailPageUrl(
+  String manifestUrl,
+  LetterboxdCatalog catalog,
+  int cursor,
+) {
+  final base = letterboxdCatalogUrl(manifestUrl, catalog);
+  return base == null ? null : appendCatalogExtra(base, 'skip=$cursor');
+}
 
 // ---------------------------------------------------------------------------
 // Pure mappers (pinned to the upstream JSON shapes; tested without network)
@@ -78,17 +142,44 @@ Meta parseTmdbMeta(Map<String, dynamic> j, String type) {
   );
 }
 
-/// Parses a TMDB paged response `{ "results": [...] }`.
-List<Meta> parseTmdbPage(String raw, String type) {
-  final decoded = jsonDecode(raw);
-  if (decoded is! Map<String, dynamic>) return const [];
-  final results = decoded['results'];
-  if (results is! List) return const [];
-  return [
-    for (final r in results)
-      if (r is Map<String, dynamic>) parseTmdbMeta(r, type),
-  ];
+/// A parsed TMDB paged response: the page's items plus the cursor fields the
+/// `hasMore` rule reads (`page < total_pages`, ticket 75, ADR-0009). A response
+/// without the fields is treated as page 1 of 1 — no continuation.
+class TmdbPage {
+  final List<Meta> items;
+  final int page;
+  final int totalPages;
+
+  const TmdbPage({
+    required this.items,
+    required this.page,
+    required this.totalPages,
+  });
+
+  bool get hasMore => page < totalPages;
 }
+
+/// Parses a TMDB paged response `{ page, total_pages, results: [...] }`.
+TmdbPage parseTmdbPageResponse(String raw, String type) {
+  final decoded = jsonDecode(raw);
+  if (decoded is! Map<String, dynamic>) {
+    return const TmdbPage(items: [], page: 1, totalPages: 1);
+  }
+  final results = decoded['results'];
+  final items = results is List
+      ? [
+          for (final r in results)
+            if (r is Map<String, dynamic>) parseTmdbMeta(r, type),
+        ]
+      : <Meta>[];
+  final page = (decoded['page'] as num?)?.toInt() ?? 1;
+  final totalPages = (decoded['total_pages'] as num?)?.toInt() ?? page;
+  return TmdbPage(items: items, page: page, totalPages: totalPages);
+}
+
+/// Parses a TMDB paged response's `results` array.
+List<Meta> parseTmdbPage(String raw, String type) =>
+    parseTmdbPageResponse(raw, type).items;
 
 /// Parses a Cinemeta detail response `{ "meta": {...} }`, deriving seasons from
 /// the `videos[]` array (each video carries season/episode) — the keyless path.
@@ -198,48 +289,24 @@ List<Season> parseTmdbSeasons(String raw) {
   ]..sort((a, b) => a.number.compareTo(b.number));
 }
 
-/// The ordered row keys [request] should attempt: the enabled built-in rows for
-/// the source in effect (TMDB when keyed, else Cinemeta), plus the enabled
-/// Letterboxd catalogs when a manifest URL is set. Pure so tests pin the
-/// filtering + order without network. A Letterboxd key survives planning even
-/// when the manifest may not list it — the manifest is consulted at fetch time.
-List<String> planHomeRowKeys(CatalogRequest request) {
-  final activeSource = request.tmdbKey == null ? 'cinemeta' : 'tmdb';
-  final letterboxdActive = request.letterboxd.isActive;
-  final keys = <String>[];
-  for (final key in request.rowOrder) {
-    final builtIn = builtInRowById(key);
-    if (builtIn != null) {
-      if (builtIn.source != activeSource) continue;
-      if (request.disabledBuiltInRowKeys.contains(key)) continue;
-      keys.add(key);
-      continue;
-    }
-    final catalogId = letterboxdCatalogId(key);
-    if (catalogId == null || !letterboxdActive) continue;
-    if (!request.letterboxd.enabledCatalogIds.contains(catalogId)) continue;
-    keys.add(key);
-  }
-  return keys;
-}
-
-/// Fetches each planned [key] via [fetch], concurrently, preserving order. A key
-/// whose fetch throws is skipped — one flaky rail never takes down the rest; a
-/// `null` result means "no row" (empty catalog or skipped).
-Future<List<HomeRow>> fetchHomeRowsConcurrently(
+/// Runs [fetch] for each planned [key] concurrently and emits one outcome per
+/// key as it completes (completion order, not key order — the Home renders in
+/// plan order regardless). A key whose fetch throws becomes a [HomeRailFailed]
+/// for that key alone, so one flaky rail never takes down the rest. This is the
+/// progressive replacement for the old `Future.wait`-then-`List<HomeRow>`.
+Stream<HomeRailOutcome> fetchRailOutcomesConcurrently(
   List<String> keys,
-  Future<HomeRow?> Function(String key) fetch,
-) async {
-  Future<HomeRow?> safe(String key) async {
+  Future<HomeRailOutcome> Function(String key) fetch,
+) {
+  Future<HomeRailOutcome> safe(String key) async {
     try {
       return await fetch(key);
-    } catch (_) {
-      return null;
+    } catch (error) {
+      return HomeRailFailed(key, error);
     }
   }
 
-  final results = await Future.wait([for (final key in keys) safe(key)]);
-  return [for (final row in results) ?row];
+  return Stream.fromFutures([for (final key in keys) safe(key)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -253,106 +320,354 @@ Future<List<HomeRow>> fetchHomeRowsConcurrently(
 bool usesTmdbDetail(String? tmdbKey, String id) =>
     tmdbKey != null && id.startsWith('tmdb:');
 
-/// Fetches home rows and detail from Cinemeta/TMDB/Stremboxd. Injected into the
+/// Fetches home rails and detail from Cinemeta/TMDB/Stremboxd. Injected into the
 /// home controller; tests provide a fake.
+///
+/// [fetchRails] emits exactly one [HomeRailOutcome] per planned rail, as each
+/// resolves — never a single blocking list. [fetchRail] re-fetches one rail for
+/// the Home's local retry card.
 abstract interface class CatalogFetcher {
-  /// Home rows for [request]: TMDB when a key is set, else Cinemeta (unless the
-  /// built-in rails are switched off), plus the enabled Letterboxd rails. A row
-  /// whose fetch fails is skipped; the list only carries rows that loaded.
-  Future<List<HomeRow>> fetchRows(CatalogRequest request);
+  /// Progressive outcomes for [request]: TMDB when a key is set, else Cinemeta
+  /// (unless the built-in rails are switched off), plus the enabled Letterboxd
+  /// rails. A rail whose fetch fails is a [HomeRailFailed] for that rail alone.
+  Stream<HomeRailOutcome> fetchRails(CatalogRequest request);
+
+  /// Re-fetch a single planned [rowKey] (the local retry card).
+  Future<HomeRailOutcome> fetchRail(CatalogRequest request, String rowKey);
+
+  /// Fetch one more page of [rowKey]'s catalog for its dedicated grid, resuming
+  /// at [cursor] (the per-source cursor captured in the grid snapshot: the
+  /// `skip` offset for Cinemeta/Stremboxd, the loaded page for TMDB, requested
+  /// as `page + 1`). Throws on an HTTP/parse failure — the grid keeps its loaded
+  /// items and shows a retry footer. A non-paginatable row (a `/trending/*`
+  /// toggle) has no cursor and never reaches here.
+  Future<RailPage> fetchRailPage(
+    CatalogRequest request,
+    String rowKey,
+    int cursor,
+  );
 
   /// Detail for a title: Cinemeta `meta/{type}/{id}` when keyless, TMDB detail
   /// + per-season episodes when keyed.
   Future<DetailMeta> fetchDetail(String type, String id, String? tmdbKey);
 }
 
+/// Adaptive per-rail timeout + retry policy (ticket 73).
+///
+/// Calibrated on the field measurement from #51: a warm Stremboxd rail answers
+/// in ~0.4s, while a cold one can take 9–33s. A rail that already has a cached
+/// copy can therefore fail fast ([warm], 8s) — the cached copy stays on screen
+/// and is badged; a rail with no fallback is given the long [cold] timeout (45s)
+/// before it is marked failed. A failed rail is retried exactly once after
+/// [retryBackoff] (~1s), so a transient blip does not drop it until the next
+/// round.
+///
+/// The retry uses [retryTimeout], deliberately short and never the cold value:
+/// the first attempt already spent the long budget, so the retry is a last quick
+/// chance. A cold rail thus settles near 45 + 1 + 8 = 54s, not ~90s.
+class HomeRailTimeouts {
+  final Duration cold;
+  final Duration warm;
+  final Duration retryBackoff;
+
+  /// The timeout for the one retry attempt (ticket 73): short, so a still-slow
+  /// source fails the rail quickly instead of repeating the long cold wait.
+  final Duration retryTimeout;
+
+  const HomeRailTimeouts({
+    this.cold = const Duration(seconds: 45),
+    this.warm = const Duration(seconds: 8),
+    this.retryBackoff = const Duration(seconds: 1),
+    this.retryTimeout = const Duration(seconds: 8),
+  });
+
+  /// The timeout for a rail that does/does not have a cached copy to fall back
+  /// to. Warm is short because the cache already covers the screen; cold is long
+  /// because the source may legitimately be slow and there is nothing to show.
+  Duration forCache({required bool hasCache}) => hasCache ? warm : cold;
+}
+
 /// Real catalog fetcher over dart:io HTTP. No `/api-proxy` — the phone hits the
 /// upstreams directly (wire-contract §6).
 class HttpCatalogFetcher implements CatalogFetcher {
+  /// Short HTTP timeout for the non-rail requests that do not use the adaptive
+  /// policy: the Stremboxd manifest and detail. Per-rail timeouts come from
+  /// [timeouts].
   final Duration timeout;
 
-  HttpCatalogFetcher({this.timeout = const Duration(seconds: 8)});
+  /// Adaptive per-rail timeout + retry policy (ticket 73).
+  final HomeRailTimeouts timeouts;
+
+  /// Optional manifest cache (ticket 72). When set, a successful manifest fetch
+  /// is written as its own entry, and a failed fresh fetch falls back to the
+  /// cached manifest for the same URL — so a manifest timeout no longer fails
+  /// every Letterboxd rail. Its presence also marks a rail "warm" for the
+  /// adaptive timeout. Null in the pure wire-shape tests.
+  final HomeCacheStore? cache;
+
+  /// Clock for the manifest entry's `updatedAt` (ms since epoch). Tests pin it.
+  final int Function() nowMs;
+
+  /// Test seam: when set, every upstream GET goes through it instead of the
+  /// real dart:io client, so the per-rail outcome mapping is pinned without
+  /// network. Null in production.
+  final Future<String> Function(Uri url)? _getOverride;
+
+  HttpCatalogFetcher({
+    this.timeout = const Duration(seconds: 8),
+    this.timeouts = const HomeRailTimeouts(),
+    this.cache,
+    int Function()? nowMs,
+    Future<String> Function(Uri url)? get,
+  })  : nowMs = nowMs ?? _systemNow,
+        _getOverride = get;
+
+  static int _systemNow() => DateTime.now().millisecondsSinceEpoch;
 
   @override
-  Future<List<HomeRow>> fetchRows(CatalogRequest request) async {
+  Stream<HomeRailOutcome> fetchRails(CatalogRequest request) {
     final keys = planHomeRowKeys(request);
+    if (keys.isEmpty) return Stream<HomeRailOutcome>.empty();
+    final builtInKeys = keys.where((key) => builtInRowById(key) != null).toList();
+    final letterboxdKeys = keys.where(isLetterboxdRowKey).toList();
 
-    // Resolve the Letterboxd manifest once, up front: catalog names + types come
-    // from it, and one bad manifest must only drop the Letterboxd rails.
-    var catalogsById = const <String, LetterboxdCatalog>{};
-    if (keys.any(isLetterboxdRowKey)) {
-      try {
-        final raw = await _get(Uri.parse(request.letterboxd.manifestUrl.trim()));
-        catalogsById = {
-          for (final catalog in parseLetterboxdManifest(raw).catalogs)
-            catalog.id: catalog,
-        };
-      } catch (_) {
-        catalogsById = const {};
-      }
+    final controller = StreamController<HomeRailOutcome>();
+    var remaining = keys.length;
+    void forward(HomeRailOutcome outcome) {
+      controller.add(outcome);
+      if (--remaining == 0) controller.close();
     }
 
-    final attemptedBuiltIn = keys.any((key) => builtInRowById(key) != null);
-    final rows = await fetchHomeRowsConcurrently(
-      keys,
-      (key) => _fetchRowByKey(key, request, catalogsById),
-    );
-    // Built-ins were requested but every rail failed (e.g. no network): surface
-    // an error so the UI shows the retry state. With them off, an empty Home is
-    // the user's choice, not a failure.
-    if (rows.isEmpty && attemptedBuiltIn) {
-      throw const HttpException('no catalog rows loaded');
+    // Built-ins start immediately; the Letterboxd rails start once their
+    // manifest resolves, in parallel. A slow/broken manifest must never hold
+    // the built-in rails (ADR-0004: one bad manifest only fails Letterboxd).
+    if (builtInKeys.isNotEmpty) {
+      fetchRailOutcomesConcurrently(
+        builtInKeys,
+        (key) => _fetchOutcomeWithRetry(key, request, null, null),
+      ).listen(forward);
     }
-    return rows;
+    if (letterboxdKeys.isNotEmpty) {
+      _resolveManifest(request, letterboxdKeys).then((resolved) {
+        final (catalogsById, manifestError) = resolved;
+        fetchRailOutcomesConcurrently(
+          letterboxdKeys,
+          (key) => _fetchOutcomeWithRetry(key, request, catalogsById, manifestError),
+        ).listen(forward);
+      });
+    }
+    return controller.stream;
   }
 
-  Future<HomeRow?> _fetchRowByKey(
+  @override
+  Future<HomeRailOutcome> fetchRail(
+    CatalogRequest request,
+    String rowKey,
+  ) async {
+    final (catalogsById, manifestError) =
+        await _resolveManifest(request, [rowKey]);
+    return _fetchOutcomeWithRetry(rowKey, request, catalogsById, manifestError);
+  }
+
+  @override
+  Future<RailPage> fetchRailPage(
+    CatalogRequest request,
+    String rowKey,
+    int cursor,
+  ) async {
+    final builtIn = builtInRowById(rowKey);
+    if (builtIn != null) {
+      final url = builtInRailPageUrl(builtIn, request.tmdbKey, cursor);
+      if (url == null) {
+        throw StateError('row $rowKey exposes no pagination cursor');
+      }
+      final raw = await _get(Uri.parse(url), timeout);
+      if (builtIn.source == 'tmdb') {
+        final page = parseTmdbPageResponse(raw, builtIn.type);
+        return RailPage(items: page.items, hasMore: page.hasMore);
+      }
+      // Cinemeta's `skip` is unbounded — the grid's safety cap ends it.
+      return RailPage(items: parseCinemetaCatalog(raw), hasMore: true);
+    }
+    final catalogId = letterboxdCatalogId(rowKey);
+    if (catalogId == null) throw StateError('unknown row $rowKey');
+    final (catalogsById, manifestError) = await _resolveManifest(request, [rowKey]);
+    final catalog = catalogsById?[catalogId];
+    if (catalog == null) {
+      throw StateError('$manifestError');
+    }
+    final url = letterboxdRailPageUrl(
+      request.letterboxd.manifestUrl,
+      catalog,
+      cursor,
+    );
+    if (url == null) throw StateError('manifest URL unusable');
+    final items = parseCinemetaCatalog(await _get(Uri.parse(url), timeout));
+    return RailPage(items: items, hasMore: stremboxdHasMore(items.length));
+  }
+
+  /// Fetches one rail with the cache-aware timeout, retrying exactly once when
+  /// it fails. The first attempt's timeout comes from the rail's cache presence:
+  /// a rail with a cached copy gets the short [HomeRailTimeouts.warm] (fail
+  /// fast; the cache stays on screen), a cold one the long
+  /// [HomeRailTimeouts.cold] (the source may legitimately take 30s+). The retry
+  /// is bounded by the short [HomeRailTimeouts.retryTimeout], never a second
+  /// cold wait. Never throws — a second failure is the rail's final
+  /// [HomeRailFailed], and it fails only this rail.
+  Future<HomeRailOutcome> _fetchOutcomeWithRetry(
     String key,
     CatalogRequest request,
-    Map<String, LetterboxdCatalog> catalogsById,
+    Map<String, LetterboxdCatalog>? catalogsById,
+    Object? manifestError,
   ) async {
-    final builtIn = builtInRowById(key);
-    if (builtIn != null) {
-      final metas = await _fetchBuiltInRow(builtIn, request.tmdbKey);
-      return metas.isEmpty ? null : HomeRow(builtIn.title, metas);
+    final hasCache = await _hasCachedRail(key, request);
+    final railTimeout = timeouts.forCache(hasCache: hasCache);
+    var outcome = await _fetchOutcome(
+      key,
+      request,
+      catalogsById,
+      manifestError,
+      railTimeout,
+    );
+    if (outcome is HomeRailFailed) {
+      await Future<void>.delayed(timeouts.retryBackoff);
+      outcome = await _fetchOutcome(
+        key,
+        request,
+        catalogsById,
+        manifestError,
+        timeouts.retryTimeout,
+      );
     }
-    final catalogId = letterboxdCatalogId(key);
-    final catalog = catalogId == null ? null : catalogsById[catalogId];
-    if (catalog == null) return null;
-    final url = letterboxdCatalogUrl(request.letterboxd.manifestUrl, catalog);
-    if (url == null) return null;
-    final metas = parseCinemetaCatalog(await _get(Uri.parse(url)));
-    return metas.isEmpty ? null : HomeRow(catalog.name, metas);
+    return outcome;
   }
 
-  Future<List<Meta>> _fetchBuiltInRow(BuiltInRow row, String? tmdbKey) async {
+  /// Whether [key] has a cache entry to fall back to, which selects the short
+  /// warm timeout. A cache read failure is treated as "no cache" (the long
+  /// timeout), never as a rail failure.
+  Future<bool> _hasCachedRail(String key, CatalogRequest request) async {
+    final store = cache;
+    if (store == null) return false;
     try {
-      final url = tmdbKey == null
-          ? '$cinemetaBase${row.path}'
-          : '$tmdbBase${row.path}?api_key=$tmdbKey';
-      final raw = await _get(Uri.parse(url));
-      return tmdbKey == null
-          ? parseCinemetaCatalog(raw)
-          : parseTmdbPage(raw, row.type);
+      return await store.loadRail(cacheIdentityFor(key, request)) != null;
     } catch (_) {
-      return const [];
+      return false;
     }
+  }
+
+  /// Fetches the Stremboxd manifest when any planned key is a Letterboxd rail.
+  /// Returns the catalogs on success, or `(null, error)` on failure — a bad
+  /// manifest fails only the Letterboxd rails, never the built-ins. A valid
+  /// manifest for the same URL is cached; a fresh failure falls back to it
+  /// (ticket 72, ADR-0004).
+  Future<(Map<String, LetterboxdCatalog>?, Object?)> _resolveManifest(
+    CatalogRequest request,
+    List<String> keys,
+  ) async {
+    if (!keys.any(isLetterboxdRowKey)) return (null, null);
+    final url = request.letterboxd.manifestUrl.trim();
+    try {
+      final raw = await _get(Uri.parse(url), timeout);
+      final manifest = parseLetterboxdManifest(raw);
+      // A body that yields no catalogs (e.g. an HTML error page served 200) is
+      // treated as a failure so the cached manifest can still serve.
+      if (manifest.catalogs.isEmpty) {
+        throw const FormatException('manifest lists no catalogs');
+      }
+      await cache?.saveManifest(CachedManifest(
+        manifestUrl: url,
+        body: raw,
+        updatedAt: nowMs(),
+      ));
+      return ({
+        for (final catalog in manifest.catalogs) catalog.id: catalog,
+      }, null);
+    } catch (error) {
+      final cached = await cache?.loadManifest(url);
+      if (cached != null) {
+        final manifest = parseLetterboxdManifest(cached.body);
+        if (manifest.catalogs.isNotEmpty) {
+          return ({
+            for (final catalog in manifest.catalogs) catalog.id: catalog,
+          }, null);
+        }
+      }
+      return (null, error);
+    }
+  }
+
+  /// Resolves one planned rail to its outcome. Never throws: a fetch error is a
+  /// [HomeRailFailed], an unlisted/unusable Letterboxd catalog is
+  /// [HomeRailAbsent], and an empty catalog is a valid empty [HomeRailLoaded].
+  Future<HomeRailOutcome> _fetchOutcome(
+    String key,
+    CatalogRequest request,
+    Map<String, LetterboxdCatalog>? catalogsById,
+    Object? manifestError,
+    Duration railTimeout,
+  ) async {
+    try {
+      final builtIn = builtInRowById(key);
+      if (builtIn != null) {
+        final (metas, hasMore) =
+            await _fetchBuiltInRow(builtIn, request.tmdbKey, railTimeout);
+        return HomeRailLoaded(key, builtIn.title, metas, hasMore: hasMore);
+      }
+      final catalogId = letterboxdCatalogId(key);
+      if (catalogId == null) return HomeRailAbsent(key);
+      if (catalogsById == null) {
+        return HomeRailFailed(key, manifestError ?? 'manifest unavailable');
+      }
+      final catalog = catalogsById[catalogId];
+      if (catalog == null) return HomeRailAbsent(key);
+      final url = letterboxdCatalogUrl(request.letterboxd.manifestUrl, catalog);
+      if (url == null) return HomeRailAbsent(key);
+      final metas = parseCinemetaCatalog(await _get(Uri.parse(url), railTimeout));
+      // Stremboxd pages at 100: a full page has more, a short one is the end.
+      return HomeRailLoaded(key, catalog.name, metas,
+          hasMore: stremboxdHasMore(metas.length));
+    } catch (error) {
+      return HomeRailFailed(key, error);
+    }
+  }
+
+  /// Fetches a built-in rail, returning its items plus the source's `hasMore`
+  /// signal (ticket 75, ADR-0009). Throws on an HTTP/parse failure (so the rail
+  /// becomes [HomeRailFailed]); an empty catalog is a legitimate empty result.
+  ///
+  /// `hasMore` is per source: Cinemeta's `skip` is unbounded (always more),
+  /// TMDB follows `page < total_pages`, and the `/trending/*` rows expose no
+  /// page cursor so they are always `false`.
+  Future<(List<Meta>, bool)> _fetchBuiltInRow(
+    BuiltInRow row,
+    String? tmdbKey,
+    Duration railTimeout,
+  ) async {
+    final url = tmdbKey == null
+        ? '$cinemetaBase${row.path}'
+        : '$tmdbBase${row.path}?api_key=$tmdbKey';
+    final raw = await _get(Uri.parse(url), railTimeout);
+    if (tmdbKey == null) {
+      return (parseCinemetaCatalog(raw), row.paginatable);
+    }
+    final page = parseTmdbPageResponse(raw, row.type);
+    return (page.items, row.paginatable && page.hasMore);
   }
 
   @override
   Future<DetailMeta> fetchDetail(String type, String id, String? tmdbKey) async {
     if (!usesTmdbDetail(tmdbKey, id)) {
-      final raw = await _get(Uri.parse('$cinemetaBase/meta/$type/$id.json'));
+      final raw = await _get(Uri.parse('$cinemetaBase/meta/$type/$id.json'), timeout);
       return parseCinemetaDetail(raw);
     }
     final key = tmdbKey!;
     // id is `tmdb:movie:<id>` / `tmdb:tv:<id>`; the numeric id is the last segment.
     final idNum = id.substring(id.lastIndexOf(':') + 1);
     if (type == 'movie') {
-      final raw = await _get(Uri.parse('$tmdbBase/movie/$idNum?api_key=$key'));
+      final raw = await _get(Uri.parse('$tmdbBase/movie/$idNum?api_key=$key'), timeout);
       return DetailMeta(meta: parseTmdbDetail(raw, 'movie'));
     }
-    final raw = await _get(Uri.parse('$tmdbBase/tv/$idNum?api_key=$key'));
+    final raw = await _get(Uri.parse('$tmdbBase/tv/$idNum?api_key=$key'), timeout);
     final meta = parseTmdbDetail(raw, 'series');
     final seasons = await loadTmdbSeasonEpisodes(
       parseTmdbSeasons(raw),
@@ -363,22 +678,35 @@ class HttpCatalogFetcher implements CatalogFetcher {
 
   Future<List<Episode>> _tmdbEpisodes(String id, int season, String key) async {
     try {
-      final raw = await _get(Uri.parse('$tmdbBase/tv/$id/season/$season?api_key=$key'));
+      final raw = await _get(
+        Uri.parse('$tmdbBase/tv/$id/season/$season?api_key=$key'),
+        timeout,
+      );
       return parseTmdbSeasonEpisodes(raw, season);
     } catch (_) {
       return const [];
     }
   }
 
-  Future<String> _get(Uri url) async {
-    final client = HttpClient()..connectionTimeout = timeout;
+  Future<String> _get(Uri url, Duration requestTimeout) {
+    final override = _getOverride;
+    // The timeout is applied here (not just in the real client) so a hanging
+    // upstream — including the test override — is bounded by the rail's
+    // cache-aware timeout.
+    return override != null
+        ? override(url).timeout(requestTimeout)
+        : _getReal(url, requestTimeout);
+  }
+
+  Future<String> _getReal(Uri url, Duration requestTimeout) async {
+    final client = HttpClient()..connectionTimeout = requestTimeout;
     try {
-      final request = await client.getUrl(url);
-      final response = await request.close().timeout(timeout);
+      final request = await client.getUrl(url).timeout(requestTimeout);
+      final response = await request.close().timeout(requestTimeout);
       if (response.statusCode != HttpStatus.ok) {
         throw HttpException('HTTP ${response.statusCode} for $url');
       }
-      return await response.transform(utf8.decoder).join();
+      return await response.transform(utf8.decoder).join().timeout(requestTimeout);
     } finally {
       client.close(force: true);
     }

@@ -3,6 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:harbor_companion/app/home/catalog_fetcher.dart';
+import 'package:harbor_companion/app/home/catalog_request.dart';
+import 'package:harbor_companion/app/home/home_controller.dart';
+import 'package:harbor_companion/app/home/home_rail.dart';
+import 'package:harbor_companion/app/home/meta.dart';
 import 'package:harbor_companion/app/shell/connect_first_view.dart';
 import 'package:harbor_companion/app/remote/remote_controller.dart';
 import 'package:harbor_companion/app/remote/remote_reducer.dart';
@@ -28,6 +33,34 @@ class _FakeVersionProvider implements VersionProvider {
   Future<LocalVersion> load() async => const LocalVersion(1, '1.0.0');
 }
 
+/// The Home catalog stub: shell tests are not about catalog loading. The real
+/// fetcher would hit the network and, because of the ticket-73 retry backoff,
+/// leave a timer pending past teardown. Every planned rail settles absent, so
+/// the Home stays quiet and no timer is scheduled.
+class _StubCatalogFetcher implements CatalogFetcher {
+  @override
+  Stream<HomeRailOutcome> fetchRails(CatalogRequest request) =>
+      Stream.fromIterable([
+        for (final key in planHomeRowKeys(request)) HomeRailAbsent(key),
+      ]);
+
+  @override
+  Future<HomeRailOutcome> fetchRail(CatalogRequest request, String rowKey) async =>
+      HomeRailAbsent(rowKey);
+
+  @override
+  Future<RailPage> fetchRailPage(
+    CatalogRequest request,
+    String rowKey,
+    int cursor,
+  ) async =>
+      const RailPage(items: []);
+
+  @override
+  Future<DetailMeta> fetchDetail(String type, String id, String? tmdbKey) async =>
+      DetailMeta(meta: Meta(id: id, type: type, name: ''));
+}
+
 /// Remote seam stub: the player bar reads `nowPlaying` from the Remote
 /// controller, so the shell tests inject a fixed view without a live socket.
 class _StubRemoteController extends RemoteController {
@@ -43,11 +76,13 @@ RemoteState _holding(String title) => RemoteState(
       nowPlaying: NowPlaying(mediaId: 'tt1', mediaTitle: title, playing: true),
     );
 
-/// The shell's self-update seam (launch check fires on app start); tests stub
-/// it so no package_info_plus channel or network is touched.
-List<Override> selfUpdateOverrides() => [
+/// Stubs the outbound seams the shell touches on launch: the self-update check
+/// (no package_info_plus channel or network) and the Home catalog fetch (no
+/// network, and no retry-backoff timer left pending past teardown).
+List<Override> shellOverrides() => [
       selfUpdateVersionProvider.overrideWithValue(_FakeVersionProvider()),
       releasesClientProvider.overrideWithValue(_FakeReleasesClient()),
+      catalogFetcherProvider.overrideWithValue(_StubCatalogFetcher()),
     ];
 
 /// A container that reports connected and holds `title` in the Remote layer,
@@ -58,7 +93,7 @@ ProviderContainer _connectedContainer({required String title}) {
       connectionStatusProvider.overrideWith(ConnectionStatusController.new),
       remoteControllerProvider
           .overrideWith(() => _StubRemoteController(_holding(title))),
-      ...selfUpdateOverrides(),
+      ...shellOverrides(),
     ],
   );
   container
@@ -72,7 +107,7 @@ void main() {
   testWidgets('fresh install shows the connect-first empty state and five tabs',
       (tester) async {
     await tester.pumpWidget(ProviderScope(
-      overrides: selfUpdateOverrides(),
+      overrides: shellOverrides(),
       child: const HarborCompanionApp(),
     ));
 
@@ -85,7 +120,7 @@ void main() {
 
   testWidgets('the connect-first view leads to settings', (tester) async {
     await tester.pumpWidget(ProviderScope(
-      overrides: selfUpdateOverrides(),
+      overrides: shellOverrides(),
       child: const HarborCompanionApp(),
     ));
 
@@ -100,7 +135,7 @@ void main() {
     final container = ProviderContainer(
       overrides: [
         connectionStatusProvider.overrideWith(ConnectionStatusController.new),
-        ...selfUpdateOverrides(),
+        ...shellOverrides(),
       ],
     );
     container.read(connectionStatusProvider.notifier).set(ConnectionStatus.connected);
@@ -179,7 +214,7 @@ void main() {
       overrides: [
         remoteControllerProvider
             .overrideWith(() => _StubRemoteController(_holding('Shawshank'))),
-        ...selfUpdateOverrides(),
+        ...shellOverrides(),
       ],
     );
     addTearDown(container.dispose);
