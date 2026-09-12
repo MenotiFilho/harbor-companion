@@ -419,6 +419,42 @@ void main() {
       expect(saved!.hasMore, isTrue);
     });
 
+    test('a successful local retry writes the loaded rail to the cache', () async {
+      final cache = InMemoryHomeCacheStore();
+      final fetcher = RecordingCatalogFetcher();
+      fetcher.outcomes[firstKey] = () =>
+          HomeRailFailed(firstKey, Exception('down'));
+      final container = make(
+        fetcher,
+        InMemorySettingsStore(),
+        cacheStore: cache,
+        clock: () => 4242,
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(homeControllerProvider.notifier);
+
+      notifier.load();
+      await settle();
+      expect(await cache.loadRail(const HomeCacheIdentity(firstKey)), isNull,
+          reason: 'a failed rail is never cached');
+
+      fetcher.outcomes[firstKey] = () => HomeRailLoaded(
+            firstKey,
+            'Top Movies',
+            [Meta(id: 'tt1', type: 'movie', name: 'The Matrix')],
+            hasMore: true,
+          );
+      notifier.retryRail(firstKey);
+      await pumpEventQueue();
+
+      final saved = await cache.loadRail(const HomeCacheIdentity(firstKey));
+      expect(saved, isNotNull,
+          reason: 'the retry outcome follows the same cache-write path');
+      expect(saved!.items.single.name, 'The Matrix');
+      expect(saved.hasMore, isTrue);
+      expect(saved.updatedAt, 4242);
+    });
+
     test('a Letterboxd rail caches under rowKey + manifestUrl', () async {
       final cache = InMemoryHomeCacheStore();
       final settings = InMemorySettingsStore();

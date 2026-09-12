@@ -645,6 +645,8 @@ void main() {
       expect(policy.forCache(hasCache: false), const Duration(seconds: 45));
       expect(policy.forCache(hasCache: true), const Duration(seconds: 8));
       expect(policy.retryBackoff, const Duration(seconds: 1));
+      expect(policy.retryTimeout, const Duration(seconds: 8),
+          reason: 'the retry is short, never a second cold timeout');
     });
 
     test('a warm rail uses the 8s timeout and a cold rail the 45s one',
@@ -703,6 +705,45 @@ void main() {
         async.elapse(const Duration(seconds: 30));
         async.flushMicrotasks();
         expect(coldGets, 2, reason: 'cold rail timed out only after 45s');
+      });
+    });
+
+    test('a cold rail\'s single retry is bounded by the short timeout, not 90s',
+        () {
+      var gets = 0;
+      final fetcher = HttpCatalogFetcher(
+        cache: InMemoryHomeCacheStore(), // no entry → cold
+        get: (url) {
+          gets++;
+          return Completer<String>().future; // never answers
+        },
+      );
+
+      fakeAsync((async) {
+        HomeRailOutcome? outcome;
+        fetcher
+            .fetchRail(keyless(), 'cinemeta:top-movies')
+            .then((o) => outcome = o);
+        async.flushMicrotasks();
+
+        // Attempt 1 runs to the cold timeout (45s).
+        async.elapse(const Duration(seconds: 45));
+        async.flushMicrotasks();
+        expect(gets, 1, reason: 'the first attempt is the cold 45s timeout');
+        expect(outcome, isNull);
+
+        // The ~1s backoff, then the retry starts.
+        async.elapse(const Duration(seconds: 1));
+        async.flushMicrotasks();
+        expect(gets, 2, reason: 'the retry starts right after the backoff');
+        expect(outcome, isNull);
+
+        // The retry must not inherit the 45s: it ends on the short timeout, so
+        // the whole rail settles near 45 + 1 + 8 = 54s, never ~90s.
+        async.elapse(const Duration(seconds: 8));
+        async.flushMicrotasks();
+        expect(outcome, isA<HomeRailFailed>());
+        expect(gets, 2, reason: 'exactly one retry');
       });
     });
 

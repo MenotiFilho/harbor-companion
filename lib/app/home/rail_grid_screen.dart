@@ -74,6 +74,20 @@ class _RailGridState extends State<_RailGrid> {
   void initState() {
     super.initState();
     _controller.addListener(_onScroll);
+    // A first page that does not fill the viewport never emits a scroll
+    // notification, so the on-scroll trigger alone would never fire. Check once
+    // the first frame has laid the slivers out.
+    _scheduleLoadCheck();
+  }
+
+  @override
+  void didUpdateWidget(_RailGrid oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // A page landing (or ending/failing) can still leave room: re-check after
+    // the new content lays out so a short page keeps paginating on its own.
+    if (!identical(oldWidget.grid, widget.grid)) {
+      _scheduleLoadCheck();
+    }
   }
 
   @override
@@ -83,8 +97,23 @@ class _RailGridState extends State<_RailGrid> {
     super.dispose();
   }
 
-  void _onScroll() {
-    if (!_controller.hasClients) return;
+  /// Defers [_maybeLoadMore] to after the frame that just built this widget, so
+  /// the sliver geometry is current. Cheap and idempotent: it only dispatches
+  /// when there is room, and the reducer owns the in-flight/ended/error guard.
+  void _scheduleLoadCheck() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _maybeLoadMore();
+    });
+  }
+
+  void _onScroll() => _maybeLoadMore();
+
+  /// Requests the next page when the viewport has room for it and the source is
+  /// not done. A no-scroll short page therefore pages itself. Idempotent — the
+  /// guards here plus the reducer's own loading/ended/error checks mean a
+  /// duplicate call cannot stack requests.
+  void _maybeLoadMore() {
+    if (!mounted || !_controller.hasClients) return;
     final grid = widget.grid;
     // Nothing to request while loading, ended, or showing the error footer
     // (the retry button owns that case). The reducer also guards, but skipping
@@ -105,6 +134,9 @@ class _RailGridState extends State<_RailGrid> {
     return CustomScrollView(
       key: const ValueKey('railGrid'),
       controller: _controller,
+      // Always scrollable so a short page keeps a live position for the
+      // post-frame check and still accepts a manual pull.
+      physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
         SliverPadding(
           padding: const EdgeInsets.all(16),

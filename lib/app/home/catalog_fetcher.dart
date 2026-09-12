@@ -361,15 +361,24 @@ abstract interface class CatalogFetcher {
 /// before it is marked failed. A failed rail is retried exactly once after
 /// [retryBackoff] (~1s), so a transient blip does not drop it until the next
 /// round.
+///
+/// The retry uses [retryTimeout], deliberately short and never the cold value:
+/// the first attempt already spent the long budget, so the retry is a last quick
+/// chance. A cold rail thus settles near 45 + 1 + 8 = 54s, not ~90s.
 class HomeRailTimeouts {
   final Duration cold;
   final Duration warm;
   final Duration retryBackoff;
 
+  /// The timeout for the one retry attempt (ticket 73): short, so a still-slow
+  /// source fails the rail quickly instead of repeating the long cold wait.
+  final Duration retryTimeout;
+
   const HomeRailTimeouts({
     this.cold = const Duration(seconds: 45),
     this.warm = const Duration(seconds: 8),
     this.retryBackoff = const Duration(seconds: 1),
+    this.retryTimeout = const Duration(seconds: 8),
   });
 
   /// The timeout for a rail that does/does not have a cached copy to fall back
@@ -498,11 +507,13 @@ class HttpCatalogFetcher implements CatalogFetcher {
   }
 
   /// Fetches one rail with the cache-aware timeout, retrying exactly once when
-  /// it fails. The timeout comes from the rail's cache presence: a rail with a
-  /// cached copy gets the short [HomeRailTimeouts.warm] (fail fast; the cache
-  /// stays on screen), a cold one the long [HomeRailTimeouts.cold] (the source
-  /// may legitimately take 30s+). Never throws — a second failure is the rail's
-  /// final [HomeRailFailed], and it fails only this rail.
+  /// it fails. The first attempt's timeout comes from the rail's cache presence:
+  /// a rail with a cached copy gets the short [HomeRailTimeouts.warm] (fail
+  /// fast; the cache stays on screen), a cold one the long
+  /// [HomeRailTimeouts.cold] (the source may legitimately take 30s+). The retry
+  /// is bounded by the short [HomeRailTimeouts.retryTimeout], never a second
+  /// cold wait. Never throws — a second failure is the rail's final
+  /// [HomeRailFailed], and it fails only this rail.
   Future<HomeRailOutcome> _fetchOutcomeWithRetry(
     String key,
     CatalogRequest request,
@@ -525,7 +536,7 @@ class HttpCatalogFetcher implements CatalogFetcher {
         request,
         catalogsById,
         manifestError,
-        railTimeout,
+        timeouts.retryTimeout,
       );
     }
     return outcome;

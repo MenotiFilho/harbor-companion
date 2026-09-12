@@ -254,6 +254,39 @@ void main() {
       expect(s.allFailed, isFalse);
     });
 
+    test('an in-flight round keeps empty cache-seeded rails as skeletons', () {
+      final start = started();
+      final empty = {
+        for (final key in start.plannedKeys)
+          key: const CachedRail(items: [], updatedAt: 1000),
+      };
+      final s = homeReduce(start, CacheLoaded(start.request, empty));
+
+      expect(s.hasPending, isFalse, reason: 'cache seeding marks the rails loaded');
+      expect(s.roundInFlight, isTrue,
+          reason: 'the network outcomes are still pending');
+      expect(s.isEmptyHome, isFalse,
+          reason: 'never the empty screen while the round is in flight');
+      expect(s.renderKeys, start.plannedKeys,
+          reason: 'each empty seeded rail holds its skeleton seat');
+    });
+
+    test('an all-empty cache round settles into the empty Home', () {
+      var s = started();
+      final empty = {
+        for (final key in s.plannedKeys)
+          key: const CachedRail(items: [], updatedAt: 1000),
+      };
+      s = homeReduce(s, CacheLoaded(s.request, empty));
+      for (final key in s.plannedKeys) {
+        s = fold(s, HomeRailLoaded(key, homeRowLabel(key), const []));
+      }
+
+      expect(s.roundInFlight, isFalse);
+      expect(s.isEmptyHome, isTrue);
+      expect(s.renderKeys, isEmpty);
+    });
+
     test('one loaded rail keeps the Home out of empty and failed', () {
       var s = started();
       s = fold(s, HomeRailLoaded(firstKey, 'Top Movies', items('a')));

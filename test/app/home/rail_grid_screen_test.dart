@@ -288,6 +288,26 @@ void main() {
       expect(grid.cursor, 60);
     });
 
+    testWidgets('a short first page pages itself without a user scroll',
+        (tester) async {
+      await tester.binding.setSurfaceSize(const Size(800, 600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final fetcher = _FakeGridFetcher(railItemCount: 2, railHasMore: true)
+        ..pageFor = (key, cursor) =>
+            RailPage(items: many(5, start: 2), hasMore: false);
+      final container = await _mountOpenGrid(tester, fetcher);
+      await tester.pump();
+      await tester.pump();
+
+      // No drag: the two captured cards leave the viewport short, so the
+      // post-frame check asks for the next page on its own.
+      expect(fetcher.pageRequests, [('cinemeta:top-movies', 2)],
+          reason: 'the cursor is the loaded count, never skip=0');
+      final grid = container.read(homeControllerProvider).activeRailGrid!;
+      expect(grid.items, hasLength(7));
+      expect(grid.ended, isTrue);
+    });
+
     testWidgets('an ended grid shows the End footer', (tester) async {
       await tester.binding.setSurfaceSize(const Size(800, 1600));
       addTearDown(() => tester.binding.setSurfaceSize(null));

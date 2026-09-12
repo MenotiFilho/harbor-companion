@@ -189,6 +189,35 @@ void main() {
     expect(find.byType(HomeRailSkeleton), findsNothing);
   });
 
+  testWidgets(
+      'an all-empty cache round in flight shows skeletons, not the empty screen',
+      (tester) async {
+    final state = HomeState(
+      request: twoRows,
+      roundPending: const {'cinemeta:top-movies', 'cinemeta:top-series'},
+      rails: {
+        'cinemeta:top-movies': const RailState(
+          rowKey: 'cinemeta:top-movies',
+          title: 'Top Movies',
+          status: RailStatus.loaded,
+          fromCache: true,
+          updatedAt: 1,
+        ),
+        'cinemeta:top-series': const RailState(
+          rowKey: 'cinemeta:top-series',
+          title: 'Top Series',
+          status: RailStatus.loaded,
+          fromCache: true,
+          updatedAt: 1,
+        ),
+      },
+    );
+    await tester.pumpWidget(_app(state));
+
+    expect(find.byType(HomeRailSkeleton), findsNWidgets(2));
+    expect(find.text('No catalogs to show'), findsNothing);
+  });
+
   testWidgets('all rails failed shows the derived global error screen',
       (tester) async {
     final state = HomeState(

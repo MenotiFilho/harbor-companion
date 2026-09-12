@@ -27,10 +27,11 @@
 //     play button encodes the host-driven `playMeta` command.
 //
 // Effects vocabulary (the Notifier → adapter surface):
-//   `fetch:rails` → fetch every planned rail, streaming outcomes back per rail
-//   `fetch:rail`  → re-fetch the single rail named by [HomeState.retryingRail]
-//   `fetch:detail` → fetch the requested meta's detail, then DetailLoaded/Failed
-//   `playMeta`     → send the pending playMeta command to the WS client
+//   `fetch:rails`    → fetch every planned rail, streaming outcomes back per rail
+//   `fetch:rail`     → re-fetch the single rail named by [HomeState.retryingRail]
+//   `fetch:railPage` → fetch the active grid's next page at its cursor
+//   `fetch:detail`   → fetch the requested meta's detail, then DetailLoaded/Failed
+//   `playMeta`       → send the pending playMeta command to the WS client
 //
 // Wire contract: docs/wire-contract.md §5.1/§5.2 (data), §4 (playMeta).
 
@@ -304,7 +305,9 @@ class HomeState {
 
   /// The planned rails that still have a visible block: content or a failed
   /// rail's local retry card (pending rails are visible as skeletons). A
-  /// `loaded` empty rail and an `absent` rail render nothing.
+  /// `loaded` empty rail and an `absent` rail render nothing — unless the
+  /// network round is still in flight for it (a cache-seeded empty rail keeps
+  /// its skeleton seat until its own outcome lands).
   List<String> get renderKeys => [
         for (final key in plannedKeys)
           if (_renders(key)) key,
@@ -314,6 +317,9 @@ class HomeState {
     final rail = rails[rowKey];
     if (rail != null && rail.hasItems) return true;
     if (isPending(rowKey)) return true;
+    // A rail seeded empty from cache is not pending, but its network outcome
+    // still is: keep the skeleton until the round settles it.
+    if (roundPending.contains(rowKey)) return true;
     return rail?.status == RailStatus.failed;
   }
 
@@ -336,10 +342,11 @@ class HomeState {
   }
 
   /// Nothing planned, or the round settled with nothing to show (all loaded
-  /// empty / absent) — the empty Home.
+  /// empty / absent) — the empty Home. A round still in flight is never empty:
+  /// its cache-seeded empty rails render skeletons until it settles.
   bool get isEmptyHome {
     if (plannedKeys.isEmpty) return true;
-    if (hasContent || hasPending) return false;
+    if (hasContent || hasPending || roundInFlight) return false;
     return !allFailed;
   }
 

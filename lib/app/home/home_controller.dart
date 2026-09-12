@@ -2,10 +2,11 @@
 //
 // Thin glue between the pure reducer (home_reducer.dart) and the outside
 // world. Drains the reducer's `effects` buffer into the catalog HTTP fetcher
-// (`fetch:rails`/`fetch:rail`/`fetch:detail`) and the WS client (`playMeta`),
-// and folds the host's `tmdbKey` into the reducer so rails auto-upgrade the
-// moment a key arrives in a snapshot. The per-rail outcome stream is folded
-// back in as `RailOutcomeReceived`, tagged with the round it belongs to.
+// (`fetch:rails`/`fetch:rail`/`fetch:railPage`/`fetch:detail`) and the WS client
+// (`playMeta`), and folds the host's `tmdbKey` into the reducer so rails
+// auto-upgrade the moment a key arrives in a snapshot. The per-rail outcome
+// stream is folded back in as `RailOutcomeReceived`, tagged with the round it
+// belongs to.
 //
 // The playMeta command goes through the WS client's own `sendCommand`, so it is
 // rejected with a notice while disconnected (ticket 02) — the phone never
@@ -200,8 +201,7 @@ class HomeController extends Notifier<HomeState> {
     _railsSub = ref.read(catalogFetcherProvider).fetchRails(request).listen(
       (outcome) {
         if (!ref.mounted) return;
-        _dispatch(RailOutcomeReceived(outcome, request, round));
-        _writeCache(outcome, request);
+        _commitRailOutcome(outcome, request, round);
       },
       onError: (Object error) {
         if (!ref.mounted) return;
@@ -264,6 +264,19 @@ class HomeController extends Notifier<HomeState> {
     }
   }
 
+  /// Folds one rail outcome into the reducer and, when it is a fresh `loaded`,
+  /// writes it back to the cache. The single commit path for both the full
+  /// round's stream and a lone [RetryRail], so a retry persists exactly like a
+  /// round outcome (same identity, same `updatedAt` clock).
+  void _commitRailOutcome(
+    HomeRailOutcome outcome,
+    CatalogRequest request,
+    int round,
+  ) {
+    _dispatch(RailOutcomeReceived(outcome, request, round));
+    _writeCache(outcome, request);
+  }
+
   /// Writes a fresh `loaded` rail back to the cache (fire-and-forget — a cache
   /// write never blocks or fails the UI). Failed/absent outcomes leave the
   /// previous entry untouched.
@@ -281,7 +294,9 @@ class HomeController extends Notifier<HomeState> {
         .catchError((_) {});
   }
 
-  /// Re-fetches the single rail named by the retry card.
+  /// Re-fetches the single rail named by the retry card. The outcome takes the
+  /// same commit path as a round outcome, so a successful retry is persisted to
+  /// the cache too.
   Future<void> _fetchRail() async {
     final key = state.retryingRail;
     if (key == null) return;
@@ -291,10 +306,10 @@ class HomeController extends Notifier<HomeState> {
       final outcome =
           await ref.read(catalogFetcherProvider).fetchRail(request, key);
       if (!ref.mounted) return;
-      _dispatch(RailOutcomeReceived(outcome, request, round));
+      _commitRailOutcome(outcome, request, round);
     } catch (error) {
       if (!ref.mounted) return;
-      _dispatch(RailOutcomeReceived(HomeRailFailed(key, error), request, round));
+      _commitRailOutcome(HomeRailFailed(key, error), request, round);
     }
   }
 
