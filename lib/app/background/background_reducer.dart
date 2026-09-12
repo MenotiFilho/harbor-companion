@@ -1,4 +1,4 @@
-// Pure background / foreground-service state model (ticket #64).
+// Pure background / foreground-service state model (tickets #64 / #65).
 //
 // `(BackgroundState, BackgroundEvent) => BackgroundState` producing an effects
 // buffer the controller drains onto the `BackgroundPlatform` seam. No I/O, no
@@ -11,6 +11,11 @@
 // instead of failing. A refused start folds into `degraded` (honest, no crash);
 // it is only retried when a fresh trigger arrives (a new connect, a foreground
 // return, or the toggle being switched on).
+//
+// #65: the single notification morphs. [NowPlayingChanged] folds in the derived
+// media surface (null when disconnected or nothing is held); the notification
+// getter picks idle host status vs. media, and `_reconcile` posts an in-place
+// update only when the rendered surface actually changes.
 //
 // Effects vocabulary:
 //   `startService`  → platform.startService(state.notification)
@@ -57,9 +62,15 @@ class BackgroundState {
   /// The last refused-start reason, kept for an honest status line.
   final String? lastError;
 
-  /// The notification body currently shown by the platform; a host change while
-  /// running triggers exactly one in-place update. Null when none is posted.
-  final String? notifiedText;
+  /// The playing surface the Remote layer currently holds, or null when
+  /// nothing is held. Folded in from [NowPlayingChanged]; the notification
+  /// getter morphs between it and the idle host status.
+  final BackgroundMediaSurface? media;
+
+  /// The notification currently shown by the platform; a host/media change
+  /// while running triggers exactly one in-place update. Null when none is
+  /// posted (or after a stop).
+  final BackgroundNotification? notified;
 
   /// Effects buffer: the reducer appends effects here; the controller drains
   /// them. The one mutable field (impure by convention).
@@ -72,20 +83,37 @@ class BackgroundState {
     this.foregrounded = true,
     this.serviceStatus = BackgroundServiceStatus.stopped,
     this.lastError,
-    this.notifiedText,
+    this.media,
+    this.notified,
     List<String>? effects,
   }) : effects = effects ?? <String>[];
 
   /// The service is wanted when a host is active and the user has not opted out.
   bool get desired => connected && keepConnectionInBackground;
 
-  /// The idle notification: "Harbor Companion" / `Connected to <host>`.
-  BackgroundNotification get notification => BackgroundNotification(
+  /// The morphing notification: idle → "Harbor Companion" / the
+  /// `Connected to <host>` status; with media, the media title + episode line
+  /// (playing state and poster ride on [BackgroundNotification.media]). One
+  /// notification, never two.
+  BackgroundNotification get notification {
+    final held = media;
+    if (held == null) {
+      return BackgroundNotification(
         title: 'Harbor Companion',
         text: (hostName == null || hostName!.isEmpty)
             ? 'Connected'
             : 'Connected to $hostName',
       );
+    }
+    final episode = held.episodeLine;
+    return BackgroundNotification(
+      title: held.title,
+      text: (episode == null || episode.isEmpty)
+          ? (held.playing ? 'Playing' : 'Paused')
+          : episode,
+      media: held,
+    );
+  }
 
   BackgroundState copy({
     bool? connected,
@@ -96,8 +124,10 @@ class BackgroundState {
     BackgroundServiceStatus? serviceStatus,
     String? lastError,
     bool clearLastError = false,
-    String? notifiedText,
-    bool clearNotifiedText = false,
+    BackgroundMediaSurface? media,
+    bool clearMedia = false,
+    BackgroundNotification? notified,
+    bool clearNotified = false,
     List<String>? effects,
   }) {
     return BackgroundState(
@@ -108,8 +138,8 @@ class BackgroundState {
       foregrounded: foregrounded ?? this.foregrounded,
       serviceStatus: serviceStatus ?? this.serviceStatus,
       lastError: clearLastError ? null : (lastError ?? this.lastError),
-      notifiedText:
-          clearNotifiedText ? null : (notifiedText ?? this.notifiedText),
+      media: clearMedia ? null : (media ?? this.media),
+      notified: clearNotified ? null : (notified ?? this.notified),
       effects: effects ?? this.effects,
     );
   }
@@ -160,6 +190,14 @@ class ServiceStopped extends BackgroundEvent {
   const ServiceStopped();
 }
 
+/// The derived media surface changed (#65): the Remote layer holds media
+/// ([media] non-null), holds nothing, or the socket dropped (both null). The
+/// notification morphs between the media surface and the idle host status.
+class NowPlayingChanged extends BackgroundEvent {
+  final BackgroundMediaSurface? media;
+  const NowPlayingChanged(this.media);
+}
+
 /// A notification action arrived on the platform stream. #66 maps these to
 /// RemoteController commands; the decision seam carries them without letting
 /// them affect the service lifecycle (dismissal must not stop the service).
@@ -193,6 +231,13 @@ BackgroundState backgroundReduce(BackgroundState s, BackgroundEvent e) {
         allowRetry: !s.foregrounded && foregrounded,
       );
 
+    case NowPlayingChanged(:final media):
+      // The view nulls the surface on disconnect or when nothing is held, so
+      // this both raises the media notification and clears it at once.
+      return _reconcile(
+        media == null ? s.copy(clearMedia: true) : s.copy(media: media),
+      );
+
     case ServiceStarted():
       return _reconcile(s.copy(
         serviceStatus: BackgroundServiceStatus.running,
@@ -208,7 +253,7 @@ BackgroundState backgroundReduce(BackgroundState s, BackgroundEvent e) {
     case ServiceStopped():
       return _reconcile(s.copy(
         serviceStatus: BackgroundServiceStatus.stopped,
-        clearNotifiedText: true,
+        clearNotified: true,
       ));
 
     case NotificationActionReceived():
@@ -242,8 +287,8 @@ BackgroundState _reconcile(BackgroundState s, {bool allowRetry = false}) {
         return s.copy(serviceStatus: BackgroundServiceStatus.stopping)
           ..effects.add('stopService');
       }
-      if (s.notifiedText != s.notification.text) {
-        return s.copy(notifiedText: s.notification.text)
+      if (!_sameRenderedSurface(s.notified, s.notification)) {
+        return s.copy(notified: s.notification)
           ..effects.add('updateService');
       }
       return s;
@@ -263,8 +308,27 @@ BackgroundState _emitStart(BackgroundState s) {
   final next = s.copy(
     serviceStatus: BackgroundServiceStatus.starting,
     clearLastError: true,
-    notifiedText: s.notification.text,
+    notified: s.notification,
   );
   next.effects.add('startService');
   return next;
+}
+
+/// Whether re-posting [next] would change what the platform renders. Only the
+/// rendered fields count: the transport-only metadata (position/duration) is
+/// carried for #66's native `MediaSession`, which extrapolates position from the
+/// snapshot, so a 400 ms position tick must NOT re-post the plugin notification.
+bool _sameRenderedSurface(
+    BackgroundNotification? posted, BackgroundNotification next) {
+  if (posted == null) return false;
+  if (posted.title != next.title || posted.text != next.text) return false;
+  final a = posted.media;
+  final b = next.media;
+  if (a == null || b == null) return a == b;
+  return a.title == b.title &&
+      a.episodeLine == b.episodeLine &&
+      a.posterUrl == b.posterUrl &&
+      a.playing == b.playing &&
+      a.hasPrevEpisode == b.hasPrevEpisode &&
+      a.hasNextEpisode == b.hasNextEpisode;
 }

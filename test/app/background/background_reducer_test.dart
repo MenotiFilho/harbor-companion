@@ -1,8 +1,8 @@
-// Pure reducer tests for the background module (#64). The reducer is the
+// Pure reducer tests for the background module (#64 / #65). The reducer is the
 // decision seam: these pin the service lifecycle (start/stop for connect,
 // disconnect, remove-host and toggle), the "start only while foregrounded"
-// rule, start-failure degradation, and the idle notification content. No
-// platform, no I/O.
+// rule, start-failure degradation, and the notification content — idle host
+// status and the #65 idle ↔ media morph. No platform, no I/O.
 //
 // The effects buffer is mutable and shared across a reduce chain (the
 // controller drains it after every step), so [step] returns the next state plus
@@ -155,11 +155,141 @@ void main() {
     final (s, effects) = step(running(), const ConnectionChanged(true, 'living room'));
     expect(s.serviceStatus, BackgroundServiceStatus.running);
     expect(effects, ['updateService']);
-    expect(s.notifiedText, 'Connected to living room');
+    expect(
+      s.notified,
+      const BackgroundNotification(
+        title: 'Harbor Companion',
+        text: 'Connected to living room',
+      ),
+    );
 
     // No change → no extra update.
     final (_, effects2) = step(s, const ConnectionChanged(true, 'living room'));
     expect(effects2, isEmpty);
+  });
+
+  group('the notification morphs (#65)', () {
+    const surface = BackgroundMediaSurface(
+      title: 'Breaking Bad',
+      episodeLine: 'S2 · E5  Breakage',
+      posterUrl: 'http://desk:11471/poster.jpg',
+      playing: true,
+      positionSec: 120,
+      durationSec: 2700,
+      hasPrevEpisode: true,
+      hasNextEpisode: true,
+    );
+
+    test('media raises the playing surface with the media title + episode line',
+        () {
+      final (s, effects) = step(running(), const NowPlayingChanged(surface));
+      expect(s.serviceStatus, BackgroundServiceStatus.running);
+      expect(effects, ['updateService']);
+      expect(s.notification.title, 'Breaking Bad');
+      expect(s.notification.text, 'S2 · E5  Breakage');
+      expect(s.notification.media, surface);
+      expect(s.notification.isIdle, isFalse);
+    });
+
+    test('a movie (no episode line) falls back to a playing/paused label', () {
+      final (playing, _) = step(
+        running(),
+        const NowPlayingChanged(
+          BackgroundMediaSurface(title: 'Shawshank', playing: true),
+        ),
+      );
+      expect(playing.notification.text, 'Playing');
+
+      final (paused, _) = step(
+        playing,
+        const NowPlayingChanged(
+          BackgroundMediaSurface(title: 'Shawshank', playing: false),
+        ),
+      );
+      expect(paused.notification.text, 'Paused');
+    });
+
+    test('clearing the media returns to the idle host status', () {
+      final (withMedia, _) = step(running(), const NowPlayingChanged(surface));
+      final (s, effects) = step(withMedia, const NowPlayingChanged(null));
+
+      expect(s.serviceStatus, BackgroundServiceStatus.running);
+      expect(effects, ['updateService']);
+      expect(s.media, isNull);
+      expect(s.notification.isIdle, isTrue);
+      expect(s.notification.text, 'Connected to desk');
+    });
+
+    test('a socket drop (media cleared) never leaves a stale surface behind',
+        () {
+      final (withMedia, _) = step(running(), const NowPlayingChanged(surface));
+      // The derived view nulls the surface the moment the Remote drops; the
+      // notification morphs to the idle/reconnecting status and the service
+      // stays up (a reconnect is not an explicit disconnect).
+      final (s, effects) = step(withMedia, const NowPlayingChanged(null));
+      expect(s.notification.media, isNull);
+      expect(effects, ['updateService']);
+      expect(s.serviceStatus, isNot(BackgroundServiceStatus.stopping));
+    });
+
+    test('a position-only tick does not re-post the notification', () {
+      final (withMedia, _) = step(running(), const NowPlayingChanged(surface));
+      final (s, effects) = step(
+        withMedia,
+        const NowPlayingChanged(BackgroundMediaSurface(
+          title: 'Breaking Bad',
+          episodeLine: 'S2 · E5  Breakage',
+          posterUrl: 'http://desk:11471/poster.jpg',
+          playing: true,
+          positionSec: 125, // 400 ms later
+          durationSec: 2700,
+          hasPrevEpisode: true,
+          hasNextEpisode: true,
+        )),
+      );
+      expect(effects, isEmpty);
+      // The fresher transport metadata is still held for #66.
+      expect(s.media?.positionSec, 125);
+      expect(s.notification.media?.positionSec, 125);
+    });
+
+    test('a real change (pause) re-posts the notification', () {
+      final (withMedia, _) = step(running(), const NowPlayingChanged(surface));
+      final (s, effects) = step(
+        withMedia,
+        const NowPlayingChanged(BackgroundMediaSurface(
+          title: 'Breaking Bad',
+          episodeLine: 'S2 · E5  Breakage',
+          posterUrl: 'http://desk:11471/poster.jpg',
+          playing: false,
+          positionSec: 120,
+          durationSec: 2700,
+          hasPrevEpisode: true,
+          hasNextEpisode: true,
+        )),
+      );
+      expect(effects, ['updateService']);
+      expect(s.notification.media?.playing, isFalse);
+    });
+
+    test('media raised before the service starts rides the start notification',
+        () {
+      final (withMedia, _) =
+          step(BackgroundState(), const NowPlayingChanged(surface));
+      final (s, effects) =
+          step(withMedia, const ConnectionChanged(true, 'desk'));
+      expect(effects, ['startService']);
+      expect(s.notification.title, 'Breaking Bad');
+    });
+
+    test('a host change while playing keeps the media surface', () {
+      final (withMedia, _) = step(running(), const NowPlayingChanged(surface));
+      final (s, effects) =
+          step(withMedia, const ConnectionChanged(true, 'living room'));
+      expect(effects, isEmpty);
+      expect(s.notification.title, 'Breaking Bad');
+      expect(s.notification.media, surface);
+    });
   });
 
   test('a notification dismissal never stops the service', () {

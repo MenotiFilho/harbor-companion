@@ -1,5 +1,5 @@
 // The one platform seam for the persistent-connection foreground service
-// (ticket #64).
+// (tickets #64 / #65).
 //
 // Everything Android-specific hides behind this interface: start/update/stop
 // the foreground service plus its notification, and a stream of actions the
@@ -9,26 +9,95 @@
 // `ProviderScope(overrides: [...])`, exactly like HostRegistryStore /
 // SubnetScanner / SettingsStore.
 //
-// This ticket builds the idle surface only ("Harbor Companion" / "Connected to
-// <host>"). #65 adds the media surface and #66 the notification buttons; the
-// action model stays intentionally minimal for now.
+// #64 built the idle surface ("Harbor Companion" / "Connected to <host>").
+// #65 makes the one notification morph: while the Remote layer holds media it
+// carries a [BackgroundMediaSurface] (title + episode line, plus the poster and
+// transport metadata #66 consumes). The action model stays intentionally
+// minimal until #66 adds the transport controls.
 
 import 'dart:async';
 
-/// The content of the idle foreground-service notification.
+/// The media surface carried by the foreground-service notification while the
+/// Remote layer holds something (#65).
+///
+/// #65 renders [title] + [episodeLine] as the notification title/text through
+/// the plugin. [posterUrl] and the transport metadata ([positionSec],
+/// [durationSec], [hasPrevEpisode], [hasNextEpisode]) are carried for #66's
+/// native `MediaSessionCompat` + `MediaStyle` surface: `flutter_foreground_task`
+/// 11.0.3 only exposes a resource `NotificationIcon` and `BigTextStyle`, so it
+/// cannot render a network bitmap or a MediaStyle.
+class BackgroundMediaSurface {
+  final String title;
+  final String? episodeLine;
+  final String? posterUrl;
+  final bool playing;
+  final double positionSec;
+  final double durationSec;
+  final bool hasPrevEpisode;
+  final bool hasNextEpisode;
+
+  const BackgroundMediaSurface({
+    required this.title,
+    this.episodeLine,
+    this.posterUrl,
+    required this.playing,
+    this.positionSec = 0,
+    this.durationSec = 0,
+    this.hasPrevEpisode = false,
+    this.hasNextEpisode = false,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is BackgroundMediaSurface &&
+      other.title == title &&
+      other.episodeLine == episodeLine &&
+      other.posterUrl == posterUrl &&
+      other.playing == playing &&
+      other.positionSec == positionSec &&
+      other.durationSec == durationSec &&
+      other.hasPrevEpisode == hasPrevEpisode &&
+      other.hasNextEpisode == hasNextEpisode;
+
+  @override
+  int get hashCode => Object.hash(title, episodeLine, posterUrl, playing,
+      positionSec, durationSec, hasPrevEpisode, hasNextEpisode);
+
+  @override
+  String toString() =>
+      'BackgroundMediaSurface($title / ${episodeLine ?? '-'} / '
+      '${playing ? 'playing' : 'paused'})';
+}
+
+/// The content of the foreground-service notification. It morphs between the
+/// idle host status ([media] null) and the playing surface (#65); value equality
+/// lets the reducer coalesce updates instead of re-posting an identical
+/// notification.
 class BackgroundNotification {
   final String title;
   final String text;
-  const BackgroundNotification({required this.title, required this.text});
+
+  /// The playing surface, or null while the notification is the idle host
+  /// status. One notification morphed between the two.
+  final BackgroundMediaSurface? media;
+
+  const BackgroundNotification({
+    required this.title,
+    required this.text,
+    this.media,
+  });
+
+  bool get isIdle => media == null;
 
   @override
   bool operator ==(Object other) =>
       other is BackgroundNotification &&
       other.title == title &&
-      other.text == text;
+      other.text == text &&
+      other.media == media;
 
   @override
-  int get hashCode => Object.hash(title, text);
+  int get hashCode => Object.hash(title, text, media);
 
   @override
   String toString() => 'BackgroundNotification($title / $text)';

@@ -1,4 +1,5 @@
-// Real `BackgroundPlatform` adapter backed by flutter_foreground_task (#64).
+// Real `BackgroundPlatform` adapter backed by flutter_foreground_task
+// (#64 / #65).
 //
 // Wired only in main(): unit tests use `NoopBackgroundPlatform` or a fake. The
 // service hosts the app's process at foreground importance so the WebSocket
@@ -6,7 +7,9 @@
 //
 // The service is type `connectedDevice` (the correct type for a LAN socket, and
 // free of the `dataSync` 6h/24h cap) and holds a partial wake lock plus a WiFi
-// lock. The idle notification reads "Harbor Companion" / "Connected to <host>".
+// lock. The single notification morphs: idle it reads "Harbor Companion" /
+// "Connected to <host>"; with media it reads the media title + episode line
+// (#65).
 //
 // Notification actions are produced in the service isolate by the TaskHandler
 // and forwarded to the main isolate with `sendDataToMain`. #66 turns them into
@@ -108,6 +111,8 @@ class FlutterForegroundTaskBackgroundPlatform implements BackgroundPlatform {
       // The one type the platform permits for a LAN connection; never
       // dataSync/mediaPlayback/remoteMessaging.
       serviceTypes: const [ForegroundServiceTypes.connectedDevice],
+      // Media title/episode line when media is already held; see updateService
+      // for the #66 poster/controls handoff.
       notificationTitle: notification.title,
       notificationText: notification.text,
       callback: foregroundTaskEntryPoint,
@@ -122,6 +127,13 @@ class FlutterForegroundTaskBackgroundPlatform implements BackgroundPlatform {
 
   @override
   Future<void> updateService(BackgroundNotification notification) async {
+    // Morph in place: idle host status ↔ the held media's title + episode line.
+    // TODO(#66): the media branch does NOT render the poster or controls here.
+    // flutter_foreground_task 11.0.3 only supports a resource NotificationIcon
+    // and BigTextStyle — it cannot render a network bitmap or a MediaStyle. #66
+    // adds a native MediaSessionCompat + MediaStyle surface inside this same
+    // service and consumes `notification.media` (posterUrl + position/duration
+    // + hasPrev/hasNext); #65 posts only the title/text through the plugin.
     final result = await FlutterForegroundTask.updateService(
       notificationTitle: notification.title,
       notificationText: notification.text,

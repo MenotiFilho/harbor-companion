@@ -15,7 +15,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../connect/connect_controller.dart';
 import '../connect/connect_reducer.dart';
+import '../remote/remote_controller.dart';
 import '../settings/settings_controller.dart';
+import '../shell/shell_controller.dart';
+import 'background_notification_view.dart';
 import 'background_platform.dart';
 import 'background_reducer.dart';
 
@@ -48,26 +51,46 @@ class BackgroundController extends Notifier<BackgroundState> {
     ref.listen(settingsControllerProvider, (previous, next) {
       _dispatch(KeepConnectionChanged(next.keepConnectionInBackground));
     });
+    // Derived now-playing view → idle ↔ media morph (#65). Riverpod v3 computes
+    // a derived Provider lazily, and a `ref.listen` on the view itself does not
+    // fire until something reads it; re-read it whenever either of its inputs
+    // changes instead. The read is deferred a microtask: reading it inside the
+    // dependency's own listener would still see the previous cached value. A
+    // socket drop clears the Remote's `nowPlaying` at once, so this nulls the
+    // surface immediately (never a stale paused surface).
+    void foldNotificationView() {
+      scheduleMicrotask(() {
+        if (!ref.mounted) return;
+        _dispatch(NowPlayingChanged(ref.read(backgroundNotificationViewProvider)));
+      });
+    }
+
+    ref.listen(connectionStatusProvider, (previous, next) => foldNotificationView());
+    ref.listen(remoteControllerProvider, (previous, next) => foldNotificationView());
     // Notification actions → the reducer (which ignores them for now).
     _actionsSub = ref.read(backgroundPlatformProvider).actions.listen(
           (action) => _dispatch(NotificationActionReceived(action)),
           onError: (Object _) {},
         );
 
-    // Seed from the current values: the connect/settings controllers may already
-    // be built (e.g. the shell instantiates connect at startup). The seed may
-    // emit a start effect, drained on the next microtask so build() stays pure.
+    // Seed from the current values: the connect/settings/remote controllers may
+    // already be built (e.g. the shell instantiates connect at startup). The
+    // seed may emit a start effect, drained on the next microtask so build()
+    // stays pure. Media is folded first so a start mid-playback posts the media
+    // surface, not the idle status.
     final connect = ref.read(connectControllerProvider);
     final settings = ref.read(settingsControllerProvider);
-    final seeded = backgroundReduce(
-      BackgroundState(),
+    final media = ref.read(backgroundNotificationViewProvider);
+    var initial = backgroundReduce(BackgroundState(), NowPlayingChanged(media));
+    initial = backgroundReduce(
+      initial,
       ConnectionChanged(
         backgroundServiceActive(connect),
         connect.selected?.name,
       ),
     );
-    final initial = backgroundReduce(
-      seeded,
+    initial = backgroundReduce(
+      initial,
       KeepConnectionChanged(settings.keepConnectionInBackground),
     );
     scheduleMicrotask(() {
