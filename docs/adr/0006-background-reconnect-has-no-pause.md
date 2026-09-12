@@ -10,10 +10,13 @@ lifecycle. A host that has connected before retries **indefinitely** at the
 existing `400 → 800 → 1600 → 3000 ms` cap; a host that has never connected still
 gives up after 8 attempts; an explicit disconnect never reconnects. The
 `SetBackgrounded` event and the `backgrounded` fields on `ClientState` and
-`ConnectState` are deleted; `main.dart` keeps its lifecycle observer only for
-the self-updater. This **supersedes the gate from #46** ("pause only while no
-foreground service is running") — with the pause gone the gate is moot, and the
-service keeps running through an outage (ADR-0003).
+`ConnectState` are deleted, and the connect layer no longer receives lifecycle
+at all. `main.dart` keeps its lifecycle observer for the self-updater and for
+the background module: foreground/background feeds the foreground-service start
+gate and the reactive battery nudge (ADR-0007), never the reconnect schedule.
+This **supersedes the gate from #46** ("pause only while no foreground service
+is running") — with the pause gone the gate is moot, and the service keeps
+running through an outage (ADR-0003).
 
 ## Considered Options
 

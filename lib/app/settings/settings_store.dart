@@ -46,17 +46,30 @@ abstract interface class SettingsStore {
   Future<bool> loadKeepConnectionInBackground();
 
   Future<void> saveKeepConnectionInBackground(bool keep);
+
+  /// Epoch ms when the app last entered the background, or null when none is
+  /// pending. Defaults to null. Persisted (#68) so the reactive battery nudge
+  /// can still be evaluated after an OEM kills and relaunches the process; the
+  /// live lifecycle path uses the in-memory value and clears this.
+  Future<int?> loadBackgroundedAtMs();
+
+  Future<void> saveBackgroundedAtMs(int? ms);
 }
 
 /// In-memory settings store. Default seam for tests; holds state for the
 /// process lifetime only.
 class InMemorySettingsStore implements SettingsStore {
+  InMemorySettingsStore({this.backgroundedAtMs});
+
   bool _showPlaybackLocation = false;
   bool _keepConnectionInBackground = true;
   String _letterboxdManifestUrl = '';
   Set<String> _letterboxdCatalogIds = {...kDefaultLetterboxdCatalogIds};
   Set<String> _disabledBuiltInRowKeys = {};
   List<String> _homeRowOrder = [...kDefaultHomeRowOrder];
+
+  /// Public so tests can seed a cold-start background entry directly.
+  int? backgroundedAtMs;
 
   @override
   Future<bool> loadShowPlaybackLocation() async => _showPlaybackLocation;
@@ -71,6 +84,13 @@ class InMemorySettingsStore implements SettingsStore {
   @override
   Future<void> saveKeepConnectionInBackground(bool keep) async {
     _keepConnectionInBackground = keep;
+  }
+
+  @override
+  Future<int?> loadBackgroundedAtMs() async => backgroundedAtMs;
+  @override
+  Future<void> saveBackgroundedAtMs(int? ms) async {
+    backgroundedAtMs = ms;
   }
 
   @override
@@ -108,6 +128,7 @@ class InMemorySettingsStore implements SettingsStore {
 class SharedPrefsSettingsStore implements SettingsStore {
   static const _showPlaybackLocationKey = 'harbor_companion.settings.show_playback_location';
   static const _keepConnectionInBackgroundKey = 'harbor_companion.settings.keep_connection_in_background';
+  static const _backgroundedAtMsKey = 'harbor_companion.settings.backgrounded_at_ms';
   static const _letterboxdManifestUrlKey = 'harbor_companion.settings.letterboxd_manifest_url';
   static const _letterboxdCatalogIdsKey = 'harbor_companion.settings.letterboxd_catalog_ids';
   static const _disabledBuiltInRowsKey = 'harbor_companion.settings.disabled_built_in_rows';
@@ -135,6 +156,22 @@ class SharedPrefsSettingsStore implements SettingsStore {
   Future<void> saveKeepConnectionInBackground(bool keep) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keepConnectionInBackgroundKey, keep);
+  }
+
+  @override
+  Future<int?> loadBackgroundedAtMs() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_backgroundedAtMsKey);
+  }
+
+  @override
+  Future<void> saveBackgroundedAtMs(int? ms) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (ms == null) {
+      await prefs.remove(_backgroundedAtMsKey);
+    } else {
+      await prefs.setInt(_backgroundedAtMsKey, ms);
+    }
   }
 
   @override

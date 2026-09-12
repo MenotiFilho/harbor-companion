@@ -85,6 +85,11 @@ class BackgroundState {
   /// The active host's display name, for the idle notification.
   final String? hostName;
 
+  /// The active host is an established connection being retried. The idle
+  /// notification morphs to the "Reconnecting…" status instead of the
+  /// `Connected to <host>` one (ADR-0005); false whenever no host is active.
+  final bool hostReconnecting;
+
   /// The user's "keep connection in background" opt-out (default on).
   final bool keepConnectionInBackground;
 
@@ -148,6 +153,7 @@ class BackgroundState {
   BackgroundState({
     this.connected = false,
     this.hostName,
+    this.hostReconnecting = false,
     this.keepConnectionInBackground = true,
     this.foregrounded = true,
     this.serviceStatus = BackgroundServiceStatus.stopped,
@@ -176,8 +182,9 @@ class BackgroundState {
       notificationPermission == NotificationPermissionStatus.denied &&
       !permissionPrompted;
 
-  /// The morphing notification: idle → "Harbor Companion" / the
-  /// `Connected to <host>` status; with media, the media title + episode line
+  /// The morphing notification: idle → "Harbor Companion" with either the
+  /// `Connected to <host>` status or, while the active host is being retried,
+  /// `Reconnecting…` (ADR-0005); with media, the media title + episode line
   /// (playing state and poster ride on [BackgroundNotification.media]). One
   /// notification, never two.
   BackgroundNotification get notification {
@@ -185,9 +192,11 @@ class BackgroundState {
     if (held == null) {
       return BackgroundNotification(
         title: 'Harbor Companion',
-        text: (hostName == null || hostName!.isEmpty)
-            ? 'Connected'
-            : 'Connected to $hostName',
+        text: hostReconnecting
+            ? 'Reconnecting…'
+            : (hostName == null || hostName!.isEmpty)
+                ? 'Connected'
+                : 'Connected to $hostName',
       );
     }
     final episode = held.episodeLine;
@@ -204,6 +213,7 @@ class BackgroundState {
     bool? connected,
     String? hostName,
     bool clearHostName = false,
+    bool? hostReconnecting,
     bool? keepConnectionInBackground,
     bool? foregrounded,
     BackgroundServiceStatus? serviceStatus,
@@ -227,6 +237,7 @@ class BackgroundState {
     return BackgroundState(
       connected: connected ?? this.connected,
       hostName: clearHostName ? null : (hostName ?? this.hostName),
+      hostReconnecting: hostReconnecting ?? this.hostReconnecting,
       keepConnectionInBackground:
           keepConnectionInBackground ?? this.keepConnectionInBackground,
       foregrounded: foregrounded ?? this.foregrounded,
@@ -260,11 +271,16 @@ sealed class BackgroundEvent {
 
 /// The active-host signal folded from the connect layer. [connected] is true
 /// for a live connection or an established one being retried; [hostName] is the
-/// active host's display name.
+/// active host's display name. [reconnecting] distinguishes the two for the
+/// idle notification: while true the host is an established connection being
+/// retried, so the notification shows `Reconnecting…` (ADR-0005) instead of
+/// `Connected to <host>`.
 class ConnectionChanged extends BackgroundEvent {
   final bool connected;
   final String? hostName;
-  const ConnectionChanged(this.connected, this.hostName);
+  final bool reconnecting;
+  const ConnectionChanged(this.connected, this.hostName,
+      {this.reconnecting = false});
 }
 
 /// The "keep connection in background" toggle changed.
@@ -289,6 +305,18 @@ class ForegroundChanged extends BackgroundEvent {
 class SocketConnectionChanged extends BackgroundEvent {
   final bool connected;
   const SocketConnectionChanged(this.connected);
+}
+
+/// A cold start restored the last background-entry timestamp (#68) from disk,
+/// so the reactive nudge can still be evaluated after the OS killed and
+/// relaunched the process. [atMs] is the restored entry time; [nowMs] is the
+/// current clock, used to measure the background stretch. Evaluated exactly like
+/// a foreground resume, gated on the toggle, the socket being down, the stretch
+/// threshold and the throttle.
+class BackgroundedAtRestored extends BackgroundEvent {
+  final int atMs;
+  final int nowMs;
+  const BackgroundedAtRestored(this.atMs, this.nowMs);
 }
 
 /// The platform reports the service is up.
@@ -399,9 +427,14 @@ class BatteryNudgeDismissed extends BackgroundEvent {
 
 BackgroundState backgroundReduce(BackgroundState s, BackgroundEvent e) {
   switch (e) {
-    case ConnectionChanged(:final connected, :final hostName):
+    case ConnectionChanged(:final connected, :final hostName, :final reconnecting):
       return _ensureRationale(_reconcile(
-        s.copy(connected: connected, hostName: hostName),
+        s.copy(
+          connected: connected,
+          hostName: hostName,
+          // Only an active host can be reconnecting; a cleared host never is.
+          hostReconnecting: connected && reconnecting,
+        ),
         // A fresh connect is a new chance to start after a failure.
         allowRetry: !s.connected && connected,
       ));
@@ -423,6 +456,14 @@ BackgroundState backgroundReduce(BackgroundState s, BackgroundEvent e) {
       return _ensureRationale(_reconcile(
         _foldForeground(s, foregrounded, atMs),
         allowRetry: !s.foregrounded && foregrounded,
+      ));
+
+    case BackgroundedAtRestored(:final atMs, :final nowMs):
+      // Replay the persisted background entry through the same resume fold the
+      // live foreground transition uses, so a process the OS killed can still
+      // decide the nudge. The fold clears the stretch afterwards.
+      return _ensureRationale(_reconcile(
+        _foldForeground(s.copy(backgroundedAtMs: atMs), true, nowMs),
       ));
 
     case SocketConnectionChanged(:final connected):

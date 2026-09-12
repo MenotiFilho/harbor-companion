@@ -213,6 +213,7 @@ void main() {
   late FakeBackgroundPlatform platform;
   late FakeTransport transport;
   late ProviderContainer container;
+  late InMemorySettingsStore settingsStore;
 
   /// Manual epoch-ms clock for the battery-nudge windows (#68). Tests advance
   /// it explicitly; the service-lifecycle tests leave it at 0.
@@ -220,10 +221,11 @@ void main() {
 
   Duration now() => Duration(milliseconds: clock.now().millisecondsSinceEpoch);
 
-  ProviderContainer makeContainer() {
+  ProviderContainer makeContainer({InMemorySettingsStore? store}) {
     platform = FakeBackgroundPlatform();
     transport = FakeTransport();
     backgroundMs = 0;
+    settingsStore = store ?? InMemorySettingsStore();
     final c = ProviderContainer(
       overrides: [
         wsTransportProvider.overrideWithValue(transport),
@@ -232,7 +234,7 @@ void main() {
         connectClockProvider.overrideWithValue(now),
         hostRegistryStoreProvider.overrideWithValue(InMemoryHostRegistryStore()),
         subnetScannerProvider.overrideWithValue(const FixedSubnetScanner([])),
-        settingsStoreProvider.overrideWithValue(InMemorySettingsStore()),
+        settingsStoreProvider.overrideWithValue(settingsStore),
         backgroundPlatformProvider.overrideWithValue(platform),
         backgroundClockProvider.overrideWithValue(() => backgroundMs),
       ],
@@ -488,7 +490,9 @@ void main() {
 
     final posted = platform.updateCalls.last;
     expect(posted.media, isNull);
-    expect(posted.text, 'Connected to desk');
+    // The connect layer is reconnecting, so the idle surface morphs to the
+    // reconnecting status rather than a stale "Connected to desk" (ADR-0005).
+    expect(posted.text, 'Reconnecting…');
     expect(platform.stopCalls, 0);
     expect(
       container.read(backgroundControllerProvider).serviceStatus,
@@ -942,6 +946,74 @@ void main() {
       async.flushMicrotasks();
       backgroundMs = 1000 + kBatteryNudgeBackgroundThresholdMs;
       bg.setForegrounded(true);
+      async.flushMicrotasks();
+
+      expect(container.read(backgroundControllerProvider).batteryNudgeVisible,
+          isFalse);
+    });
+  });
+
+  test('backgrounding persists the entry time and foregrounding clears it', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      final bg = background();
+      async.flushMicrotasks();
+
+      backgroundMs = 1000;
+      bg.setForegrounded(false);
+      async.flushMicrotasks();
+      expect(settingsStore.backgroundedAtMs, 1000);
+
+      backgroundMs = 2000;
+      bg.setForegrounded(true);
+      async.flushMicrotasks();
+      expect(settingsStore.backgroundedAtMs, isNull);
+    });
+  });
+
+  test('a cold start replays the persisted stretch and nudges (#68)', () {
+    fakeAsync((async) {
+      // The OS killed the process in the background; the only trace is the
+      // timestamp on disk. The socket is down (default status) and the toggle
+      // is on (default).
+      container = makeContainer(
+        store: InMemorySettingsStore(backgroundedAtMs: 1000),
+      );
+      backgroundMs = 1000 + kBatteryNudgeBackgroundThresholdMs;
+      background();
+      async.flushMicrotasks();
+
+      final state = container.read(backgroundControllerProvider);
+      expect(state.batteryNudgeVisible, isTrue);
+      expect(state.lastBatteryNudgeMs, backgroundMs);
+      // Consumed on restore so a later cold start cannot replay it.
+      expect(settingsStore.backgroundedAtMs, isNull);
+    });
+  });
+
+  test('a cold start restore does not nudge with the toggle off', () {
+    fakeAsync((async) {
+      container = makeContainer(
+        store: InMemorySettingsStore(backgroundedAtMs: 1000),
+      );
+      backgroundMs = 1000 + kBatteryNudgeBackgroundThresholdMs;
+      container
+          .read(settingsControllerProvider.notifier)
+          .setKeepConnectionInBackground(false);
+      background();
+      async.flushMicrotasks();
+
+      expect(container.read(backgroundControllerProvider).batteryNudgeVisible,
+          isFalse);
+      expect(settingsStore.backgroundedAtMs, isNull);
+    });
+  });
+
+  test('a cold start with no persisted stretch stays quiet', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      backgroundMs = 1000 + kBatteryNudgeBackgroundThresholdMs;
+      background();
       async.flushMicrotasks();
 
       expect(container.read(backgroundControllerProvider).batteryNudgeVisible,

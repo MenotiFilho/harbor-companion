@@ -75,9 +75,26 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
         _showNotificationRationale();
       }
       // The reactive battery nudge (#68) is a dismissible shell notice shown
-      // over the current screen. It is never a banner on the Remote: the
-      // decision lives in the background reducer, the shell only presents it.
-      if (next.batteryNudgeVisible && previous?.batteryNudgeVisible != true) {
+      // over the current screen. ADR-0007 is explicit that it is *never* a
+      // banner on the Remote, where the transport already lives: while the
+      // Remote tab is active the flag stays pending (the throttle already ran)
+      // and the shell surfaces it as soon as the user leaves Remote. The
+      // decision lives in the background reducer; the shell only presents it.
+      if (next.batteryNudgeVisible &&
+          previous?.batteryNudgeVisible != true &&
+          ref.read(shellControllerProvider).activeTab != ShellTab.remote) {
+        _showBatteryNudge();
+      }
+    });
+
+    // A nudge withheld on the Remote tab surfaces on the first tab change away
+    // from Remote. The pending flag is not a dismissal, so the existing
+    // dismissal/throttle semantics still apply once it is shown.
+    ref.listen(shellControllerProvider, (previous, next) {
+      final leftRemote = previous?.activeTab == ShellTab.remote &&
+          next.activeTab != ShellTab.remote;
+      if (leftRemote &&
+          ref.read(backgroundControllerProvider).batteryNudgeVisible) {
         _showBatteryNudge();
       }
     });

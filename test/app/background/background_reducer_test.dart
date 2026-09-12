@@ -290,6 +290,59 @@ void main() {
       expect(s.notification.title, 'Breaking Bad');
       expect(s.notification.media, surface);
     });
+
+    test('an established host being retried shows Reconnecting… while idle', () {
+      final (s, effects) = step(
+        running(),
+        const ConnectionChanged(true, 'desk', reconnecting: true),
+      );
+      expect(s.serviceStatus, BackgroundServiceStatus.running);
+      expect(s.hostReconnecting, isTrue);
+      expect(effects, ['updateService']);
+      expect(s.notification.isIdle, isTrue);
+      expect(s.notification.text, 'Reconnecting…');
+
+      // The connection returning morphs the idle status back and re-posts once.
+      final (back, effects2) =
+          step(s, const ConnectionChanged(true, 'desk'));
+      expect(back.hostReconnecting, isFalse);
+      expect(effects2, ['updateService']);
+      expect(back.notification.text, 'Connected to desk');
+    });
+
+    test('a socket drop clears the media and morphs to Reconnecting…', () {
+      final (withMedia, _) = step(running(), const NowPlayingChanged(surface));
+      final (cleared, _) = step(withMedia, const NowPlayingChanged(null));
+      final (s, effects) = step(
+        cleared,
+        const ConnectionChanged(true, 'desk', reconnecting: true),
+      );
+      expect(s.media, isNull);
+      expect(s.notification.media, isNull);
+      expect(s.notification.text, 'Reconnecting…');
+      expect(effects, ['updateService']);
+      expect(s.serviceStatus, BackgroundServiceStatus.running);
+    });
+
+    test('media still wins while the host is reconnecting', () {
+      final (withMedia, _) = step(running(), const NowPlayingChanged(surface));
+      final (s, effects) = step(
+        withMedia,
+        const ConnectionChanged(true, 'desk', reconnecting: true),
+      );
+      // The rendered media surface is unchanged, so no re-post is needed.
+      expect(effects, isEmpty);
+      expect(s.notification.title, 'Breaking Bad');
+      expect(s.notification.media, surface);
+    });
+
+    test('a cleared host is never reconnecting', () {
+      final (s, _) = step(
+        running(),
+        const ConnectionChanged(false, null, reconnecting: true),
+      );
+      expect(s.hostReconnecting, isFalse);
+    });
   });
 
   test('a notification dismissal never stops the service', () {
@@ -593,6 +646,72 @@ void main() {
         final (s, _) = step(
           BackgroundState(socketConnected: false),
           const ForegroundChanged(true, atMs: 99),
+        );
+        expect(s.batteryNudgeVisible, isFalse);
+      });
+
+      test('a persisted background stretch is replayed on cold start', () {
+        // The process was killed and relaunched: there is no in-memory entry,
+        // only the timestamp restored from disk.
+        final (s, _) = step(
+          BackgroundState(socketConnected: false),
+          const BackgroundedAtRestored(
+            1000,
+            1000 + kBatteryNudgeBackgroundThresholdMs,
+          ),
+        );
+        expect(s.batteryNudgeVisible, isTrue);
+        expect(s.lastBatteryNudgeMs, 1000 + kBatteryNudgeBackgroundThresholdMs);
+        // The stretch was consumed, so a later resume cannot replay it.
+        expect(s.backgroundedAtMs, isNull);
+      });
+
+      test('a restored stretch stays quiet when the socket is up', () {
+        final (s, _) = step(
+          BackgroundState(socketConnected: true),
+          const BackgroundedAtRestored(
+            1000,
+            1000 + kBatteryNudgeBackgroundThresholdMs,
+          ),
+        );
+        expect(s.batteryNudgeVisible, isFalse);
+      });
+
+      test('a restored stretch stays quiet with the toggle off', () {
+        final (s, _) = step(
+          BackgroundState(
+            keepConnectionInBackground: false,
+            socketConnected: false,
+          ),
+          const BackgroundedAtRestored(
+            1000,
+            1000 + kBatteryNudgeBackgroundThresholdMs,
+          ),
+        );
+        expect(s.batteryNudgeVisible, isFalse);
+      });
+
+      test('a restored stretch inside the threshold stays quiet', () {
+        final (s, _) = step(
+          BackgroundState(socketConnected: false),
+          const BackgroundedAtRestored(
+            1000,
+            1000 + kBatteryNudgeBackgroundThresholdMs - 1,
+          ),
+        );
+        expect(s.batteryNudgeVisible, isFalse);
+      });
+
+      test('a restored stretch honours an existing throttle', () {
+        final (s, _) = step(
+          BackgroundState(
+            socketConnected: false,
+            lastBatteryNudgeMs: 1000,
+          ),
+          const BackgroundedAtRestored(
+            1000,
+            1000 + kBatteryNudgeBackgroundThresholdMs,
+          ),
         );
         expect(s.batteryNudgeVisible, isFalse);
       });

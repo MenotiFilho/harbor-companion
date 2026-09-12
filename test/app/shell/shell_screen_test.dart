@@ -452,4 +452,54 @@ void main() {
         isFalse);
     expect(find.widgetWithText(AppBar, 'Settings'), findsOneWidget);
   });
+
+  testWidgets('the battery nudge is withheld on Remote and shows on leaving it',
+      (tester) async {
+    var nowMs = 0;
+    final platform =
+        _StubBackgroundPlatform(NotificationPermissionStatus.granted);
+    final container = ProviderContainer(
+      overrides: [
+        connectionStatusProvider.overrideWith(ConnectionStatusController.new),
+        connectControllerProvider.overrideWith(_StubConnectController.new),
+        remoteControllerProvider
+            .overrideWith(() => _StubRemoteController(_holding('Shawshank'))),
+        backgroundPlatformProvider.overrideWithValue(platform),
+        backgroundClockProvider.overrideWithValue(() => nowMs),
+        ...shellOverrides(),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const HarborCompanionApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Sit on Remote, then resume with the socket down after a long stretch.
+    container.read(shellControllerProvider.notifier).selectTab(ShellTab.remote);
+    await tester.pump();
+
+    final background = container.read(backgroundControllerProvider.notifier);
+    nowMs = 1000;
+    background.setForegrounded(false);
+    await tester.pump();
+    nowMs = 1000 + kBatteryNudgeBackgroundThresholdMs;
+    background.setForegrounded(true);
+    await tester.pumpAndSettle();
+
+    // ADR-0007: never a banner on Remote. The flag stays pending.
+    expect(find.byType(SnackBar), findsNothing);
+    expect(find.textContaining('battery optimization'), findsNothing);
+    expect(container.read(backgroundControllerProvider).batteryNudgeVisible,
+        isTrue);
+
+    // Leaving Remote surfaces the pending nudge.
+    container.read(shellControllerProvider.notifier).selectTab(ShellTab.home);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('battery optimization'), findsOneWidget);
+  });
 }

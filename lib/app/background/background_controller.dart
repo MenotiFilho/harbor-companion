@@ -58,11 +58,14 @@ class BackgroundController extends Notifier<BackgroundState> {
   BackgroundState build() {
     ref.onDispose(() => _actionsSub?.cancel());
 
-    // Connect lifecycle → active host + display name.
+    // Connect lifecycle → active host + display name. `reconnecting` rides
+    // along so the idle notification can show `Reconnecting…` (ADR-0005)
+    // instead of a stale `Connected to <host>`.
     ref.listen(connectControllerProvider, (previous, next) {
       _dispatch(ConnectionChanged(
         backgroundServiceActive(next),
         next.selected?.name,
+        reconnecting: next.phase == ConnPhase.reconnecting,
       ));
     });
     // Settings toggle → keep-connection opt-out.
@@ -118,6 +121,7 @@ class BackgroundController extends Notifier<BackgroundState> {
       ConnectionChanged(
         backgroundServiceActive(connect),
         connect.selected?.name,
+        reconnecting: connect.phase == ConnPhase.reconnecting,
       ),
     );
     initial = backgroundReduce(
@@ -135,19 +139,52 @@ class BackgroundController extends Notifier<BackgroundState> {
     // The battery-exemption state is likewise unknown at build; check it so
     // Settings is honest from the first open.
     scheduleMicrotask(_refreshBatteryExemption);
+    // A process the OS killed and relaunched has no in-memory background entry;
+    // restore the persisted one so the reactive nudge (#68) can still decide.
+    scheduleMicrotask(_restoreBackgroundedAtMs);
     return initial;
   }
 
   /// Lifecycle from main.dart's WidgetsBindingObserver.
   void setForegrounded(bool foregrounded) {
     _dispatch(ForegroundChanged(foregrounded, atMs: _nowMs()));
-    // The user may have changed the OS state in Android settings; re-check so
-    // the Settings rows stay honest. The battery nudge decision already ran in
-    // the reducer from the event's timestamp.
     if (foregrounded) {
+      // The user may have changed the OS state in Android settings; re-check so
+      // the Settings rows stay honest. The battery nudge decision already ran in
+      // the reducer from the event's timestamp.
       _refreshNotificationPermission();
       _refreshBatteryExemption();
+      // The stretch has been consumed; a later cold start must not replay it.
+      _persistBackgroundedAtMs(null);
+    } else {
+      // Persist the entry time so an OEM kill + relaunch can still evaluate the
+      // nudge (the same-process path uses the in-memory value).
+      _persistBackgroundedAtMs(state.backgroundedAtMs);
     }
+  }
+
+  /// Restores the persisted background-entry timestamp on cold start, falling
+  /// back to any in-memory value, and replays it through the reducer's resume
+  /// fold. Runs once per process; a no-op when there is nothing to restore.
+  Future<void> _restoreBackgroundedAtMs() async {
+    final int? persisted;
+    try {
+      persisted = await ref.read(settingsStoreProvider).loadBackgroundedAtMs();
+    } catch (_) {
+      return;
+    }
+    // The app may already have backgrounded by the time the async load lands;
+    // that is the live path, not a cold-start replay.
+    if (!ref.mounted || !state.foregrounded) return;
+    final restored = persisted ?? state.backgroundedAtMs;
+    if (restored == null) return;
+    _dispatch(BackgroundedAtRestored(restored, _nowMs()));
+    // The stretch has been consumed; don't let a later cold start replay it.
+    _persistBackgroundedAtMs(null);
+  }
+
+  void _persistBackgroundedAtMs(int? ms) {
+    ref.read(settingsStoreProvider).saveBackgroundedAtMs(ms);
   }
 
   int _nowMs() => ref.read(backgroundClockProvider)();
