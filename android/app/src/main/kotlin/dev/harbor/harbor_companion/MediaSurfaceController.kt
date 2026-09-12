@@ -211,19 +211,23 @@ class MediaSurfaceController(private val context: Context) {
                 .build()
         )
 
+        // Distinct transport icons: previously every action reused the app's
+        // play-mark small icon, so prev/next/toggle all looked like "play" and
+        // the toggle never morphed. The toggle icon must follow `playing`; the
+        // action id stays fixed (the host remains the source of truth).
         val actions = mutableListOf<Notification.Action>()
         if (hasPrev) {
-            actions.add(action(R.drawable.ic_stat_harbor, "Previous", "previous"))
+            actions.add(action(R.drawable.ic_media_previous, "Previous", "previous"))
         }
         actions.add(
             action(
-                R.drawable.ic_stat_harbor,
+                if (playing) R.drawable.ic_media_pause else R.drawable.ic_media_play,
                 if (playing) "Pause" else "Play",
                 "togglePlay"
             )
         )
         if (hasNext) {
-            actions.add(action(R.drawable.ic_stat_harbor, "Next", "next"))
+            actions.add(action(R.drawable.ic_media_next, "Next", "next"))
         }
 
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

@@ -50,6 +50,9 @@ The Dart seam is pinned by tests; the native surface cannot be exercised in a
 unit test. On a real device, in a release build:
 
 - [ ] Play/pause from the notification and from a headset/Bluetooth control.
+- [ ] The transport icons are distinct and the toggle morphs play ⇄ pause as the
+      snapshot flips `playing` (regression: all three actions once shared the
+      play-mark small icon, so prev/next/toggle all looked like "play").
 - [ ] Previous/next appear only for a series episode that has them.
 - [ ] The scrubber seeks; the bar re-anchors on the next snapshot (no optimism).
 - [ ] Tapping the body opens the Remote tab, popping any pushed route.
