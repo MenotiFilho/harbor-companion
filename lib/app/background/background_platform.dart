@@ -1,13 +1,13 @@
 // The one platform seam for the persistent-connection foreground service
-// (tickets #64 / #65).
+// (tickets #64 / #65 / #67).
 //
 // Everything Android-specific hides behind this interface: start/update/stop
-// the foreground service plus its notification, and a stream of actions the
-// user performs on that notification. The default provider value is a safe
-// no-op so unit tests never touch the platform; the real
-// flutter_foreground_task-backed adapter is wired only in main()'s
-// `ProviderScope(overrides: [...])`, exactly like HostRegistryStore /
-// SubnetScanner / SettingsStore.
+// the foreground service plus its notification, a stream of actions the user
+// performs on that notification, and the OS notification-permission operations
+// (#67). The default provider value is a safe no-op so unit tests never touch
+// the platform; the real flutter_foreground_task-backed adapter is wired only
+// in main()'s `ProviderScope(overrides: [...])`, exactly like
+// HostRegistryStore / SubnetScanner / SettingsStore.
 //
 // #64 built the idle surface ("Harbor Companion" / "Connected to <host>").
 // #65 makes the one notification morph: while the Remote layer holds media it
@@ -224,6 +224,25 @@ BackgroundAction? backgroundActionFromId(String id, {double? positionSec}) {
   }
 }
 
+/// The OS notification-permission state the app acts on (ADR-0007).
+///
+/// `denied` is re-askable — Android will still show the prompt. `permanentlyDenied`
+/// means the OS will no longer ask, so the Settings row deep-links to the app's
+/// notification settings instead. `granted` needs nothing.
+enum NotificationPermissionStatus {
+  granted,
+  denied,
+  permanentlyDenied;
+
+  /// Maps the native bridge's wire string. Unknown values fall back to
+  /// [denied] — treat it as re-askable rather than silently permanent.
+  static NotificationPermissionStatus fromWire(String? raw) => switch (raw) {
+        'granted' => granted,
+        'permanently_denied' => permanentlyDenied,
+        _ => denied,
+      };
+}
+
 /// Raised by an adapter when the platform refuses to start/update/stop the
 /// service: Android 12+ forbids a background foreground-service start, Android
 /// 14+ throws when the service type's permission is missing, and the plugin can
@@ -255,6 +274,18 @@ abstract interface class BackgroundPlatform {
   /// Stop the service and remove its notification. No-op when not running.
   Future<void> stopService();
 
+  /// The current `POST_NOTIFICATIONS` state (ADR-0007). On Android < 13 this is
+  /// always [NotificationPermissionStatus.granted].
+  Future<NotificationPermissionStatus> checkNotificationPermission();
+
+  /// Fire the native `POST_NOTIFICATIONS` prompt and report the result. The
+  /// caller must show the in-app rationale first; this is never called cold.
+  Future<NotificationPermissionStatus> requestNotificationPermission();
+
+  /// Open the app's OS notification settings (the deep-link path used when the
+  /// permission is permanently denied).
+  Future<void> openNotificationSettings();
+
   /// Actions the user performs on the notification.
   Stream<BackgroundAction> get actions;
 }
@@ -275,6 +306,19 @@ class NoopBackgroundPlatform implements BackgroundPlatform {
 
   @override
   Future<void> stopService() async {}
+
+  // Report the permission as already granted: the no-op default must never make
+  // the app ask for anything.
+  @override
+  Future<NotificationPermissionStatus> checkNotificationPermission() async =>
+      NotificationPermissionStatus.granted;
+
+  @override
+  Future<NotificationPermissionStatus> requestNotificationPermission() async =>
+      NotificationPermissionStatus.granted;
+
+  @override
+  Future<void> openNotificationSettings() async {}
 
   @override
   Stream<BackgroundAction> get actions => const Stream<BackgroundAction>.empty();

@@ -6,8 +6,9 @@
          background by a foreground service of type `connectedDevice`.
          `CHANGE_WIFI_STATE` is the install-time runtime prerequisite Android 14+
          checks for the `connectedDevice` type; `FOREGROUND_SERVICE` is the base
-         permission every FGS needs. `POST_NOTIFICATIONS` is required for the
-         ongoing notification on Android 13+. -->
+         permission every FGS needs. `POST_NOTIFICATIONS` is declared explicitly
+         (Android 13+) and requested contextually at the first successful
+         connect, behind an in-app rationale (#67, ADR-0007). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>

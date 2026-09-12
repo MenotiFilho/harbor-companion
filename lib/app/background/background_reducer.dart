@@ -22,11 +22,19 @@
 // but the platform must extrapolate from the freshest position, so a
 // `updateMediaSession` effect is emitted without an `updateService`.
 //
+// #67: the `POST_NOTIFICATIONS` request is contextual. The rationale is due
+// only when the service is wanted (connected + toggle on) and the permission is
+// missing but re-askable, and it is offered at most once per session; accepting
+// emits the real OS prompt, declining cancels it. A denial never changes the
+// service lifecycle — the notification merely does not appear.
+//
 // Effects vocabulary:
-//   `startService`       → platform.startService(state.notification)
-//   `updateService`      → platform.updateService(state.notification)
-//   `updateMediaSession` → platform.updateMediaSession(state.media)
-//   `stopService`        → platform.stopService()
+//   `startService`           → platform.startService(state.notification)
+//   `updateService`          → platform.updateService(state.notification)
+//   `updateMediaSession`     → platform.updateMediaSession(state.media)
+//   `stopService`            → platform.stopService()
+//   `requestPermission`      → platform.requestNotificationPermission()
+//   `openNotificationSettings` → platform.openNotificationSettings()
 
 import 'background_platform.dart';
 
@@ -78,6 +86,21 @@ class BackgroundState {
   /// posted (or after a stop).
   final BackgroundNotification? notified;
 
+  /// The last known `POST_NOTIFICATIONS` state (#67). Assumed granted until the
+  /// controller's async check lands, so a late first connect can never prompt
+  /// cold.
+  final NotificationPermissionStatus notificationPermission;
+
+  /// The in-app rationale should be shown. The shell observes this and shows
+  /// the dialog; accepting emits `requestPermission`, declining cancels it
+  /// without firing the OS prompt.
+  final bool rationaleVisible;
+
+  /// The automatic rationale has already been offered this session. It gates
+  /// the automatic prompt so a decline (or an answer) never re-nags; the
+  /// Settings row requests manually and bypasses this.
+  final bool permissionPrompted;
+
   /// Effects buffer: the reducer appends effects here; the controller drains
   /// them. The one mutable field (impure by convention).
   final List<String> effects;
@@ -91,11 +114,22 @@ class BackgroundState {
     this.lastError,
     this.media,
     this.notified,
+    this.notificationPermission = NotificationPermissionStatus.granted,
+    this.rationaleVisible = false,
+    this.permissionPrompted = false,
     List<String>? effects,
   }) : effects = effects ?? <String>[];
 
   /// The service is wanted when a host is active and the user has not opted out.
   bool get desired => connected && keepConnectionInBackground;
+
+  /// The automatic rationale is due: the service is wanted, the permission is
+  /// missing but re-askable, and the app has not already offered it this
+  /// session. Android never gets asked cold.
+  bool get permissionDue =>
+      desired &&
+      notificationPermission == NotificationPermissionStatus.denied &&
+      !permissionPrompted;
 
   /// The morphing notification: idle → "Harbor Companion" / the
   /// `Connected to <host>` status; with media, the media title + episode line
@@ -134,6 +168,9 @@ class BackgroundState {
     bool clearMedia = false,
     BackgroundNotification? notified,
     bool clearNotified = false,
+    NotificationPermissionStatus? notificationPermission,
+    bool? rationaleVisible,
+    bool? permissionPrompted,
     List<String>? effects,
   }) {
     return BackgroundState(
@@ -146,6 +183,10 @@ class BackgroundState {
       lastError: clearLastError ? null : (lastError ?? this.lastError),
       media: clearMedia ? null : (media ?? this.media),
       notified: clearNotified ? null : (notified ?? this.notified),
+      notificationPermission:
+          notificationPermission ?? this.notificationPermission,
+      rationaleVisible: rationaleVisible ?? this.rationaleVisible,
+      permissionPrompted: permissionPrompted ?? this.permissionPrompted,
       effects: effects ?? this.effects,
     );
   }
@@ -212,6 +253,36 @@ class NotificationActionReceived extends BackgroundEvent {
   const NotificationActionReceived(this.action);
 }
 
+/// The platform reported the `POST_NOTIFICATIONS` state (#67), either from the
+/// startup check or as the result of a request. A denial never touches the
+/// service lifecycle (an FGS does not require the permission).
+class NotificationPermissionChanged extends BackgroundEvent {
+  final NotificationPermissionStatus status;
+  const NotificationPermissionChanged(this.status);
+}
+
+/// The user accepted the in-app rationale: emit the real OS prompt.
+class NotificationRationaleAccepted extends BackgroundEvent {
+  const NotificationRationaleAccepted();
+}
+
+/// The user declined the in-app rationale: cancel without firing the OS prompt.
+class NotificationRationaleDeclined extends BackgroundEvent {
+  const NotificationRationaleDeclined();
+}
+
+/// A manual re-ask from Settings (rationale already shown): emit the OS prompt
+/// even though the automatic one was already offered or declined.
+class NotificationPermissionRequested extends BackgroundEvent {
+  const NotificationPermissionRequested();
+}
+
+/// A manual deep-link to the app's OS notification settings (#67), used when
+/// Android will no longer show the prompt.
+class NotificationSettingsRequested extends BackgroundEvent {
+  const NotificationSettingsRequested();
+}
+
 // ---------------------------------------------------------------------------
 // Reducer
 // ---------------------------------------------------------------------------
@@ -219,23 +290,23 @@ class NotificationActionReceived extends BackgroundEvent {
 BackgroundState backgroundReduce(BackgroundState s, BackgroundEvent e) {
   switch (e) {
     case ConnectionChanged(:final connected, :final hostName):
-      return _reconcile(
+      return _ensureRationale(_reconcile(
         s.copy(connected: connected, hostName: hostName),
         // A fresh connect is a new chance to start after a failure.
         allowRetry: !s.connected && connected,
-      );
+      ));
 
     case KeepConnectionChanged(:final enabled):
-      return _reconcile(
+      return _ensureRationale(_reconcile(
         s.copy(keepConnectionInBackground: enabled),
         allowRetry: !s.keepConnectionInBackground && enabled,
-      );
+      ));
 
     case ForegroundChanged(:final foregrounded):
-      return _reconcile(
+      return _ensureRationale(_reconcile(
         s.copy(foregrounded: foregrounded),
         allowRetry: !s.foregrounded && foregrounded,
-      );
+      ));
 
     case NowPlayingChanged(:final media):
       // The view nulls the surface on disconnect or when nothing is held, so
@@ -251,7 +322,7 @@ BackgroundState backgroundReduce(BackgroundState s, BackgroundEvent e) {
           !next.effects.contains('updateService')) {
         next.effects.add('updateMediaSession');
       }
-      return next;
+      return _ensureRationale(next);
 
     case ServiceStarted():
       return _reconcile(s.copy(
@@ -275,7 +346,43 @@ BackgroundState backgroundReduce(BackgroundState s, BackgroundEvent e) {
       // The service lifecycle ignores notification actions: dismissing the
       // notification (Android 14+) must not stop the service.
       return s;
+
+    case NotificationPermissionChanged(:final status):
+      // A denial changes nothing about the service (an FGS does not need the
+      // permission); it only means the notification will not appear. Answering
+      // with anything other than a re-askable denial retires the automatic
+      // rationale for good.
+      return _ensureRationale(s.copy(
+        notificationPermission: status,
+        rationaleVisible: false,
+        permissionPrompted: status == NotificationPermissionStatus.denied
+            ? s.permissionPrompted
+            : true,
+      ));
+
+    case NotificationRationaleAccepted():
+      return s.copy(rationaleVisible: false, permissionPrompted: true)
+        ..effects.add('requestPermission');
+
+    case NotificationRationaleDeclined():
+      return s.copy(rationaleVisible: false, permissionPrompted: true);
+
+    case NotificationPermissionRequested():
+      return s.copy(rationaleVisible: false, permissionPrompted: true)
+        ..effects.add('requestPermission');
+
+    case NotificationSettingsRequested():
+      return s.copy(rationaleVisible: false, permissionPrompted: true)
+        ..effects.add('openNotificationSettings');
   }
+}
+
+/// Offers the in-app rationale when it is due, at most once per session. The OS
+/// prompt stays behind it: the rationale is UI, the request is an effect the
+/// controller drains only after the user accepts.
+BackgroundState _ensureRationale(BackgroundState s) {
+  if (s.rationaleVisible || !s.permissionDue) return s;
+  return s.copy(rationaleVisible: true, permissionPrompted: true);
 }
 
 /// Brings the service lifecycle in line with the current desire. [allowRetry]

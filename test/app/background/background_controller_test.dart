@@ -109,6 +109,16 @@ class FakeBackgroundPlatform implements BackgroundPlatform {
   int stopCalls = 0;
   bool failStart = false;
 
+  /// The status the fake reports for checks and for the OS prompt result.
+  NotificationPermissionStatus permission = NotificationPermissionStatus.granted;
+
+  /// What the fake's request helper returns (defaults to [permission]).
+  NotificationPermissionStatus? requestResult;
+
+  int checkCalls = 0;
+  int requestCalls = 0;
+  int openSettingsCalls = 0;
+
   final StreamController<BackgroundAction> _actions =
       StreamController<BackgroundAction>.broadcast();
 
@@ -132,6 +142,22 @@ class FakeBackgroundPlatform implements BackgroundPlatform {
 
   @override
   Future<void> stopService() async => stopCalls++;
+
+  @override
+  Future<NotificationPermissionStatus> checkNotificationPermission() async {
+    checkCalls++;
+    return permission;
+  }
+
+  @override
+  Future<NotificationPermissionStatus> requestNotificationPermission() async {
+    requestCalls++;
+    permission = requestResult ?? permission;
+    return permission;
+  }
+
+  @override
+  Future<void> openNotificationSettings() async => openSettingsCalls++;
 
   @override
   Stream<BackgroundAction> get actions => _actions.stream;
@@ -525,6 +551,190 @@ void main() {
       platform.emit(BackgroundAction.opened);
       async.flushMicrotasks();
       expect(container.read(openRemoteRequestProvider), 2);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #67: contextual notification permission.
+  // -------------------------------------------------------------------------
+
+  BackgroundController background() =>
+      container.read(backgroundControllerProvider.notifier);
+
+  test('at launch the permission is checked but nothing is offered', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      platform.permission = NotificationPermissionStatus.denied;
+      background();
+      connect();
+      async.flushMicrotasks();
+
+      expect(platform.checkCalls, greaterThan(0));
+      expect(platform.requestCalls, 0);
+      expect(container.read(backgroundControllerProvider).rationaleVisible,
+          isFalse);
+    });
+  });
+
+  test('the first connect with the toggle on offers the rationale, not the OS '
+      'prompt', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      platform.permission = NotificationPermissionStatus.denied;
+      background();
+      connect();
+      async.flushMicrotasks();
+      connectTo('desk');
+      async.flushMicrotasks();
+
+      expect(container.read(backgroundControllerProvider).rationaleVisible,
+          isTrue);
+      // Only the in-app rationale is up; Android has not been asked yet.
+      expect(platform.requestCalls, 0);
+      // The service still starts (denial never blocks it).
+      expect(platform.startCalls, hasLength(1));
+    });
+  });
+
+  test('with the toggle off the permission is never requested', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      platform.permission = NotificationPermissionStatus.denied;
+      background();
+      connect();
+      async.flushMicrotasks();
+      container
+          .read(settingsControllerProvider.notifier)
+          .setKeepConnectionInBackground(false);
+      async.flushMicrotasks();
+
+      connectTo('desk');
+      async.flushMicrotasks();
+
+      expect(container.read(backgroundControllerProvider).rationaleVisible,
+          isFalse);
+      expect(platform.requestCalls, 0);
+      expect(platform.startCalls, isEmpty);
+    });
+  });
+
+  test('a granted permission never offers the rationale', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      background();
+      connect();
+      async.flushMicrotasks();
+      connectTo('desk');
+      async.flushMicrotasks();
+
+      expect(container.read(backgroundControllerProvider).rationaleVisible,
+          isFalse);
+      expect(platform.requestCalls, 0);
+    });
+  });
+
+  test('a permanently denied permission never offers the rationale', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      platform.permission = NotificationPermissionStatus.permanentlyDenied;
+      background();
+      connect();
+      async.flushMicrotasks();
+      connectTo('desk');
+      async.flushMicrotasks();
+
+      expect(container.read(backgroundControllerProvider).rationaleVisible,
+          isFalse);
+      expect(platform.requestCalls, 0);
+      expect(container.read(backgroundControllerProvider).serviceStatus,
+          BackgroundServiceStatus.running);
+    });
+  });
+
+  test('accepting the rationale fires the OS prompt; a denial leaves the '
+      'service running', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      platform.permission = NotificationPermissionStatus.denied;
+      background();
+      connect();
+      async.flushMicrotasks();
+      connectTo('desk');
+      async.flushMicrotasks();
+
+      background().acceptNotificationRationale();
+      async.flushMicrotasks();
+
+      expect(platform.requestCalls, 1);
+      final state = container.read(backgroundControllerProvider);
+      expect(state.rationaleVisible, isFalse);
+      expect(state.notificationPermission, NotificationPermissionStatus.denied);
+      // The denial is a degradation: the service is untouched.
+      expect(state.serviceStatus, BackgroundServiceStatus.running);
+      expect(platform.stopCalls, 0);
+    });
+  });
+
+  test('declining the rationale never fires the OS prompt, and no later event '
+      're-prompts', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      platform.permission = NotificationPermissionStatus.denied;
+      background();
+      connect();
+      async.flushMicrotasks();
+      connectTo('desk');
+      async.flushMicrotasks();
+
+      background().declineNotificationRationale();
+      async.flushMicrotasks();
+      expect(platform.requestCalls, 0);
+      expect(container.read(backgroundControllerProvider).rationaleVisible,
+          isFalse);
+
+      // A later foreground return re-checks the still-denied permission but
+      // must not offer the rationale again.
+      background().setForegrounded(false);
+      async.flushMicrotasks();
+      background().setForegrounded(true);
+      async.flushMicrotasks();
+      expect(container.read(backgroundControllerProvider).rationaleVisible,
+          isFalse);
+      expect(platform.requestCalls, 0);
+    });
+  });
+
+  test('a manual re-ask from Settings fires the OS prompt', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      platform.permission = NotificationPermissionStatus.denied;
+      background();
+      connect();
+      async.flushMicrotasks();
+      connectTo('desk');
+      async.flushMicrotasks();
+      background().declineNotificationRationale();
+      async.flushMicrotasks();
+
+      background().requestNotificationPermission();
+      async.flushMicrotasks();
+
+      expect(platform.requestCalls, 1);
+      expect(container.read(backgroundControllerProvider).rationaleVisible,
+          isFalse);
+    });
+  });
+
+  test('the Settings deep-link opens the OS notification settings', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      background();
+      async.flushMicrotasks();
+
+      background().openNotificationSettings();
+      async.flushMicrotasks();
+
+      expect(platform.openSettingsCalls, 1);
     });
   });
 }

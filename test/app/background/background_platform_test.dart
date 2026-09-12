@@ -90,4 +90,31 @@ void main() {
       }
     });
   });
+
+  group('NotificationPermissionStatus.fromWire (#67)', () {
+    test('maps the native strings', () {
+      expect(NotificationPermissionStatus.fromWire('granted'),
+          NotificationPermissionStatus.granted);
+      expect(NotificationPermissionStatus.fromWire('denied'),
+          NotificationPermissionStatus.denied);
+      expect(NotificationPermissionStatus.fromWire('permanently_denied'),
+          NotificationPermissionStatus.permanentlyDenied);
+    });
+
+    test('an unknown value is treated as re-askable, never permanent', () {
+      expect(NotificationPermissionStatus.fromWire(null),
+          NotificationPermissionStatus.denied);
+      expect(NotificationPermissionStatus.fromWire('weird'),
+          NotificationPermissionStatus.denied);
+    });
+  });
+
+  test('the no-op platform reports granted so nothing is ever requested', () async {
+    const platform = NoopBackgroundPlatform();
+    expect(await platform.checkNotificationPermission(),
+        NotificationPermissionStatus.granted);
+    expect(await platform.requestNotificationPermission(),
+        NotificationPermissionStatus.granted);
+    await platform.openNotificationSettings();
+  });
 }

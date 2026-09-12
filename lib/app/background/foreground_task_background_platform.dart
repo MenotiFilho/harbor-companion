@@ -31,6 +31,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'background_platform.dart';
 import 'media_surface_channel.dart';
+import 'notification_permission.dart';
 
 /// The Android notification channel shown for the persistent connection.
 const String kBackgroundChannelId = 'harbor_companion.connection';
@@ -100,14 +101,21 @@ void initializeForegroundTask() {
 
 class FlutterForegroundTaskBackgroundPlatform implements BackgroundPlatform {
   /// [mediaSurface] is the native MediaStyle surface (#66); when absent the
-  /// adapter falls back to the plugin's notification buttons.
-  FlutterForegroundTaskBackgroundPlatform({this.mediaSurface}) {
+  /// adapter falls back to the plugin's notification buttons. [notificationPermission]
+  /// is the native permission bridge (#67); the real MethodChannel-backed one is
+  /// the default.
+  FlutterForegroundTaskBackgroundPlatform({
+    this.mediaSurface,
+    NotificationPermissionBridge? notificationPermission,
+  }) : notificationPermission =
+            notificationPermission ?? MethodChannelNotificationPermission() {
     FlutterForegroundTask.addTaskDataCallback(_onTaskData);
     // App-lifetime adapter: the broadcast subscription lives as long as it does.
     mediaSurface?.actions.listen(_actions.add);
   }
 
   final MediaSurfaceChannel? mediaSurface;
+  final NotificationPermissionBridge notificationPermission;
 
   final StreamController<BackgroundAction> _actions =
       StreamController<BackgroundAction>.broadcast();
@@ -216,6 +224,28 @@ class FlutterForegroundTaskBackgroundPlatform implements BackgroundPlatform {
       throw BackgroundServiceException('stop failed: $error');
     }
   }
+
+  @override
+  Future<NotificationPermissionStatus> checkNotificationPermission() =>
+      notificationPermission.checkStatus();
+
+  @override
+  Future<NotificationPermissionStatus> requestNotificationPermission() async {
+    // Record the ask first: even if the OS dialog is interrupted, a later
+    // status check must not mistake "never asked" for "permanently denied".
+    await notificationPermission.markRequested();
+    final result = await FlutterForegroundTask.requestNotificationPermission();
+    return switch (result) {
+      NotificationPermission.granted => NotificationPermissionStatus.granted,
+      NotificationPermission.denied => NotificationPermissionStatus.denied,
+      NotificationPermission.permanently_denied =>
+        NotificationPermissionStatus.permanentlyDenied,
+    };
+  }
+
+  @override
+  Future<void> openNotificationSettings() =>
+      notificationPermission.openNotificationSettings();
 
   void _throwIfFailed(ServiceRequestResult result, String operation) {
     if (result is ServiceRequestFailure) {

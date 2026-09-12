@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../background/background_controller.dart';
+import '../background/background_platform.dart';
+import '../background/notification_permission_dialog.dart';
 import '../connect/connect_controller.dart';
 import '../connect/connect_reducer.dart';
 import '../routes.dart';
@@ -29,6 +32,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final updateCtrl = ref.read(selfUpdateControllerProvider.notifier);
     final settings = ref.watch(settingsControllerProvider);
     final settingsCtrl = ref.read(settingsControllerProvider.notifier);
+    final background = ref.watch(backgroundControllerProvider);
 
     // Show the warning gate as a blocking dialog whenever the reducer holds it.
     ref.listen(connectControllerProvider, (previous, next) {
@@ -70,6 +74,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ),
             value: settings.keepConnectionInBackground,
             onChanged: settingsCtrl.setKeepConnectionInBackground,
+          ),
+          _NotificationAccessTile(
+            status: background.notificationPermission,
+            onTap: () =>
+                _requestNotificationAccess(background.notificationPermission),
           ),
           const SizedBox(height: 24),
           _sectionHeader('Playback'),
@@ -155,6 +164,26 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ],
       ),
     );
+  }
+
+  /// The permanent "Notification access" row. Re-asks while Android still
+  /// allows it (in-app rationale, then the OS prompt) and deep-links to the
+  /// app's notification settings when it will no longer ask (ADR-0007). A
+  /// granted permission has nothing left to do.
+  Future<void> _requestNotificationAccess(
+    NotificationPermissionStatus status,
+  ) async {
+    final background = ref.read(backgroundControllerProvider.notifier);
+    switch (status) {
+      case NotificationPermissionStatus.granted:
+        return;
+      case NotificationPermissionStatus.denied:
+        final accepted = await showNotificationPermissionRationale(context);
+        if (!mounted || !accepted) return;
+        background.requestNotificationPermission();
+      case NotificationPermissionStatus.permanentlyDenied:
+        background.openNotificationSettings();
+    }
   }
 
   Future<void> _addHost(ConnectController ctrl) =>
@@ -460,6 +489,51 @@ class _ScanSection extends StatelessWidget {
             ),
         ],
       ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Notification access row (ticket 67)
+// ---------------------------------------------------------------------------
+
+/// The one permanent surface for `POST_NOTIFICATIONS` (ADR-0007). It is honest
+/// about what the OS will allow: re-askable when Android still shows the prompt,
+/// a settings deep-link when it no longer will.
+class _NotificationAccessTile extends StatelessWidget {
+  final NotificationPermissionStatus status;
+  final VoidCallback onTap;
+  const _NotificationAccessTile({required this.status, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final (subtitle, trailing) = switch (status) {
+      NotificationPermissionStatus.granted => (
+          'Allowed — the connection notification is shown.',
+          Icon(Icons.check_circle, color: Colors.green),
+        ),
+      NotificationPermissionStatus.denied => (
+          'Not allowed. Tap to ask Android again.',
+          const Icon(Icons.chevron_right),
+        ),
+      NotificationPermissionStatus.permanentlyDenied => (
+          'Blocked in Android settings. Tap to open notification settings.',
+          const Icon(Icons.chevron_right),
+        ),
+    };
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(
+        Icons.notifications_outlined,
+        color: status == NotificationPermissionStatus.granted
+            ? scheme.primary
+            : scheme.onSurfaceVariant,
+      ),
+      title: const Text('Notification access'),
+      subtitle: Text(subtitle),
+      trailing: trailing,
+      onTap: status == NotificationPermissionStatus.granted ? null : onTap,
     );
   }
 }

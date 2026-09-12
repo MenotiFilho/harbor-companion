@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../background/background_controller.dart';
+import '../background/notification_permission_dialog.dart';
 import '../background/open_remote_request.dart';
 import '../home/home_screen.dart';
 import '../library/library_screen.dart';
@@ -63,6 +65,15 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
     // (0) never fires.
     ref.listen(openRemoteRequestProvider, (previous, next) {
       if (next > (previous ?? 0)) _openRemote();
+    });
+
+    // The background module decides when the notification rationale is due
+    // (#67): the first successful connect with the toggle on, behind this
+    // in-app dialog. The reducer never fires the OS prompt cold.
+    ref.listen(backgroundControllerProvider, (previous, next) {
+      if (next.rationaleVisible && previous?.rationaleVisible != true) {
+        _showNotificationRationale();
+      }
     });
 
     return Scaffold(
@@ -132,6 +143,19 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
         ],
       ),
     );
+  }
+
+  /// Shows the in-app rationale and folds the user's answer back in: accepting
+  /// emits the real OS prompt, declining cancels it without one.
+  Future<void> _showNotificationRationale() async {
+    final accepted = await showNotificationPermissionRationale(context);
+    if (!mounted) return;
+    final background = ref.read(backgroundControllerProvider.notifier);
+    if (accepted) {
+      background.acceptNotificationRationale();
+    } else {
+      background.declineNotificationRationale();
+    }
   }
 
   void _showSnack(String message) {

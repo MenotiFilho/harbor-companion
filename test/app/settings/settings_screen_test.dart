@@ -9,6 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:harbor_companion/app/background/background_controller.dart';
+import 'package:harbor_companion/app/background/background_platform.dart';
 import 'package:harbor_companion/app/connect/connect_controller.dart';
 import 'package:harbor_companion/app/connect/host_registry.dart';
 import 'package:harbor_companion/app/connect/lan_scan.dart';
@@ -56,7 +58,50 @@ class FakeVersionProvider implements VersionProvider {
   Future<LocalVersion> load() async => const LocalVersion(1, '1.0.0');
 }
 
-ProviderContainer makeContainer({PlayerBarView? playerBar}) => ProviderContainer(
+/// Minimal BackgroundPlatform for the Settings permission row: only the
+/// permission operations matter here; the service methods are never reached.
+class FakeBackgroundPlatform implements BackgroundPlatform {
+  FakeBackgroundPlatform(this.permission);
+
+  NotificationPermissionStatus permission;
+  int requestCalls = 0;
+  int openSettingsCalls = 0;
+
+  @override
+  Future<NotificationPermissionStatus> checkNotificationPermission() async =>
+      permission;
+
+  @override
+  Future<NotificationPermissionStatus> requestNotificationPermission() async {
+    requestCalls++;
+    return permission;
+  }
+
+  @override
+  Future<void> openNotificationSettings() async => openSettingsCalls++;
+
+  @override
+  Future<void> startService(BackgroundNotification notification) async {}
+
+  @override
+  Future<void> updateService(BackgroundNotification notification) async {}
+
+  @override
+  Future<void> updateMediaSession(BackgroundMediaSurface? media) async {}
+
+  @override
+  Future<void> stopService() async {}
+
+  @override
+  Stream<BackgroundAction> get actions =>
+      const Stream<BackgroundAction>.empty();
+}
+
+ProviderContainer makeContainer({
+  PlayerBarView? playerBar,
+  FakeBackgroundPlatform? backgroundPlatform,
+}) =>
+    ProviderContainer(
       overrides: [
         wsTransportProvider.overrideWithValue(FakeTransport()),
         wsKeyStoreProvider.overrideWithValue(FakeKeyStore()),
@@ -66,6 +111,8 @@ ProviderContainer makeContainer({PlayerBarView? playerBar}) => ProviderContainer
         selfUpdateVersionProvider.overrideWithValue(FakeVersionProvider()),
         releasesClientProvider.overrideWithValue(FakeReleasesClient()),
         playerBarViewProvider.overrideWithValue(playerBar),
+        if (backgroundPlatform != null)
+          backgroundPlatformProvider.overrideWithValue(backgroundPlatform),
       ],
     );
 
@@ -165,10 +212,10 @@ void main() {
 
     final toggle =
         find.widgetWithText(SwitchListTile, 'Show playback location');
+    await scrollTo(tester, toggle);
     expect(toggle, findsOneWidget);
     expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
 
-    await scrollTo(tester, toggle);
     await tester.tap(toggle);
     await tester.pumpAndSettle();
 
@@ -297,5 +344,72 @@ void main() {
 
     expect(find.byType(PlayerBar), findsOneWidget);
     expect(find.text('Shawshank'), findsOneWidget);
+  });
+
+  testWidgets('the Notification access row re-asks while Android still allows it',
+      (tester) async {
+    final platform =
+        FakeBackgroundPlatform(NotificationPermissionStatus.denied);
+    final container = makeContainer(backgroundPlatform: platform);
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    final row = find.text('Notification access');
+    await scrollTo(tester, row);
+    expect(find.textContaining('Not allowed'), findsOneWidget);
+
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+
+    // The in-app rationale precedes the OS prompt.
+    expect(find.text('Allow notifications'), findsOneWidget);
+    await tester.tap(find.text('Allow'));
+    await tester.pumpAndSettle();
+
+    expect(platform.requestCalls, 1);
+    expect(platform.openSettingsCalls, 0);
+  });
+
+  testWidgets(
+      'the Notification access row deep-links when permanently denied',
+      (tester) async {
+    final platform =
+        FakeBackgroundPlatform(NotificationPermissionStatus.permanentlyDenied);
+    final container = makeContainer(backgroundPlatform: platform);
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    final row = find.text('Notification access');
+    await scrollTo(tester, row);
+    expect(find.textContaining('Blocked in Android settings'), findsOneWidget);
+
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+
+    // No rationale/OS prompt is possible anymore — only the deep link.
+    expect(find.text('Allow notifications'), findsNothing);
+    expect(platform.requestCalls, 0);
+    expect(platform.openSettingsCalls, 1);
+  });
+
+  testWidgets('a granted permission shows Notification access as allowed',
+      (tester) async {
+    final platform =
+        FakeBackgroundPlatform(NotificationPermissionStatus.granted);
+    final container = makeContainer(backgroundPlatform: platform);
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    final row = find.text('Notification access');
+    await scrollTo(tester, row);
+    expect(find.textContaining('Allowed'), findsOneWidget);
+
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+    expect(platform.requestCalls, 0);
+    expect(platform.openSettingsCalls, 0);
   });
 }

@@ -310,4 +310,119 @@ void main() {
     expect(s.serviceStatus, BackgroundServiceStatus.starting);
     expect(effects, ['startService']);
   });
+
+  group('notification permission timing (#67)', () {
+    BackgroundState notGranted() => BackgroundState(
+          notificationPermission: NotificationPermissionStatus.denied,
+        );
+
+    test('the first connect with the toggle on offers the rationale', () {
+      final (s, effects) = step(notGranted(), const ConnectionChanged(true, 'desk'));
+      expect(s.desired, isTrue);
+      expect(s.rationaleVisible, isTrue);
+      expect(s.permissionPrompted, isTrue);
+      // The decision seam never fires the OS prompt: accepting does.
+      expect(effects, ['startService']);
+    });
+
+    test('no connection means no rationale', () {
+      final (s, effects) = step(notGranted(), const KeepConnectionChanged(true));
+      expect(s.rationaleVisible, isFalse);
+      expect(effects, isEmpty);
+    });
+
+    test('the toggle off means no rationale (and no service)', () {
+      final (off, _) = step(notGranted(), const KeepConnectionChanged(false));
+      final (s, effects) = step(off, const ConnectionChanged(true, 'desk'));
+      expect(s.rationaleVisible, isFalse);
+      expect(effects, isEmpty);
+    });
+
+    test('a granted permission never offers the rationale', () {
+      final (s, _) = step(BackgroundState(), const ConnectionChanged(true, 'desk'));
+      expect(s.rationaleVisible, isFalse);
+    });
+
+    test('a permanently denied permission never offers the rationale', () {
+      final (s, _) = step(
+        BackgroundState(
+          notificationPermission: NotificationPermissionStatus.permanentlyDenied,
+        ),
+        const ConnectionChanged(true, 'desk'),
+      );
+      expect(s.rationaleVisible, isFalse);
+    });
+
+    test('a late permission denial while the service is wanted still offers it',
+        () {
+      // The connect landed before the async status check; the denial arriving
+      // afterwards must still produce the rationale.
+      final (connected, _) =
+          step(BackgroundState(), const ConnectionChanged(true, 'desk'));
+      final (s, _) = step(
+        connected,
+        const NotificationPermissionChanged(NotificationPermissionStatus.denied),
+      );
+      expect(s.rationaleVisible, isTrue);
+    });
+
+    test('accepting the rationale emits requestPermission and closes it', () {
+      final (pending, _) = step(notGranted(), const ConnectionChanged(true, 'desk'));
+      final (s, effects) = step(pending, const NotificationRationaleAccepted());
+      expect(s.rationaleVisible, isFalse);
+      expect(effects, ['requestPermission']);
+    });
+
+    test('declining cancels without the OS prompt and never re-prompts', () {
+      final (pending, _) = step(notGranted(), const ConnectionChanged(true, 'desk'));
+      final (declined, effects) = step(pending, const NotificationRationaleDeclined());
+      expect(declined.rationaleVisible, isFalse);
+      expect(effects, isEmpty);
+
+      // A later connect signal must not offer it again automatically.
+      final (s, effects2) = step(declined, const ConnectionChanged(true, 'desk'));
+      expect(s.rationaleVisible, isFalse);
+      expect(effects2, isEmpty);
+    });
+
+    test('a denial folds without touching the service lifecycle', () {
+      final (s, effects) = step(
+        running(),
+        const NotificationPermissionChanged(NotificationPermissionStatus.denied),
+      );
+      expect(s.serviceStatus, BackgroundServiceStatus.running);
+      expect(effects, isEmpty);
+    });
+
+    test('a manual re-ask emits requestPermission', () {
+      final (s, effects) = step(notGranted(), const NotificationPermissionRequested());
+      expect(effects, ['requestPermission']);
+      expect(s.rationaleVisible, isFalse);
+      expect(s.permissionPrompted, isTrue);
+    });
+
+    test('a manual settings request emits openNotificationSettings', () {
+      final (s, effects) = step(
+        BackgroundState(
+          notificationPermission: NotificationPermissionStatus.permanentlyDenied,
+        ),
+        const NotificationSettingsRequested(),
+      );
+      expect(effects, ['openNotificationSettings']);
+      expect(s.rationaleVisible, isFalse);
+    });
+
+    test('a granted answer retires the automatic rationale for good', () {
+      final (pending, _) = step(notGranted(), const ConnectionChanged(true, 'desk'));
+      final (granted, _) = step(
+        pending,
+        const NotificationPermissionChanged(NotificationPermissionStatus.granted),
+      );
+      expect(granted.rationaleVisible, isFalse);
+      expect(granted.permissionPrompted, isTrue);
+
+      final (s, _) = step(granted, const ConnectionChanged(true, 'desk'));
+      expect(s.rationaleVisible, isFalse);
+    });
+  });
 }

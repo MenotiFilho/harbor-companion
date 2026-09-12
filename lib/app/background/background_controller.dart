@@ -1,13 +1,16 @@
 // Thin controller for the persistent-connection foreground service (#64).
 //
 // Folds the connect layer's active-host signal, the Settings toggle, the app
-// lifecycle, and the platform's notification-action stream into
-// [BackgroundEvent]s, drains the reducer's effects onto the [BackgroundPlatform]
-// seam, and folds the platform's start/stop results back in as events. It makes
-// no decision of its own.
+// lifecycle, the platform's notification-action stream, and the OS
+// notification-permission status into [BackgroundEvent]s, drains the reducer's
+// effects onto the [BackgroundPlatform] seam, and folds the platform's
+// start/stop/permission results back in as events. It makes no decision of its
+// own.
 //
 // The reconnect schedule is untouched: this module never pauses or resumes it
-// (ADR-0006). The service is scoped to the connection, not to playback.
+// (ADR-0006). The service is scoped to the connection, not to playback. A
+// denied notification permission (#67) is a degradation: it never stops the
+// service; the reducer only avoids offering the rationale again.
 
 import 'dart:async';
 
@@ -103,12 +106,54 @@ class BackgroundController extends Notifier<BackgroundState> {
     scheduleMicrotask(() {
       if (ref.mounted) _drain(initial);
     });
+    // The OS permission is unknown at build; check it asynchronously. Until it
+    // lands the reducer treats it as granted, so a first connect can never fire
+    // the OS prompt cold.
+    scheduleMicrotask(_refreshNotificationPermission);
     return initial;
   }
 
   /// Lifecycle from main.dart's WidgetsBindingObserver.
-  void setForegrounded(bool foregrounded) =>
-      _dispatch(ForegroundChanged(foregrounded));
+  void setForegrounded(bool foregrounded) {
+    _dispatch(ForegroundChanged(foregrounded));
+    // The user may have changed the permission in Android settings; re-check so
+    // the Settings row is honest.
+    if (foregrounded) _refreshNotificationPermission();
+  }
+
+  // -- Notification permission (#67) -----------------------------------------
+
+  /// Re-reads the OS permission state. Called at startup and on each foreground
+  /// return.
+  void refreshNotificationPermission() => _refreshNotificationPermission();
+
+  /// Manual re-ask from Settings (the caller has shown the rationale already).
+  void requestNotificationPermission() =>
+      _dispatch(const NotificationPermissionRequested());
+
+  /// Manual deep-link from Settings when Android will no longer ask.
+  void openNotificationSettings() =>
+      _dispatch(const NotificationSettingsRequested());
+
+  /// The shell accepted the automatic rationale.
+  void acceptNotificationRationale() =>
+      _dispatch(const NotificationRationaleAccepted());
+
+  /// The shell declined the automatic rationale.
+  void declineNotificationRationale() =>
+      _dispatch(const NotificationRationaleDeclined());
+
+  Future<void> _refreshNotificationPermission() async {
+    try {
+      final status = await ref
+          .read(backgroundPlatformProvider)
+          .checkNotificationPermission();
+      if (!ref.mounted) return;
+      _dispatch(NotificationPermissionChanged(status));
+    } catch (_) {
+      // Keep the last known status; the next foreground retries.
+    }
+  }
 
   // -- The one place state mutates -------------------------------------------
 
@@ -132,6 +177,10 @@ class BackgroundController extends Notifier<BackgroundState> {
           _updateMediaSession();
         case 'stopService':
           _stopService();
+        case 'requestPermission':
+          _requestNotificationPermission();
+        case 'openNotificationSettings':
+          _openNotificationSettings();
       }
     }
   }
@@ -206,6 +255,30 @@ class BackgroundController extends Notifier<BackgroundState> {
       // way it is down, so fold it as stopped.
     } finally {
       if (ref.mounted) _dispatch(const ServiceStopped());
+    }
+  }
+
+  Future<void> _requestNotificationPermission() async {
+    try {
+      final status =
+          await ref.read(backgroundPlatformProvider).requestNotificationPermission();
+      if (!ref.mounted) return;
+      _dispatch(NotificationPermissionChanged(status));
+    } catch (_) {
+      // No activity / plugin failure: fold a re-askable denial. The service is
+      // untouched; the Settings row stays available.
+      if (!ref.mounted) return;
+      _dispatch(const NotificationPermissionChanged(
+        NotificationPermissionStatus.denied,
+      ));
+    }
+  }
+
+  Future<void> _openNotificationSettings() async {
+    try {
+      await ref.read(backgroundPlatformProvider).openNotificationSettings();
+    } catch (_) {
+      // Best-effort deep-link; a platform refusal is not actionable here.
     }
   }
 }
