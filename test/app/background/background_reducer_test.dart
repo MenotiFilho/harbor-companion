@@ -425,4 +425,177 @@ void main() {
       expect(s.rationaleVisible, isFalse);
     });
   });
+
+  group('battery / OEM onboarding (#68)', () {
+    test('the direct request emits requestBatteryExemption', () {
+      final (_, effects) =
+          step(BackgroundState(), const BatteryExemptionRequested());
+      expect(effects, ['requestBatteryExemption']);
+    });
+
+    test('an unavailable direct request falls back to the optimization list',
+        () {
+      final (_, effects) =
+          step(BackgroundState(), const BatteryExemptionUnavailable());
+      expect(effects, ['openBatteryOptimizationSettings']);
+    });
+
+    test('the list and generic battery-settings requests emit their effects',
+        () {
+      final (_, listEffects) =
+          step(BackgroundState(), const BatteryOptimizationListRequested());
+      expect(listEffects, ['openBatteryOptimizationSettings']);
+
+      final (_, settingsEffects) =
+          step(BackgroundState(), const BatterySettingsRequested());
+      expect(settingsEffects, ['openBatterySettings']);
+    });
+
+    test('the exemption check folds into the state', () {
+      final (exempt, _) =
+          step(BackgroundState(), const BatteryExemptionChanged(true));
+      expect(exempt.batteryExempt, isTrue);
+      final (notExempt, _) =
+          step(exempt, const BatteryExemptionChanged(false));
+      expect(notExempt.batteryExempt, isFalse);
+    });
+
+    group('the reactive nudge', () {
+      BackgroundState backgrounded({
+        bool keep = true,
+        bool socketDown = false,
+      }) {
+        final (s, _) = step(
+          BackgroundState(
+            keepConnectionInBackground: keep,
+            socketConnected: !socketDown,
+          ),
+          const ForegroundChanged(false, atMs: 1000),
+        );
+        return s;
+      }
+
+      test('fires on resume with the socket down after a long background stretch',
+          () {
+        final (s, effects) = step(
+          backgrounded(socketDown: true),
+          const ForegroundChanged(
+            true,
+            atMs: 1000 + kBatteryNudgeBackgroundThresholdMs,
+          ),
+        );
+        expect(s.batteryNudgeVisible, isTrue);
+        expect(s.lastBatteryNudgeMs, 1000 + kBatteryNudgeBackgroundThresholdMs);
+      });
+
+      test('does not fire when the socket is up', () {
+        final (s, _) = step(
+          backgrounded(socketDown: false),
+          const ForegroundChanged(
+            true,
+            atMs: 1000 + kBatteryNudgeBackgroundThresholdMs,
+          ),
+        );
+        expect(s.batteryNudgeVisible, isFalse);
+      });
+
+      test('does not fire with the toggle off', () {
+        final (s, _) = step(
+          backgrounded(keep: false, socketDown: true),
+          const ForegroundChanged(
+            true,
+            atMs: 1000 + kBatteryNudgeBackgroundThresholdMs,
+          ),
+        );
+        expect(s.batteryNudgeVisible, isFalse);
+      });
+
+      test('does not fire after a short background stretch', () {
+        final (s, _) = step(
+          backgrounded(socketDown: true),
+          const ForegroundChanged(
+            true,
+            atMs: 1000 + kBatteryNudgeBackgroundThresholdMs - 1,
+          ),
+        );
+        expect(s.batteryNudgeVisible, isFalse);
+      });
+
+      test('is throttled after a dismissal', () {
+        final (shown, _) = step(
+          backgrounded(socketDown: true),
+          const ForegroundChanged(
+            true,
+            atMs: 1000 + kBatteryNudgeBackgroundThresholdMs,
+          ),
+        );
+        expect(shown.batteryNudgeVisible, isTrue);
+
+        final (dismissed, _) = step(
+          shown,
+          BatteryNudgeDismissed(atMs: shown.lastBatteryNudgeMs),
+        );
+        expect(dismissed.batteryNudgeVisible, isFalse);
+
+        // A second long background/resume inside the throttle stays quiet.
+        final last = dismissed.lastBatteryNudgeMs!;
+        final (againBackgrounded, _) =
+            step(dismissed, ForegroundChanged(false, atMs: last + 1));
+        final (s, _) = step(
+          againBackgrounded,
+          ForegroundChanged(
+            true,
+            atMs: last + 1 + kBatteryNudgeBackgroundThresholdMs,
+          ),
+        );
+        expect(s.batteryNudgeVisible, isFalse);
+      });
+
+      test('fires again once the throttle window has elapsed', () {
+        final (shown, _) = step(
+          backgrounded(socketDown: true),
+          const ForegroundChanged(
+            true,
+            atMs: 1000 + kBatteryNudgeBackgroundThresholdMs,
+          ),
+        );
+        final (dismissed, _) =
+            step(shown, const BatteryNudgeDismissed());
+        final last = dismissed.lastBatteryNudgeMs!;
+
+        final (againBackgrounded, _) = step(
+          dismissed,
+          ForegroundChanged(false, atMs: last + kBatteryNudgeThrottleMs),
+        );
+        final (s, _) = step(
+          againBackgrounded,
+          ForegroundChanged(
+            true,
+            atMs: last + kBatteryNudgeThrottleMs + kBatteryNudgeBackgroundThresholdMs,
+          ),
+        );
+        expect(s.batteryNudgeVisible, isTrue);
+      });
+
+      test('turning the toggle off drops a visible nudge', () {
+        final (shown, _) = step(
+          backgrounded(socketDown: true),
+          const ForegroundChanged(
+            true,
+            atMs: 1000 + kBatteryNudgeBackgroundThresholdMs,
+          ),
+        );
+        final (s, _) = step(shown, const KeepConnectionChanged(false));
+        expect(s.batteryNudgeVisible, isFalse);
+      });
+
+      test('a resume with no recorded background time stays quiet', () {
+        final (s, _) = step(
+          BackgroundState(socketConnected: false),
+          const ForegroundChanged(true, atMs: 99),
+        );
+        expect(s.batteryNudgeVisible, isFalse);
+      });
+    });
+  });
 }

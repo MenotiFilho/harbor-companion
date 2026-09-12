@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:harbor_companion/app/background/background_controller.dart';
 import 'package:harbor_companion/app/background/background_platform.dart';
+import 'package:harbor_companion/app/background/background_reducer.dart';
 import 'package:harbor_companion/app/background/open_remote_request.dart';
 import 'package:harbor_companion/app/connect/connect_controller.dart';
 import 'package:harbor_companion/app/connect/connect_reducer.dart';
@@ -95,6 +96,18 @@ class _StubBackgroundPlatform implements BackgroundPlatform {
 
   @override
   Future<void> openNotificationSettings() async {}
+
+  @override
+  Future<bool> isIgnoringBatteryOptimizations() async => false;
+
+  @override
+  Future<bool> requestIgnoreBatteryOptimizations() async => true;
+
+  @override
+  Future<void> openBatteryOptimizationSettings() async {}
+
+  @override
+  Future<void> openBatterySettings() async {}
 
   @override
   Future<void> startService(BackgroundNotification notification) async {}
@@ -384,5 +397,51 @@ void main() {
     await tester.tap(find.text('Allow'));
     await tester.pumpAndSettle();
     expect(platform.requestCalls, 1);
+  });
+
+  testWidgets('resuming with the socket down shows a dismissible battery nudge',
+      (tester) async {
+    var nowMs = 0;
+    final platform =
+        _StubBackgroundPlatform(NotificationPermissionStatus.granted);
+    final container = ProviderContainer(
+      overrides: [
+        connectionStatusProvider.overrideWith(ConnectionStatusController.new),
+        connectControllerProvider.overrideWith(_StubConnectController.new),
+        remoteControllerProvider
+            .overrideWith(() => _StubRemoteController(_holding('Shawshank'))),
+        backgroundPlatformProvider.overrideWithValue(platform),
+        backgroundClockProvider.overrideWithValue(() => nowMs),
+        ...shellOverrides(),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const HarborCompanionApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Background → resume after a long stretch, with the socket down.
+    final background = container.read(backgroundControllerProvider.notifier);
+    nowMs = 1000;
+    background.setForegrounded(false);
+    await tester.pump();
+    nowMs = 1000 + kBatteryNudgeBackgroundThresholdMs;
+    background.setForegrounded(true);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('battery optimization'), findsOneWidget);
+
+    // The action dismisses the notice and leads to Settings, where the
+    // battery/OEM guidance lives.
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    expect(container.read(backgroundControllerProvider).batteryNudgeVisible,
+        isFalse);
+    expect(find.widgetWithText(AppBar, 'Settings'), findsOneWidget);
   });
 }

@@ -74,6 +74,12 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
       if (next.rationaleVisible && previous?.rationaleVisible != true) {
         _showNotificationRationale();
       }
+      // The reactive battery nudge (#68) is a dismissible shell notice shown
+      // over the current screen. It is never a banner on the Remote: the
+      // decision lives in the background reducer, the shell only presents it.
+      if (next.batteryNudgeVisible && previous?.batteryNudgeVisible != true) {
+        _showBatteryNudge();
+      }
     });
 
     return Scaffold(
@@ -156,6 +162,37 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
     } else {
       background.declineNotificationRationale();
     }
+  }
+
+  /// Presents the reactive battery nudge (ADR-0007) and folds its dismissal
+  /// back in. Dismissal (the action, a swipe, or the timeout) clears the flag
+  /// and feeds the throttle, so the notice cannot spam.
+  void _showBatteryNudge() {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    final controller = messenger.showSnackBar(
+      SnackBar(
+        content: const Text(
+          'Android may have paused the connection while Harbor Companion was in '
+          'the background. Exempt it from battery optimization to keep it alive '
+          'with the screen off.',
+        ),
+        action: SnackBarAction(
+          label: 'Settings',
+          onPressed: () {
+            ref
+                .read(backgroundControllerProvider.notifier)
+                .dismissBatteryNudge();
+            Navigator.of(context).pushNamed(AppRoutes.settings);
+          },
+        ),
+      ),
+    );
+    controller.closed.then((_) {
+      if (mounted) {
+        ref.read(backgroundControllerProvider.notifier).dismissBatteryNudge();
+      }
+    });
   }
 
   void _showSnack(String message) {

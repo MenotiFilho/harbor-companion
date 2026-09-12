@@ -28,6 +28,15 @@
 // emits the real OS prompt, declining cancels it. A denial never changes the
 // service lifecycle — the notification merely does not appear.
 //
+// #68: battery / OEM onboarding. Settings can request a direct battery
+// optimization exemption (falling back to the optimization list when Android
+// offers no direct handler), open the list and open the generic battery
+// settings. A reactive nudge fires when the app resumes with the socket down
+// after at least [kBatteryNudgeBackgroundThresholdMs] in the background, only
+// while the toggle is on, and is throttled to at most one nudge per
+// [kBatteryNudgeThrottleMs] (dismissal also feeds the throttle). No runtime
+// manufacturer detection is involved.
+//
 // Effects vocabulary:
 //   `startService`           → platform.startService(state.notification)
 //   `updateService`          → platform.updateService(state.notification)
@@ -35,8 +44,19 @@
 //   `stopService`            → platform.stopService()
 //   `requestPermission`      → platform.requestNotificationPermission()
 //   `openNotificationSettings` → platform.openNotificationSettings()
+//   `requestBatteryExemption` → platform.requestIgnoreBatteryOptimizations()
+//   `openBatteryOptimizationSettings` → platform.openBatteryOptimizationSettings()
+//   `openBatterySettings`    → platform.openBatterySettings()
 
 import 'background_platform.dart';
+
+/// A resume after at least this long in the background may have been killed by
+/// the OS. Shorter trips are ordinary app-switching and are never nudged.
+const int kBatteryNudgeBackgroundThresholdMs = 5 * 60 * 1000; // 5 minutes.
+
+/// At most one reactive battery nudge per window, so a flapping socket cannot
+/// turn the notice into spam. Dismissing a nudge also feeds this clock.
+const int kBatteryNudgeThrottleMs = 12 * 60 * 60 * 1000; // 12 hours.
 
 enum BackgroundServiceStatus {
   /// No foreground service is running.
@@ -101,6 +121,26 @@ class BackgroundState {
   /// Settings row requests manually and bypasses this.
   final bool permissionPrompted;
 
+  /// The socket is actually connected (not merely an established host being
+  /// retried). The battery nudge only fires when the socket is down on resume.
+  final bool socketConnected;
+
+  /// Epoch ms when the app entered the background, or null while foregrounded.
+  final int? backgroundedAtMs;
+
+  /// Whether Android currently exempts the app from battery optimization. The
+  /// Settings row and the OEM block reflect this; assumed not exempt until the
+  /// controller's async check lands.
+  final bool batteryExempt;
+
+  /// The reactive battery nudge is on screen. The shell shows it when this
+  /// flips on and the user dismisses it back off.
+  final bool batteryNudgeVisible;
+
+  /// Epoch ms of the last battery nudge shown or dismissed. Throttles the
+  /// reactive nudge so a resume loop can never spam it.
+  final int? lastBatteryNudgeMs;
+
   /// Effects buffer: the reducer appends effects here; the controller drains
   /// them. The one mutable field (impure by convention).
   final List<String> effects;
@@ -117,6 +157,11 @@ class BackgroundState {
     this.notificationPermission = NotificationPermissionStatus.granted,
     this.rationaleVisible = false,
     this.permissionPrompted = false,
+    this.socketConnected = false,
+    this.backgroundedAtMs,
+    this.batteryExempt = false,
+    this.batteryNudgeVisible = false,
+    this.lastBatteryNudgeMs,
     List<String>? effects,
   }) : effects = effects ?? <String>[];
 
@@ -171,6 +216,12 @@ class BackgroundState {
     NotificationPermissionStatus? notificationPermission,
     bool? rationaleVisible,
     bool? permissionPrompted,
+    bool? socketConnected,
+    int? backgroundedAtMs,
+    bool clearBackgroundedAt = false,
+    bool? batteryExempt,
+    bool? batteryNudgeVisible,
+    int? lastBatteryNudgeMs,
     List<String>? effects,
   }) {
     return BackgroundState(
@@ -187,6 +238,13 @@ class BackgroundState {
           notificationPermission ?? this.notificationPermission,
       rationaleVisible: rationaleVisible ?? this.rationaleVisible,
       permissionPrompted: permissionPrompted ?? this.permissionPrompted,
+      socketConnected: socketConnected ?? this.socketConnected,
+      backgroundedAtMs: clearBackgroundedAt
+          ? null
+          : (backgroundedAtMs ?? this.backgroundedAtMs),
+      batteryExempt: batteryExempt ?? this.batteryExempt,
+      batteryNudgeVisible: batteryNudgeVisible ?? this.batteryNudgeVisible,
+      lastBatteryNudgeMs: lastBatteryNudgeMs ?? this.lastBatteryNudgeMs,
       effects: effects ?? this.effects,
     );
   }
@@ -215,10 +273,22 @@ class KeepConnectionChanged extends BackgroundEvent {
   const KeepConnectionChanged(this.enabled);
 }
 
-/// App lifecycle transition from main.dart's WidgetsBindingObserver.
+/// App lifecycle transition from main.dart's WidgetsBindingObserver. [atMs] is
+/// the epoch-ms of the transition, used by the reactive battery nudge to
+/// measure the background stretch and throttle; it is optional so tests that
+/// only exercise the service lifecycle can omit it.
 class ForegroundChanged extends BackgroundEvent {
   final bool foregrounded;
-  const ForegroundChanged(this.foregrounded);
+  final int? atMs;
+  const ForegroundChanged(this.foregrounded, {this.atMs});
+}
+
+/// The actual socket status folded from the shell's connection status. Distinct
+/// from [ConnectionChanged], which is true for an established host being
+/// retried; the battery nudge only fires when the socket is really down.
+class SocketConnectionChanged extends BackgroundEvent {
+  final bool connected;
+  const SocketConnectionChanged(this.connected);
 }
 
 /// The platform reports the service is up.
@@ -283,6 +353,46 @@ class NotificationSettingsRequested extends BackgroundEvent {
   const NotificationSettingsRequested();
 }
 
+// -- Battery / OEM onboarding (#68) -----------------------------------------
+
+/// The exemption check landed: Android does (or does not) exempt the app from
+/// battery optimization.
+class BatteryExemptionChanged extends BackgroundEvent {
+  final bool exempt;
+  const BatteryExemptionChanged(this.exempt);
+}
+
+/// Settings asked for the direct `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`
+/// prompt. Emits the request effect; the answer folds back through
+/// [BatteryExemptionUnavailable] or a fresh [BatteryExemptionChanged].
+class BatteryExemptionRequested extends BackgroundEvent {
+  const BatteryExemptionRequested();
+}
+
+/// The direct request was unavailable (no OS handler). Falls back to the
+/// optimization list so the user still has a manual route.
+class BatteryExemptionUnavailable extends BackgroundEvent {
+  const BatteryExemptionUnavailable();
+}
+
+/// Settings asked for the optimization list explicitly.
+class BatteryOptimizationListRequested extends BackgroundEvent {
+  const BatteryOptimizationListRequested();
+}
+
+/// Settings asked for the generic system battery-settings screen.
+class BatterySettingsRequested extends BackgroundEvent {
+  const BatterySettingsRequested();
+}
+
+/// The reactive nudge was shown or dismissed. Dismissal clears the flag and
+/// feeds the throttle with [atMs] (optional for tests that do not exercise the
+/// throttle).
+class BatteryNudgeDismissed extends BackgroundEvent {
+  final int? atMs;
+  const BatteryNudgeDismissed({this.atMs});
+}
+
 // ---------------------------------------------------------------------------
 // Reducer
 // ---------------------------------------------------------------------------
@@ -297,16 +407,28 @@ BackgroundState backgroundReduce(BackgroundState s, BackgroundEvent e) {
       ));
 
     case KeepConnectionChanged(:final enabled):
+      // Opting out of background connection also drops any battery nudge: a
+      // user who turned it off should not be nudged about background survival.
       return _ensureRationale(_reconcile(
-        s.copy(keepConnectionInBackground: enabled),
+        enabled
+            ? s.copy(keepConnectionInBackground: true)
+            : s.copy(
+                keepConnectionInBackground: false,
+                batteryNudgeVisible: false,
+              ),
         allowRetry: !s.keepConnectionInBackground && enabled,
       ));
 
-    case ForegroundChanged(:final foregrounded):
+    case ForegroundChanged(:final foregrounded, :final atMs):
       return _ensureRationale(_reconcile(
-        s.copy(foregrounded: foregrounded),
+        _foldForeground(s, foregrounded, atMs),
         allowRetry: !s.foregrounded && foregrounded,
       ));
+
+    case SocketConnectionChanged(:final connected):
+      // The socket status is not a service-lifecycle signal: it only feeds the
+      // reactive battery nudge's "was the socket down on resume" question.
+      return s.copy(socketConnected: connected);
 
     case NowPlayingChanged(:final media):
       // The view nulls the surface on disconnect or when nothing is held, so
@@ -374,7 +496,71 @@ BackgroundState backgroundReduce(BackgroundState s, BackgroundEvent e) {
     case NotificationSettingsRequested():
       return s.copy(rationaleVisible: false, permissionPrompted: true)
         ..effects.add('openNotificationSettings');
+
+    // -- Battery / OEM onboarding (#68) -------------------------------------
+
+    case BatteryExemptionChanged(:final exempt):
+      return s.copy(batteryExempt: exempt);
+
+    case BatteryExemptionRequested():
+      return s..effects.add('requestBatteryExemption');
+
+    case BatteryExemptionUnavailable():
+      // No direct handler: the optimization list is the fallback route.
+      return s..effects.add('openBatteryOptimizationSettings');
+
+    case BatteryOptimizationListRequested():
+      return s..effects.add('openBatteryOptimizationSettings');
+
+    case BatterySettingsRequested():
+      return s..effects.add('openBatterySettings');
+
+    case BatteryNudgeDismissed(:final atMs):
+      return s.copy(
+        batteryNudgeVisible: false,
+        // Dismissal feeds the throttle too, so a resume right after cannot
+        // immediately raise the notice again.
+        lastBatteryNudgeMs: atMs ?? s.lastBatteryNudgeMs,
+      );
   }
+}
+
+/// Records the foreground/background transition and, on resume, decides whether
+/// the reactive battery nudge is due. It fires only when the user kept
+/// background connection on, the app spent at least
+/// [kBatteryNudgeBackgroundThresholdMs] in the background, the socket was down
+/// on resume, the throttle has elapsed, and the notice is not already up.
+BackgroundState _foldForeground(
+  BackgroundState s,
+  bool foregrounded,
+  int? atMs,
+) {
+  if (!foregrounded) {
+    return s.copy(
+      foregrounded: false,
+      // Keep the first entry time if a redundant background event arrives.
+      backgroundedAtMs: atMs ?? s.backgroundedAtMs,
+    );
+  }
+
+  final leftAt = s.backgroundedAtMs;
+  final now = atMs;
+  var next = s.copy(foregrounded: true, clearBackgroundedAt: true);
+  if (now == null || leftAt == null) return next;
+
+  final backgroundStretchMs = now - leftAt;
+  final socketDown = !s.socketConnected;
+  final throttleElapsed = s.lastBatteryNudgeMs == null ||
+      now - s.lastBatteryNudgeMs! >= kBatteryNudgeThrottleMs;
+  final due = s.keepConnectionInBackground &&
+      backgroundStretchMs >= kBatteryNudgeBackgroundThresholdMs &&
+      socketDown &&
+      throttleElapsed &&
+      !s.batteryNudgeVisible;
+  if (due) {
+    next = next.copy(batteryNudgeVisible: true, lastBatteryNudgeMs: now);
+  }
+  return next;
 }
 
 /// Offers the in-app rationale when it is due, at most once per session. The OS

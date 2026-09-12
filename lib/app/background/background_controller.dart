@@ -1,16 +1,22 @@
 // Thin controller for the persistent-connection foreground service (#64).
 //
 // Folds the connect layer's active-host signal, the Settings toggle, the app
-// lifecycle, the platform's notification-action stream, and the OS
-// notification-permission status into [BackgroundEvent]s, drains the reducer's
-// effects onto the [BackgroundPlatform] seam, and folds the platform's
-// start/stop/permission results back in as events. It makes no decision of its
-// own.
+// lifecycle, the platform's notification-action stream, the OS
+// notification-permission status, and the live socket status into
+// [BackgroundEvent]s, drains the reducer's effects onto the [BackgroundPlatform]
+// seam, and folds the platform's results back in as events. It makes no
+// decision of its own.
 //
 // The reconnect schedule is untouched: this module never pauses or resumes it
 // (ADR-0006). The service is scoped to the connection, not to playback. A
 // denied notification permission (#67) is a degradation: it never stops the
 // service; the reducer only avoids offering the rationale again.
+//
+// Battery / OEM onboarding (#68): the exemption check runs at startup and on
+// every foreground return; Settings drives the direct request / list /
+// generic-settings effects. The reactive nudge is decided purely in the
+// reducer from the injected clock's timestamps (background stretch + throttle);
+// this controller only stamps the lifecycle event and feeds the socket status.
 
 import 'dart:async';
 
@@ -21,6 +27,7 @@ import '../connect/connect_reducer.dart';
 import '../remote/remote_controller.dart';
 import '../settings/settings_controller.dart';
 import '../shell/shell_controller.dart';
+import '../shell/shell_reducer.dart' show ConnectionStatus;
 import 'background_notification_view.dart';
 import 'background_platform.dart';
 import 'background_reducer.dart';
@@ -30,6 +37,13 @@ import 'open_remote_request.dart';
 /// overrides it with the flutter_foreground_task-backed adapter.
 final backgroundPlatformProvider =
     Provider<BackgroundPlatform>((ref) => const NoopBackgroundPlatform());
+
+/// Default clock: epoch milliseconds. Tests override with a manual clock so the
+/// reactive battery nudge's background-stretch and throttle windows are
+/// deterministic.
+final backgroundClockProvider = Provider<int Function()>(
+  (ref) => () => DateTime.now().millisecondsSinceEpoch,
+);
 
 /// An active host is one that connected, or an established connection being
 /// retried. A host that has never connected (`connecting` / `failed`) gets no
@@ -69,7 +83,12 @@ class BackgroundController extends Notifier<BackgroundState> {
       });
     }
 
-    ref.listen(connectionStatusProvider, (previous, next) => foldNotificationView());
+    ref.listen(connectionStatusProvider, (previous, next) {
+      // The live socket status feeds the reactive battery nudge ("was the
+      // socket down on resume"), distinct from the active-host signal above.
+      _dispatch(SocketConnectionChanged(next == ConnectionStatus.connected));
+      foldNotificationView();
+    });
     ref.listen(remoteControllerProvider, (previous, next) => foldNotificationView());
     // Notification actions → the reducer (which only records them, so a
     // dismissal can never stop the service) and then onto the host: every
@@ -91,6 +110,8 @@ class BackgroundController extends Notifier<BackgroundState> {
     final connect = ref.read(connectControllerProvider);
     final settings = ref.read(settingsControllerProvider);
     final media = ref.read(backgroundNotificationViewProvider);
+    final socketConnected =
+        ref.read(connectionStatusProvider) == ConnectionStatus.connected;
     var initial = backgroundReduce(BackgroundState(), NowPlayingChanged(media));
     initial = backgroundReduce(
       initial,
@@ -103,6 +124,7 @@ class BackgroundController extends Notifier<BackgroundState> {
       initial,
       KeepConnectionChanged(settings.keepConnectionInBackground),
     );
+    initial = backgroundReduce(initial, SocketConnectionChanged(socketConnected));
     scheduleMicrotask(() {
       if (ref.mounted) _drain(initial);
     });
@@ -110,16 +132,25 @@ class BackgroundController extends Notifier<BackgroundState> {
     // lands the reducer treats it as granted, so a first connect can never fire
     // the OS prompt cold.
     scheduleMicrotask(_refreshNotificationPermission);
+    // The battery-exemption state is likewise unknown at build; check it so
+    // Settings is honest from the first open.
+    scheduleMicrotask(_refreshBatteryExemption);
     return initial;
   }
 
   /// Lifecycle from main.dart's WidgetsBindingObserver.
   void setForegrounded(bool foregrounded) {
-    _dispatch(ForegroundChanged(foregrounded));
-    // The user may have changed the permission in Android settings; re-check so
-    // the Settings row is honest.
-    if (foregrounded) _refreshNotificationPermission();
+    _dispatch(ForegroundChanged(foregrounded, atMs: _nowMs()));
+    // The user may have changed the OS state in Android settings; re-check so
+    // the Settings rows stay honest. The battery nudge decision already ran in
+    // the reducer from the event's timestamp.
+    if (foregrounded) {
+      _refreshNotificationPermission();
+      _refreshBatteryExemption();
+    }
   }
+
+  int _nowMs() => ref.read(backgroundClockProvider)();
 
   // -- Notification permission (#67) -----------------------------------------
 
@@ -155,6 +186,40 @@ class BackgroundController extends Notifier<BackgroundState> {
     }
   }
 
+  // -- Battery / OEM onboarding (#68) ----------------------------------------
+
+  /// Re-reads the battery-exemption state. Called at startup, on each foreground
+  /// return, and after the user visits an OS battery screen.
+  void checkBatteryExemption() => _refreshBatteryExemption();
+
+  /// Fires the direct exemption request from Settings. If Android has no direct
+  /// handler, the reducer falls back to the optimization list.
+  void requestBatteryExemption() =>
+      _dispatch(const BatteryExemptionRequested());
+
+  /// Opens the optimization list explicitly (the fallback route).
+  void openBatteryOptimizationSettings() =>
+      _dispatch(const BatteryOptimizationListRequested());
+
+  /// Opens the generic system battery-settings screen (the OEM tips action).
+  void openBatterySettings() => _dispatch(const BatterySettingsRequested());
+
+  /// Dismisses the reactive battery nudge and feeds the throttle.
+  void dismissBatteryNudge() =>
+      _dispatch(BatteryNudgeDismissed(atMs: _nowMs()));
+
+  Future<void> _refreshBatteryExemption() async {
+    try {
+      final exempt = await ref
+          .read(backgroundPlatformProvider)
+          .isIgnoringBatteryOptimizations();
+      if (!ref.mounted) return;
+      _dispatch(BatteryExemptionChanged(exempt));
+    } catch (_) {
+      // Keep the last known state; the next foreground/settings open retries.
+    }
+  }
+
   // -- The one place state mutates -------------------------------------------
 
   void _dispatch(BackgroundEvent event) {
@@ -181,6 +246,12 @@ class BackgroundController extends Notifier<BackgroundState> {
           _requestNotificationPermission();
         case 'openNotificationSettings':
           _openNotificationSettings();
+        case 'requestBatteryExemption':
+          _requestBatteryExemption();
+        case 'openBatteryOptimizationSettings':
+          _openBatteryOptimizationSettings();
+        case 'openBatterySettings':
+          _openBatterySettings();
       }
     }
   }
@@ -277,6 +348,46 @@ class BackgroundController extends Notifier<BackgroundState> {
   Future<void> _openNotificationSettings() async {
     try {
       await ref.read(backgroundPlatformProvider).openNotificationSettings();
+    } catch (_) {
+      // Best-effort deep-link; a platform refusal is not actionable here.
+    }
+  }
+
+  Future<void> _requestBatteryExemption() async {
+    var launched = false;
+    try {
+      launched = await ref
+          .read(backgroundPlatformProvider)
+          .requestIgnoreBatteryOptimizations();
+    } catch (_) {
+      launched = false;
+    }
+    if (!ref.mounted) return;
+    if (!launched) {
+      // Android offered no direct handler: fall back to the optimization list.
+      _dispatch(const BatteryExemptionUnavailable());
+      return;
+    }
+    // The user returned from the OS prompt; re-read the exemption state so
+    // Settings reflects the answer.
+    await _refreshBatteryExemption();
+  }
+
+  Future<void> _openBatteryOptimizationSettings() async {
+    try {
+      await ref
+          .read(backgroundPlatformProvider)
+          .openBatteryOptimizationSettings();
+    } catch (_) {
+      // Best-effort deep-link; a platform refusal is not actionable here.
+      return;
+    }
+    if (ref.mounted) await _refreshBatteryExemption();
+  }
+
+  Future<void> _openBatterySettings() async {
+    try {
+      await ref.read(backgroundPlatformProvider).openBatterySettings();
     } catch (_) {
       // Best-effort deep-link; a platform refusal is not actionable here.
     }

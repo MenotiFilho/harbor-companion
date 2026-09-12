@@ -27,9 +27,11 @@
 
 import 'dart:async';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'background_platform.dart';
+import 'battery_settings.dart';
 import 'media_surface_channel.dart';
 import 'notification_permission.dart';
 
@@ -107,8 +109,10 @@ class FlutterForegroundTaskBackgroundPlatform implements BackgroundPlatform {
   FlutterForegroundTaskBackgroundPlatform({
     this.mediaSurface,
     NotificationPermissionBridge? notificationPermission,
-  }) : notificationPermission =
-            notificationPermission ?? MethodChannelNotificationPermission() {
+    BatterySettingsBridge? batterySettings,
+  })  : notificationPermission =
+            notificationPermission ?? MethodChannelNotificationPermission(),
+        batterySettings = batterySettings ?? MethodChannelBatterySettings() {
     FlutterForegroundTask.addTaskDataCallback(_onTaskData);
     // App-lifetime adapter: the broadcast subscription lives as long as it does.
     mediaSurface?.actions.listen(_actions.add);
@@ -116,6 +120,7 @@ class FlutterForegroundTaskBackgroundPlatform implements BackgroundPlatform {
 
   final MediaSurfaceChannel? mediaSurface;
   final NotificationPermissionBridge notificationPermission;
+  final BatterySettingsBridge batterySettings;
 
   final StreamController<BackgroundAction> _actions =
       StreamController<BackgroundAction>.broadcast();
@@ -246,6 +251,41 @@ class FlutterForegroundTaskBackgroundPlatform implements BackgroundPlatform {
   @override
   Future<void> openNotificationSettings() =>
       notificationPermission.openNotificationSettings();
+
+  // -- Battery / OEM onboarding (#68) ----------------------------------------
+
+  @override
+  Future<bool> isIgnoringBatteryOptimizations() =>
+      FlutterForegroundTask.isIgnoringBatteryOptimizations;
+
+  @override
+  Future<bool> requestIgnoreBatteryOptimizations() async {
+    // The plugin resolves the intent and reports the post-request exemption
+    // state. We only care whether the prompt was dispatched: any platform
+    // failure (no activity, no handler) means the direct path is unavailable,
+    // so the caller falls back to the optimization list.
+    try {
+      await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+      return true;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  @override
+  Future<void> openBatteryOptimizationSettings() async {
+    try {
+      await FlutterForegroundTask.openIgnoreBatteryOptimizationSettings();
+    } on PlatformException {
+      // The list is unavailable; the generic battery screen is the last route.
+      await openBatterySettings();
+    }
+  }
+
+  @override
+  Future<void> openBatterySettings() => batterySettings.openBatterySettings();
 
   void _throwIfFailed(ServiceRequestResult result, String operation) {
     if (result is ServiceRequestFailure) {

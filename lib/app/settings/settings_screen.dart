@@ -25,6 +25,14 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   @override
+  void initState() {
+    super.initState();
+    // Reflect the current OS exemption state when the screen opens; the user
+    // may have changed it in Android settings since the last check.
+    ref.read(backgroundControllerProvider.notifier).checkBatteryExemption();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final state = ref.watch(connectControllerProvider);
     final ctrl = ref.read(connectControllerProvider.notifier);
@@ -33,6 +41,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final settings = ref.watch(settingsControllerProvider);
     final settingsCtrl = ref.read(settingsControllerProvider.notifier);
     final background = ref.watch(backgroundControllerProvider);
+    final backgroundCtrl = ref.read(backgroundControllerProvider.notifier);
 
     // Show the warning gate as a blocking dialog whenever the reducer holds it.
     ref.listen(connectControllerProvider, (previous, next) {
@@ -79,6 +88,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             status: background.notificationPermission,
             onTap: () =>
                 _requestNotificationAccess(background.notificationPermission),
+          ),
+          _BatterySection(
+            exempt: background.batteryExempt,
+            onRequestExemption: backgroundCtrl.requestBatteryExemption,
+            onOpenOptimizationList:
+                backgroundCtrl.openBatteryOptimizationSettings,
+            onOpenBatterySettings: backgroundCtrl.openBatterySettings,
           ),
           const SizedBox(height: 24),
           _sectionHeader('Playback'),
@@ -534,6 +550,96 @@ class _NotificationAccessTile extends StatelessWidget {
       subtitle: Text(subtitle),
       trailing: trailing,
       onTap: status == NotificationPermissionStatus.granted ? null : onTap,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Battery / OEM onboarding (ticket 68, ADR-0007)
+// ---------------------------------------------------------------------------
+
+/// The battery-exemption row plus the static OEM tips block. The direct request
+/// (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`) is the primary action with
+/// the optimization list as the fallback; the generic battery-settings action
+/// backs the tips. The tips are static text pinned to MIUI/Samsung/Xiaomi —
+/// there is deliberately no runtime manufacturer detection.
+class _BatterySection extends StatelessWidget {
+  final bool exempt;
+  final VoidCallback onRequestExemption;
+  final VoidCallback onOpenOptimizationList;
+  final VoidCallback onOpenBatterySettings;
+  const _BatterySection({
+    required this.exempt,
+    required this.onRequestExemption,
+    required this.onOpenOptimizationList,
+    required this.onOpenBatterySettings,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 8),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+            Icons.battery_saver_outlined,
+            color: exempt ? scheme.primary : scheme.onSurfaceVariant,
+          ),
+          title: const Text('Battery optimization'),
+          subtitle: Text(
+            exempt
+                ? 'Exempt — Android will not optimize the connection while the '
+                    'screen is off.'
+                : 'Not exempt — Android may kill the connection while the '
+                    'screen is off.',
+          ),
+          trailing: exempt
+              ? const Icon(Icons.check_circle, color: Colors.green)
+              : null,
+        ),
+        if (!exempt)
+          Wrap(
+            spacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              FilledButton.tonalIcon(
+                onPressed: onRequestExemption,
+                icon: const Icon(Icons.battery_charging_full),
+                label: const Text('Request exemption'),
+              ),
+              TextButton(
+                onPressed: onOpenOptimizationList,
+                child: const Text('Open optimization list'),
+              ),
+            ],
+          ),
+        const SizedBox(height: 12),
+        Text(
+          'If the connection still drops',
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Aggressive battery managers can stop background apps. On MIUI, set '
+          'Harbor Companion to “No restrictions” and enable Autostart. On '
+          'Samsung, remove it from “Sleeping apps” and turn off “Put unused '
+          'apps to sleep”. On Xiaomi, allow Autostart and set the battery saver '
+          'to “No restrictions”.',
+          style: Theme.of(context)
+              .textTheme
+              .bodySmall
+              ?.copyWith(color: scheme.onSurfaceVariant),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: onOpenBatterySettings,
+          icon: const Icon(Icons.settings_power_outlined),
+          label: const Text('Open battery settings'),
+        ),
+      ],
     );
   }
 }

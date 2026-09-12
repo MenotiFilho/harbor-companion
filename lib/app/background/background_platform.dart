@@ -286,6 +286,25 @@ abstract interface class BackgroundPlatform {
   /// permission is permanently denied).
   Future<void> openNotificationSettings();
 
+  // -- Battery / OEM onboarding (#68) ----------------------------------------
+
+  /// Whether Android currently exempts the app from battery optimization, so
+  /// the process is not killed in Doze / by an aggressive OEM. On Android < 6
+  /// this is always true (the concept does not exist).
+  Future<bool> isIgnoringBatteryOptimizations();
+
+  /// Fire the direct `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` prompt and
+  /// report whether it was launched/available. `false` means the OS offered no
+  /// handler, so the caller falls back to [openBatteryOptimizationSettings].
+  Future<bool> requestIgnoreBatteryOptimizations();
+
+  /// Open the system battery-optimization list (the fallback path when the
+  /// direct request is unavailable, or a manual route the user prefers).
+  Future<void> openBatteryOptimizationSettings();
+
+  /// Open the generic system battery-settings screen (the OEM tips action).
+  Future<void> openBatterySettings();
+
   /// Actions the user performs on the notification.
   Stream<BackgroundAction> get actions;
 }
@@ -319,6 +338,20 @@ class NoopBackgroundPlatform implements BackgroundPlatform {
 
   @override
   Future<void> openNotificationSettings() async {}
+
+  // Report the app as already exempt and never launch anything: the no-op
+  // default must not make the app navigate away in tests.
+  @override
+  Future<bool> isIgnoringBatteryOptimizations() async => true;
+
+  @override
+  Future<bool> requestIgnoreBatteryOptimizations() async => true;
+
+  @override
+  Future<void> openBatteryOptimizationSettings() async {}
+
+  @override
+  Future<void> openBatterySettings() async {}
 
   @override
   Stream<BackgroundAction> get actions => const Stream<BackgroundAction>.empty();

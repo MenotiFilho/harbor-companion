@@ -119,6 +119,14 @@ class FakeBackgroundPlatform implements BackgroundPlatform {
   int requestCalls = 0;
   int openSettingsCalls = 0;
 
+  /// Battery / OEM (#68) state the fake reports and records.
+  bool batteryExempt = false;
+  bool batteryRequestLaunchable = true;
+  int batteryCheckCalls = 0;
+  int batteryRequestCalls = 0;
+  int batteryListCalls = 0;
+  int batterySettingsCalls = 0;
+
   final StreamController<BackgroundAction> _actions =
       StreamController<BackgroundAction>.broadcast();
 
@@ -160,6 +168,24 @@ class FakeBackgroundPlatform implements BackgroundPlatform {
   Future<void> openNotificationSettings() async => openSettingsCalls++;
 
   @override
+  Future<bool> isIgnoringBatteryOptimizations() async {
+    batteryCheckCalls++;
+    return batteryExempt;
+  }
+
+  @override
+  Future<bool> requestIgnoreBatteryOptimizations() async {
+    batteryRequestCalls++;
+    return batteryRequestLaunchable;
+  }
+
+  @override
+  Future<void> openBatteryOptimizationSettings() async => batteryListCalls++;
+
+  @override
+  Future<void> openBatterySettings() async => batterySettingsCalls++;
+
+  @override
   Stream<BackgroundAction> get actions => _actions.stream;
 
   void emit(BackgroundAction action) => _actions.add(action);
@@ -170,11 +196,16 @@ void main() {
   late FakeTransport transport;
   late ProviderContainer container;
 
+  /// Manual epoch-ms clock for the battery-nudge windows (#68). Tests advance
+  /// it explicitly; the service-lifecycle tests leave it at 0.
+  late int backgroundMs;
+
   Duration now() => Duration(milliseconds: clock.now().millisecondsSinceEpoch);
 
   ProviderContainer makeContainer() {
     platform = FakeBackgroundPlatform();
     transport = FakeTransport();
+    backgroundMs = 0;
     final c = ProviderContainer(
       overrides: [
         wsTransportProvider.overrideWithValue(transport),
@@ -185,6 +216,7 @@ void main() {
         subnetScannerProvider.overrideWithValue(const FixedSubnetScanner([])),
         settingsStoreProvider.overrideWithValue(InMemorySettingsStore()),
         backgroundPlatformProvider.overrideWithValue(platform),
+        backgroundClockProvider.overrideWithValue(() => backgroundMs),
       ],
     );
     addTearDown(c.dispose);
@@ -735,6 +767,145 @@ void main() {
       async.flushMicrotasks();
 
       expect(platform.openSettingsCalls, 1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #68: battery / OEM onboarding.
+  // -------------------------------------------------------------------------
+
+  test('the exemption check folds the platform state', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      platform.batteryExempt = true;
+      background();
+      async.flushMicrotasks();
+
+      expect(platform.batteryCheckCalls, greaterThan(0));
+      expect(container.read(backgroundControllerProvider).batteryExempt, isTrue);
+    });
+  });
+
+  test('the direct exemption request refreshes the state when it launches', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      background();
+      async.flushMicrotasks();
+      platform.batteryCheckCalls = 0;
+
+      background().requestBatteryExemption();
+      async.flushMicrotasks();
+
+      expect(platform.batteryRequestCalls, 1);
+      // Launched → no fallback; the state is re-read afterwards.
+      expect(platform.batteryListCalls, 0);
+      expect(platform.batteryCheckCalls, greaterThan(0));
+    });
+  });
+
+  test('an unavailable direct request falls back to the optimization list', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      platform.batteryRequestLaunchable = false;
+      background();
+      async.flushMicrotasks();
+
+      background().requestBatteryExemption();
+      async.flushMicrotasks();
+
+      expect(platform.batteryRequestCalls, 1);
+      expect(platform.batteryListCalls, 1);
+    });
+  });
+
+  test('the optimization list and generic battery settings are wired', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      background();
+      async.flushMicrotasks();
+
+      background().openBatteryOptimizationSettings();
+      async.flushMicrotasks();
+      expect(platform.batteryListCalls, 1);
+
+      background().openBatterySettings();
+      async.flushMicrotasks();
+      expect(platform.batterySettingsCalls, 1);
+    });
+  });
+
+  test('resuming with the socket down after a background stretch nudges', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      // Socket stays down (default connection status is disconnected).
+      final bg = background();
+      async.flushMicrotasks();
+
+      backgroundMs = 1000;
+      bg.setForegrounded(false);
+      async.flushMicrotasks();
+
+      backgroundMs = 1000 + kBatteryNudgeBackgroundThresholdMs;
+      bg.setForegrounded(true);
+      async.flushMicrotasks();
+
+      expect(container.read(backgroundControllerProvider).batteryNudgeVisible,
+          isTrue);
+
+      bg.dismissBatteryNudge();
+      async.flushMicrotasks();
+      expect(container.read(backgroundControllerProvider).batteryNudgeVisible,
+          isFalse);
+    });
+  });
+
+  test('the nudge is throttled: a resume inside the window stays quiet', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      final bg = background();
+      async.flushMicrotasks();
+
+      backgroundMs = 1000;
+      bg.setForegrounded(false);
+      async.flushMicrotasks();
+      backgroundMs = 1000 + kBatteryNudgeBackgroundThresholdMs;
+      bg.setForegrounded(true);
+      async.flushMicrotasks();
+      expect(container.read(backgroundControllerProvider).batteryNudgeVisible,
+          isTrue);
+      bg.dismissBatteryNudge();
+      async.flushMicrotasks();
+
+      // A second background/resume inside the throttle window must not nudge.
+      backgroundMs += kBatteryNudgeBackgroundThresholdMs;
+      bg.setForegrounded(false);
+      async.flushMicrotasks();
+      backgroundMs += kBatteryNudgeBackgroundThresholdMs;
+      bg.setForegrounded(true);
+      async.flushMicrotasks();
+      expect(container.read(backgroundControllerProvider).batteryNudgeVisible,
+          isFalse);
+    });
+  });
+
+  test('with the toggle off no nudge fires', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      container
+          .read(settingsControllerProvider.notifier)
+          .setKeepConnectionInBackground(false);
+      final bg = background();
+      async.flushMicrotasks();
+
+      backgroundMs = 1000;
+      bg.setForegrounded(false);
+      async.flushMicrotasks();
+      backgroundMs = 1000 + kBatteryNudgeBackgroundThresholdMs;
+      bg.setForegrounded(true);
+      async.flushMicrotasks();
+
+      expect(container.read(backgroundControllerProvider).batteryNudgeVisible,
+          isFalse);
     });
   });
 }

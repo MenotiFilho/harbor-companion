@@ -117,4 +117,13 @@ void main() {
         NotificationPermissionStatus.granted);
     await platform.openNotificationSettings();
   });
+
+  test('the no-op platform reports exempt and never launches battery intents',
+      () async {
+    const platform = NoopBackgroundPlatform();
+    expect(await platform.isIgnoringBatteryOptimizations(), isTrue);
+    expect(await platform.requestIgnoreBatteryOptimizations(), isTrue);
+    await platform.openBatteryOptimizationSettings();
+    await platform.openBatterySettings();
+  });
 }

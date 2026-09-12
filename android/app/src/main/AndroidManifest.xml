@@ -13,6 +13,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Battery / OEM onboarding (#68, ADR-0007): the direct
+         ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS prompt needs this. Being
+         sideloaded, Play's restriction on the permission does not bind us. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <application
         android:label="Harbor Companion"
         android:name="${applicationName}"

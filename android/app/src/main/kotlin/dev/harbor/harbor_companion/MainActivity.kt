@@ -54,6 +54,20 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        // Generic battery-settings deep link for the OEM tips block (#68). The
+        // exemption check, the direct request and the optimization list come
+        // from flutter_foreground_task; only this generic screen is not exposed.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, BATTERY_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "openBatterySettings" -> {
+                        openBatterySettings()
+                        result.success(null)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
         // Native MediaSession/MediaStyle surface for the persistent-connection
         // notification (ticket #66). A cold start from the notification body
         // carries EXTRA_OPEN_REMOTE; hand it to Dart once its handler is ready.
@@ -119,6 +133,23 @@ class MainActivity : FlutterActivity() {
             .apply()
     }
 
+    // -- generic battery settings (#68, ADR-0007) ----------------------------
+
+    /**
+     * Opens the system battery-settings screen. Not every OEM ships the battery
+     * saver screen, so fall back to the top-level settings app rather than
+     * throw.
+     */
+    private fun openBatterySettings() {
+        val intent = Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS)
+        val target = if (intent.resolveActivity(packageManager) != null) {
+            intent
+        } else {
+            Intent(Settings.ACTION_SETTINGS)
+        }
+        startActivity(target)
+    }
+
     private fun openNotificationSettings() {
         val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
@@ -137,6 +168,7 @@ class MainActivity : FlutterActivity() {
         private const val MEDIA_CHANNEL = "dev.harbor.harbor_companion/media_surface"
         private const val NOTIFICATION_CHANNEL =
             "dev.harbor.harbor_companion/notification_permission"
+        private const val BATTERY_CHANNEL = "dev.harbor.harbor_companion/battery"
         private const val NOTIFICATION_PREFS = "harbor_companion.notification"
         private const val NOTIFICATION_ASKED_KEY = "post_notifications_asked"
     }

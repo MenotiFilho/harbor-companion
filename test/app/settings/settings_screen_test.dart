@@ -61,11 +61,17 @@ class FakeVersionProvider implements VersionProvider {
 /// Minimal BackgroundPlatform for the Settings permission row: only the
 /// permission operations matter here; the service methods are never reached.
 class FakeBackgroundPlatform implements BackgroundPlatform {
-  FakeBackgroundPlatform(this.permission);
+  FakeBackgroundPlatform(this.permission, {this.batteryExempt = false});
 
   NotificationPermissionStatus permission;
   int requestCalls = 0;
   int openSettingsCalls = 0;
+
+  /// Battery / OEM (#68).
+  bool batteryExempt;
+  int batteryRequestCalls = 0;
+  int batteryListCalls = 0;
+  int batterySettingsCalls = 0;
 
   @override
   Future<NotificationPermissionStatus> checkNotificationPermission() async =>
@@ -79,6 +85,21 @@ class FakeBackgroundPlatform implements BackgroundPlatform {
 
   @override
   Future<void> openNotificationSettings() async => openSettingsCalls++;
+
+  @override
+  Future<bool> isIgnoringBatteryOptimizations() async => batteryExempt;
+
+  @override
+  Future<bool> requestIgnoreBatteryOptimizations() async {
+    batteryRequestCalls++;
+    return true;
+  }
+
+  @override
+  Future<void> openBatteryOptimizationSettings() async => batteryListCalls++;
+
+  @override
+  Future<void> openBatterySettings() async => batterySettingsCalls++;
 
   @override
   Future<void> startService(BackgroundNotification notification) async {}
@@ -411,5 +432,59 @@ void main() {
     await tester.pumpAndSettle();
     expect(platform.requestCalls, 0);
     expect(platform.openSettingsCalls, 0);
+  });
+
+  testWidgets('the battery section offers the direct request and the fallback',
+      (tester) async {
+    final platform = FakeBackgroundPlatform(NotificationPermissionStatus.granted);
+    final container = makeContainer(backgroundPlatform: platform);
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    await scrollTo(tester, find.text('Battery optimization'));
+    expect(find.textContaining('Not exempt'), findsOneWidget);
+
+    await tester.tap(find.text('Request exemption'));
+    await tester.pumpAndSettle();
+    expect(platform.batteryRequestCalls, 1);
+
+    await tester.tap(find.text('Open optimization list'));
+    await tester.pumpAndSettle();
+    expect(platform.batteryListCalls, 1);
+  });
+
+  testWidgets('the battery section reflects an exempt app', (tester) async {
+    final platform = FakeBackgroundPlatform(
+      NotificationPermissionStatus.granted,
+      batteryExempt: true,
+    );
+    final container = makeContainer(backgroundPlatform: platform);
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    await scrollTo(tester, find.text('Battery optimization'));
+    expect(find.textContaining('Exempt'), findsOneWidget);
+    expect(find.text('Request exemption'), findsNothing);
+    expect(find.text('Open optimization list'), findsNothing);
+  });
+
+  testWidgets('the OEM tips block shows static guidance and a battery action',
+      (tester) async {
+    final platform = FakeBackgroundPlatform(NotificationPermissionStatus.granted);
+    final container = makeContainer(backgroundPlatform: platform);
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    await scrollTo(tester, find.text('If the connection still drops'));
+    expect(find.textContaining('MIUI'), findsOneWidget);
+    expect(find.textContaining('Samsung'), findsOneWidget);
+    expect(find.textContaining('Xiaomi'), findsOneWidget);
+
+    await tester.tap(find.text('Open battery settings'));
+    await tester.pumpAndSettle();
+    expect(platform.batterySettingsCalls, 1);
   });
 }
