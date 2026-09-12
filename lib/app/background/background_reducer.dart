@@ -17,10 +17,16 @@
 // getter picks idle host status vs. media, and `_reconcile` posts an in-place
 // update only when the rendered surface actually changes.
 //
+// #66: a position-only tick (400 ms while playing) still re-anchors the native
+// `MediaSession`'s `PlaybackState` — the plugin notification is not re-posted,
+// but the platform must extrapolate from the freshest position, so a
+// `updateMediaSession` effect is emitted without an `updateService`.
+//
 // Effects vocabulary:
-//   `startService`  → platform.startService(state.notification)
-//   `updateService` → platform.updateService(state.notification)
-//   `stopService`   → platform.stopService()
+//   `startService`       → platform.startService(state.notification)
+//   `updateService`      → platform.updateService(state.notification)
+//   `updateMediaSession` → platform.updateMediaSession(state.media)
+//   `stopService`        → platform.stopService()
 
 import 'background_platform.dart';
 
@@ -234,9 +240,18 @@ BackgroundState backgroundReduce(BackgroundState s, BackgroundEvent e) {
     case NowPlayingChanged(:final media):
       // The view nulls the surface on disconnect or when nothing is held, so
       // this both raises the media notification and clears it at once.
-      return _reconcile(
+      final next = _reconcile(
         media == null ? s.copy(clearMedia: true) : s.copy(media: media),
       );
+      // The plugin notification coalesces a position-only tick away (see
+      // `_sameRenderedSurface`), but the native MediaSession still needs the
+      // freshest position to extrapolate from. Re-anchor it when this dispatch
+      // did not already repost/start the surface.
+      if (next.serviceStatus == BackgroundServiceStatus.running &&
+          !next.effects.contains('updateService')) {
+        next.effects.add('updateMediaSession');
+      }
+      return next;
 
     case ServiceStarted():
       return _reconcile(s.copy(

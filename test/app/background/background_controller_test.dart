@@ -16,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:harbor_companion/app/background/background_controller.dart';
 import 'package:harbor_companion/app/background/background_platform.dart';
 import 'package:harbor_companion/app/background/background_reducer.dart';
+import 'package:harbor_companion/app/background/open_remote_request.dart';
 import 'package:harbor_companion/app/connect/connect_controller.dart';
 import 'package:harbor_companion/app/connect/host_registry.dart';
 import 'package:harbor_companion/app/connect/lan_scan.dart';
@@ -27,11 +28,12 @@ import 'package:harbor_companion/app/ws/ws_transport.dart';
 
 class FakeConnection implements WsConnection {
   final _frames = StreamController<String>.broadcast();
+  final List<String> sent = [];
   bool closed = false;
   @override
   Stream<String> get frames => _frames.stream;
   @override
-  void send(String message) {}
+  void send(String message) => sent.add(message);
   @override
   Future<void> close() async {
     closed = true;
@@ -103,6 +105,7 @@ class FakeKeyStore implements HostKeyStore {
 class FakeBackgroundPlatform implements BackgroundPlatform {
   final List<BackgroundNotification> startCalls = [];
   final List<BackgroundNotification> updateCalls = [];
+  final List<BackgroundMediaSurface?> mediaSessionCalls = [];
   int stopCalls = 0;
   bool failStart = false;
 
@@ -120,6 +123,11 @@ class FakeBackgroundPlatform implements BackgroundPlatform {
   @override
   Future<void> updateService(BackgroundNotification notification) async {
     updateCalls.add(notification);
+  }
+
+  @override
+  Future<void> updateMediaSession(BackgroundMediaSurface? media) async {
+    mediaSessionCalls.add(media);
   }
 
   @override
@@ -388,5 +396,135 @@ void main() {
       container.read(backgroundControllerProvider).serviceStatus,
       BackgroundServiceStatus.running,
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // #66: host-authoritative transport controls on the notification.
+  // -------------------------------------------------------------------------
+
+  /// Drives a connected, running service that holds [frame]'s media and
+  /// returns the wire connection, with the connect handshake frames cleared.
+  Future<FakeConnection> runningWithMedia(Map<String, dynamic> frame) async {
+    container = makeContainer();
+    container.read(backgroundControllerProvider.notifier);
+    connect();
+    await settle();
+    connectTo('desk');
+    await settle();
+    final connection = transport.connections.single;
+    connection.emit(jsonEncode(frame));
+    await settle();
+    connection.sent.clear();
+    return connection;
+  }
+
+  test('play/pause sends the same command the app does, with no optimism',
+      () async {
+    final connection = await runningWithMedia(snapshotFrame(
+      updatedAt: 1000,
+      mediaTitle: 'Breaking Bad',
+      playing: true,
+    ));
+
+    platform.emit(BackgroundAction.togglePlay);
+    await settle();
+
+    expect(connection.sent.single, contains('"action":"pause"'));
+    // Host-authoritative: the surface still says playing until a snapshot
+    // corrects it — no optimistic flip.
+    expect(container.read(backgroundControllerProvider).media?.playing, isTrue);
+
+    connection.emit(jsonEncode(snapshotFrame(
+      updatedAt: 1400,
+      mediaTitle: 'Breaking Bad',
+      playing: false,
+    )));
+    await settle();
+    expect(container.read(backgroundControllerProvider).media?.playing, isFalse);
+
+    platform.emit(BackgroundAction.togglePlay);
+    await settle();
+    expect(connection.sent.last, contains('"action":"play"'));
+  });
+
+  test('prev/next are emitted only when the snapshot reports them', () async {
+    final connection = await runningWithMedia(snapshotFrame(
+      updatedAt: 1000,
+      playing: true,
+      hasPrev: false,
+      hasNext: false,
+    ));
+
+    platform.emit(BackgroundAction.previous);
+    platform.emit(BackgroundAction.next);
+    await settle();
+    expect(connection.sent, isEmpty,
+        reason: 'no prev/next episode → the buttons do nothing');
+
+    connection.emit(jsonEncode(snapshotFrame(
+      updatedAt: 1400,
+      playing: true,
+      hasPrev: true,
+      hasNext: true,
+    )));
+    await settle();
+    final surface = container.read(backgroundControllerProvider).media!;
+    expect(surface.hasPrevEpisode, isTrue);
+    expect(surface.hasNextEpisode, isTrue);
+
+    platform.emit(BackgroundAction.previous);
+    platform.emit(BackgroundAction.next);
+    await settle();
+    expect(connection.sent, hasLength(2));
+    expect(connection.sent[0], contains('prevEpisode'));
+    expect(connection.sent[1], contains('nextEpisode'));
+  });
+
+  test('the seek scrubber emits seek and the snapshot re-anchors the surface',
+      () async {
+    final connection = await runningWithMedia(snapshotFrame(
+      updatedAt: 1000,
+      playing: true,
+      positionSec: 0,
+      durationSec: 2700,
+    ));
+
+    platform.emit(const BackgroundSeek(120));
+    await settle();
+    expect(connection.sent.single, contains('"action":"seek"'));
+    expect(connection.sent.single, contains('"positionSec":120'));
+
+    // The host moved to 120; the position-only snapshot re-anchors the native
+    // PlaybackState even though the plugin notification is not reposted.
+    platform.mediaSessionCalls.clear();
+    connection.emit(jsonEncode(snapshotFrame(
+      updatedAt: 1400,
+      playing: true,
+      positionSec: 120,
+      durationSec: 2700,
+    )));
+    await settle();
+    expect(platform.mediaSessionCalls.last?.positionSec, 120);
+  });
+
+  test('tapping the notification body requests opening the Remote tab', () {
+    fakeAsync((async) {
+      container = makeContainer();
+      container.read(backgroundControllerProvider.notifier);
+      connect();
+      async.flushMicrotasks();
+      connectTo('desk');
+      async.flushMicrotasks();
+
+      expect(container.read(openRemoteRequestProvider), 0);
+      platform.emit(BackgroundAction.opened);
+      async.flushMicrotasks();
+      expect(container.read(openRemoteRequestProvider), 1);
+
+      // A second tap still produces an observable change.
+      platform.emit(BackgroundAction.opened);
+      async.flushMicrotasks();
+      expect(container.read(openRemoteRequestProvider), 2);
+    });
   });
 }

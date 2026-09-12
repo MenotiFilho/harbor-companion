@@ -9,6 +9,8 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    private var mediaSurface: MediaSurfaceController? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         // Install-permission seam for the self-update install half: expose
@@ -29,6 +31,29 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // Native MediaSession/MediaStyle surface for the persistent-connection
+        // notification (ticket #66). A cold start from the notification body
+        // carries EXTRA_OPEN_REMOTE; hand it to Dart once its handler is ready.
+        val controller = MediaSurfaceController(applicationContext)
+        val mediaChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, MEDIA_CHANNEL)
+        controller.attach(mediaChannel)
+        mediaChannel.setMethodCallHandler { call, result -> controller.onMethodCall(call, result) }
+        if (intent?.getBooleanExtra(MediaSurfaceController.EXTRA_OPEN_REMOTE, false) == true) {
+            controller.markPendingOpened()
+            intent.removeExtra(MediaSurfaceController.EXTRA_OPEN_REMOTE)
+        }
+        mediaSurface = controller
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // Warm start: the engine is up, so signal the tap straight through.
+        if (intent.getBooleanExtra(MediaSurfaceController.EXTRA_OPEN_REMOTE, false)) {
+            intent.removeExtra(MediaSurfaceController.EXTRA_OPEN_REMOTE)
+            mediaSurface?.signalOpened()
+        }
     }
 
     private fun canRequestInstallPackages(): Boolean {
@@ -43,5 +68,6 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         private const val CHANNEL = "dev.harbor.harbor_companion/install_permission"
+        private const val MEDIA_CHANNEL = "dev.harbor.harbor_companion/media_surface"
     }
 }

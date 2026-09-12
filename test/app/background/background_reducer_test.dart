@@ -247,7 +247,7 @@ void main() {
           hasNextEpisode: true,
         )),
       );
-      expect(effects, isEmpty);
+      expect(effects, ['updateMediaSession']);
       // The fresher transport metadata is still held for #66.
       expect(s.media?.positionSec, 125);
       expect(s.notification.media?.positionSec, 125);

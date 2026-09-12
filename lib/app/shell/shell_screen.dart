@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../background/open_remote_request.dart';
 import '../home/home_screen.dart';
 import '../library/library_screen.dart';
 import '../profile/profile_screen.dart';
@@ -54,6 +55,14 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
           !(previous?.awaitingInstallPermission ?? false)) {
         _showSnack('Allow "Install unknown apps" to update Harbor Companion');
       }
+    });
+
+    // A notification body tap (background module) requests the Remote tab; do
+    // the same pop-to-root + select the mini-player does. A monotonically
+    // increasing counter means every request is observed, and the first build
+    // (0) never fires.
+    ref.listen(openRemoteRequestProvider, (previous, next) {
+      if (next > (previous ?? 0)) _openRemote();
     });
 
     return Scaffold(
@@ -129,6 +138,13 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// Opens the Remote tab, popping any pushed route (settings/detail) first so
+  /// the tab is actually visible. Mirrors [PlayerBar]'s open-Remote.
+  void _openRemote() {
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    ref.read(shellControllerProvider.notifier).selectTab(ShellTab.remote);
   }
 
   Widget _tabBody(ShellTab tab) => switch (tab) {

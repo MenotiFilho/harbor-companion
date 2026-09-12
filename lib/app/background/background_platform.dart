@@ -12,8 +12,8 @@
 // #64 built the idle surface ("Harbor Companion" / "Connected to <host>").
 // #65 makes the one notification morph: while the Remote layer holds media it
 // carries a [BackgroundMediaSurface] (title + episode line, plus the poster and
-// transport metadata #66 consumes). The action model stays intentionally
-// minimal until #66 adds the transport controls.
+// transport metadata #66 consumes). #66 adds the transport action vocabulary
+// (play/pause, previous, next, seek) and the native `MediaSession` re-anchor.
 
 import 'dart:async';
 
@@ -103,16 +103,125 @@ class BackgroundNotification {
   String toString() => 'BackgroundNotification($title / $text)';
 }
 
-/// An action the user performed on the notification. Minimal for #64: #66 adds
-/// the transport controls (play/pause, prev/next, seek).
-enum BackgroundAction {
-  /// The body of the notification was tapped. The shell opens the Remote tab
-  /// (ticket #66); the background module only carries the signal.
-  opened,
+/// An action the user performed on the notification (#66). The media controls
+/// are host-authoritative: an action is just a request, mapped by the
+/// controller onto the existing [RemoteController] methods; the next snapshot
+/// re-renders the surface. Volume, mute and subtitles are intentionally absent
+/// — volume would target the phone's stream, not the host's (ADR-0005).
+///
+/// A `sealed` hierarchy (rather than an enum) lets [BackgroundSeek] carry the
+/// position it needs. The singleton members keep the call sites from #64/#65
+/// (`BackgroundAction.opened`, `.dismissed`) working unchanged.
+sealed class BackgroundAction {
+  const BackgroundAction();
+
+  /// The body of the notification was tapped. The shell opens the Remote tab.
+  static const BackgroundAction opened = BackgroundOpened();
 
   /// The notification was dismissed. Android 14+ allows this without stopping
   /// the service — never tie service stop to notification dismissal.
-  dismissed,
+  static const BackgroundAction dismissed = BackgroundDismissed();
+
+  /// Play/pause toggle. Always present while media is held.
+  static const BackgroundAction togglePlay = BackgroundTogglePlay();
+
+  /// Previous episode. Only offered when the snapshot says it exists.
+  static const BackgroundAction previous = BackgroundPrevious();
+
+  /// Next episode. Only offered when the snapshot says it exists.
+  static const BackgroundAction next = BackgroundNext();
+}
+
+final class BackgroundOpened extends BackgroundAction {
+  const BackgroundOpened();
+}
+
+final class BackgroundDismissed extends BackgroundAction {
+  const BackgroundDismissed();
+}
+
+final class BackgroundTogglePlay extends BackgroundAction {
+  const BackgroundTogglePlay();
+}
+
+final class BackgroundPrevious extends BackgroundAction {
+  const BackgroundPrevious();
+}
+
+final class BackgroundNext extends BackgroundAction {
+  const BackgroundNext();
+}
+
+/// A seek request from the scrubber, in seconds.
+final class BackgroundSeek extends BackgroundAction {
+  final double positionSec;
+  const BackgroundSeek(this.positionSec);
+
+  @override
+  bool operator ==(Object other) =>
+      other is BackgroundSeek && other.positionSec == positionSec;
+
+  @override
+  int get hashCode => positionSec.hashCode;
+
+  @override
+  String toString() => 'BackgroundSeek($positionSec)';
+}
+
+/// The transport actions the notification may offer for [media], in system
+/// compact-view order: previous (when it exists), play/pause (always), next
+/// (when it exists). Returns empty while no media is held. The gating lives
+/// here so both the plugin-button fallback and the native surface agree.
+List<BackgroundAction> surfaceActions(BackgroundMediaSurface? media) {
+  if (media == null) return const <BackgroundAction>[];
+  return <BackgroundAction>[
+    if (media.hasPrevEpisode) BackgroundAction.previous,
+    BackgroundAction.togglePlay,
+    if (media.hasNextEpisode) BackgroundAction.next,
+  ];
+}
+
+/// The stable id for [action] on the platform wire (the inverse of
+/// [backgroundActionFromId]). Seek has no id: the native surface always carries
+/// its position, and the plugin-button fallback has no scrubber.
+String? backgroundActionId(BackgroundAction action) {
+  switch (action) {
+    case BackgroundOpened():
+      return 'opened';
+    case BackgroundDismissed():
+      return 'dismissed';
+    case BackgroundTogglePlay():
+      return 'togglePlay';
+    case BackgroundPrevious():
+      return 'previous';
+    case BackgroundNext():
+      return 'next';
+    case BackgroundSeek():
+      return null;
+  }
+}
+
+/// Maps a raw action id (from the plugin TaskHandler's `sendDataToMain`, or the
+/// native media channel) to a [BackgroundAction], or null when the id is not a
+/// known transport action. Unknown ids — including any volume/mute/subtitles
+/// command — are dropped, so those can never reach the surface.
+BackgroundAction? backgroundActionFromId(String id, {double? positionSec}) {
+  switch (id) {
+    case 'opened':
+      return BackgroundAction.opened;
+    case 'dismissed':
+      return BackgroundAction.dismissed;
+    case 'togglePlay':
+      return BackgroundAction.togglePlay;
+    case 'previous':
+      return BackgroundAction.previous;
+    case 'next':
+      return BackgroundAction.next;
+    case 'seek':
+      return positionSec == null ? null : BackgroundSeek(positionSec);
+    default:
+      return null;
+  }
 }
 
 /// Raised by an adapter when the platform refuses to start/update/stop the
@@ -137,6 +246,12 @@ abstract interface class BackgroundPlatform {
   /// Update the running service's notification in place.
   Future<void> updateService(BackgroundNotification notification);
 
+  /// Re-anchor the native media surface from the freshest snapshot. Called on
+  /// a position-only tick the plugin notification coalesces away, so the
+  /// platform's `PlaybackState` extrapolates from the latest anchor. No-op
+  /// when the adapter has no native surface. [media] null clears it.
+  Future<void> updateMediaSession(BackgroundMediaSurface? media);
+
   /// Stop the service and remove its notification. No-op when not running.
   Future<void> stopService();
 
@@ -154,6 +269,9 @@ class NoopBackgroundPlatform implements BackgroundPlatform {
 
   @override
   Future<void> updateService(BackgroundNotification notification) async {}
+
+  @override
+  Future<void> updateMediaSession(BackgroundMediaSurface? media) async {}
 
   @override
   Future<void> stopService() async {}

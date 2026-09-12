@@ -12,14 +12,25 @@
 // (#65).
 //
 // Notification actions are produced in the service isolate by the TaskHandler
-// and forwarded to the main isolate with `sendDataToMain`. #66 turns them into
-// RemoteController commands; this adapter only forwards them.
+// and forwarded to the main isolate with `sendDataToMain`; the native
+// `MediaSession` (see media_surface_channel.dart) routes its callbacks the same
+// way. #66 turns them into RemoteController commands; this adapter forwards and
+// gates them.
+//
+// Two surfaces, one interface:
+//   - Preferred: the app-owned native `MediaSession` + `MediaStyle`
+//     notification, published under the plugin service's own notification id.
+//   - Fallback (no native channel, or the native call fails): the plugin's
+//     notification buttons, capped at 3 and without a scrubber/artwork/
+//     Bluetooth transport. The limitation is documented in
+//     docs/android-media-surface.md.
 
 import 'dart:async';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'background_platform.dart';
+import 'media_surface_channel.dart';
 
 /// The Android notification channel shown for the persistent connection.
 const String kBackgroundChannelId = 'harbor_companion.connection';
@@ -49,6 +60,10 @@ class _HarborTaskHandler extends TaskHandler {
   @override
   void onNotificationPressed() =>
       FlutterForegroundTask.sendDataToMain(const {'action': 'opened'});
+
+  @override
+  void onNotificationButtonPressed(String id) =>
+      FlutterForegroundTask.sendDataToMain({'action': id});
 
   @override
   void onNotificationDismissed() =>
@@ -84,9 +99,15 @@ void initializeForegroundTask() {
 }
 
 class FlutterForegroundTaskBackgroundPlatform implements BackgroundPlatform {
-  FlutterForegroundTaskBackgroundPlatform() {
+  /// [mediaSurface] is the native MediaStyle surface (#66); when absent the
+  /// adapter falls back to the plugin's notification buttons.
+  FlutterForegroundTaskBackgroundPlatform({this.mediaSurface}) {
     FlutterForegroundTask.addTaskDataCallback(_onTaskData);
+    // App-lifetime adapter: the broadcast subscription lives as long as it does.
+    mediaSurface?.actions.listen(_actions.add);
   }
+
+  final MediaSurfaceChannel? mediaSurface;
 
   final StreamController<BackgroundAction> _actions =
       StreamController<BackgroundAction>.broadcast();
@@ -96,13 +117,30 @@ class FlutterForegroundTaskBackgroundPlatform implements BackgroundPlatform {
 
   void _onTaskData(Object data) {
     if (data is! Map) return;
-    switch (data['action']) {
-      case 'opened':
-        _actions.add(BackgroundAction.opened);
-      case 'dismissed':
-        _actions.add(BackgroundAction.dismissed);
-    }
+    final id = data['action'];
+    if (id is! String) return;
+    final action = backgroundActionFromId(id);
+    if (action != null) _actions.add(action);
   }
+
+  /// The plugin-button fallback (max 3 buttons, no scrubber), gated by
+  /// [surfaceActions] so it agrees with the native surface. A no-op when the
+  /// native surface is handling the media, so the two never fight.
+  List<NotificationButton>? _buttons(BackgroundNotification notification) {
+    if (mediaSurface != null) return null;
+    final actions = surfaceActions(notification.media);
+    if (actions.isEmpty) return null;
+    return [
+      for (final action in actions)
+        NotificationButton(id: backgroundActionId(action)!, text: _label(action)),
+    ];
+  }
+
+  String _label(BackgroundAction action) => switch (action) {
+        BackgroundPrevious() => 'Previous',
+        BackgroundNext() => 'Next',
+        _ => 'Play/Pause',
+      };
 
   @override
   Future<void> startService(BackgroundNotification notification) async {
@@ -111,38 +149,65 @@ class FlutterForegroundTaskBackgroundPlatform implements BackgroundPlatform {
       // The one type the platform permits for a LAN connection; never
       // dataSync/mediaPlayback/remoteMessaging.
       serviceTypes: const [ForegroundServiceTypes.connectedDevice],
-      // Media title/episode line when media is already held; see updateService
-      // for the #66 poster/controls handoff.
+      // Media title/episode line when media is already held; the native
+      // surface replaces this with artwork + controls below.
       notificationTitle: notification.title,
       notificationText: notification.text,
+      notificationButtons: _buttons(notification),
       callback: foregroundTaskEntryPoint,
     );
-    if (result is ServiceRequestFailure &&
-        result.error is ServiceAlreadyStartedException) {
-      // The service outlived our state (process restart); it is up.
-      return;
+    final alreadyStarted = result is ServiceRequestFailure &&
+        result.error is ServiceAlreadyStartedException;
+    if (!alreadyStarted) {
+      _throwIfFailed(result, 'start');
     }
-    _throwIfFailed(result, 'start');
+    // The service is up; publish the media surface in its notification slot.
+    if (notification.media != null) {
+      await mediaSurface?.show(notification);
+    }
   }
 
   @override
   Future<void> updateService(BackgroundNotification notification) async {
-    // Morph in place: idle host status ↔ the held media's title + episode line.
-    // TODO(#66): the media branch does NOT render the poster or controls here.
-    // flutter_foreground_task 11.0.3 only supports a resource NotificationIcon
-    // and BigTextStyle — it cannot render a network bitmap or a MediaStyle. #66
-    // adds a native MediaSessionCompat + MediaStyle surface inside this same
-    // service and consumes `notification.media` (posterUrl + position/duration
-    // + hasPrev/hasNext); #65 posts only the title/text through the plugin.
+    // With media and a native surface, the media notification IS the update:
+    // it carries the poster and controls, under the service's own id.
+    final surface = mediaSurface;
+    if (notification.media != null && surface != null) {
+      await surface.show(notification);
+      return;
+    }
+    // Idle (morph back), or no native surface: the plugin notification, with
+    // transport buttons in the fallback case. Deactivate the native session
+    // first so the lock-screen/Bluetooth surface drops immediately.
+    if (notification.media == null) {
+      try {
+        await mediaSurface?.clear();
+      } catch (_) {
+        // Best-effort; the plugin repost below still restores the idle status.
+      }
+    }
     final result = await FlutterForegroundTask.updateService(
       notificationTitle: notification.title,
       notificationText: notification.text,
+      notificationButtons: _buttons(notification),
     );
     _throwIfFailed(result, 'update');
   }
 
   @override
+  Future<void> updateMediaSession(BackgroundMediaSurface? media) async {
+    final surface = mediaSurface;
+    if (surface == null || media == null) return;
+    await surface.anchor(media);
+  }
+
+  @override
   Future<void> stopService() async {
+    try {
+      await mediaSurface?.clear();
+    } catch (_) {
+      // Best-effort teardown; the plugin stop below removes the notification.
+    }
     final result = await FlutterForegroundTask.stopService();
     if (result is ServiceRequestFailure) {
       final error = result.error;

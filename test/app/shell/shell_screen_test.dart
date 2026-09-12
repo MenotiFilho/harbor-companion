@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:harbor_companion/app/background/open_remote_request.dart';
 import 'package:harbor_companion/app/home/catalog_fetcher.dart';
 import 'package:harbor_companion/app/home/catalog_request.dart';
 import 'package:harbor_companion/app/home/home_controller.dart';
@@ -268,5 +269,29 @@ void main() {
     await tester.tap(find.text('Later'));
     await tester.pumpAndSettle();
     expect(find.text('Update available'), findsNothing);
+  });
+
+  testWidgets('a notification body tap opens Remote and pops pushed routes',
+      (tester) async {
+    final container = _connectedContainer(title: 'Shawshank');
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const HarborCompanionApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Push a route so the pop-to-root is observable.
+    await tester.tap(find.byIcon(Icons.settings));
+    await tester.pumpAndSettle();
+    expect(find.text('Settings'), findsOneWidget);
+
+    // The background module signals the request (a notification body tap).
+    container.read(openRemoteRequestProvider.notifier).request();
+    await tester.pumpAndSettle();
+
+    expect(container.read(shellControllerProvider).activeTab, ShellTab.remote);
+    expect(find.text('Settings'), findsNothing);
   });
 }

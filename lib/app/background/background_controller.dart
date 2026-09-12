@@ -21,6 +21,7 @@ import '../shell/shell_controller.dart';
 import 'background_notification_view.dart';
 import 'background_platform.dart';
 import 'background_reducer.dart';
+import 'open_remote_request.dart';
 
 /// Platform seam. Defaults to a safe no-op so tests never touch Android; main()
 /// overrides it with the flutter_foreground_task-backed adapter.
@@ -67,9 +68,15 @@ class BackgroundController extends Notifier<BackgroundState> {
 
     ref.listen(connectionStatusProvider, (previous, next) => foldNotificationView());
     ref.listen(remoteControllerProvider, (previous, next) => foldNotificationView());
-    // Notification actions → the reducer (which ignores them for now).
+    // Notification actions → the reducer (which only records them, so a
+    // dismissal can never stop the service) and then onto the host: every
+    // transport action calls the existing RemoteController method on the main
+    // isolate, so it sends exactly the wire command the app would (#66).
     _actionsSub = ref.read(backgroundPlatformProvider).actions.listen(
-          (action) => _dispatch(NotificationActionReceived(action)),
+          (action) {
+            _dispatch(NotificationActionReceived(action));
+            _applyAction(action);
+          },
           onError: (Object _) {},
         );
 
@@ -121,9 +128,41 @@ class BackgroundController extends Notifier<BackgroundState> {
           _startService();
         case 'updateService':
           _updateService();
+        case 'updateMediaSession':
+          _updateMediaSession();
         case 'stopService':
           _stopService();
       }
+    }
+  }
+
+  /// Maps a tapped notification action onto the existing [RemoteController]
+  /// methods (ADR-0005). No optimistic state: the surface corrects on the next
+  /// snapshot. Gating matches the surface: prev/next only when the snapshot
+  /// reported them, so a stale button can never send a command.
+  void _applyAction(BackgroundAction action) {
+    switch (action) {
+      case BackgroundOpened():
+        ref.read(openRemoteRequestProvider.notifier).request();
+      case BackgroundTogglePlay():
+        if (state.media != null) {
+          ref.read(remoteControllerProvider.notifier).togglePlay();
+        }
+      case BackgroundPrevious():
+        if (state.media?.hasPrevEpisode ?? false) {
+          ref.read(remoteControllerProvider.notifier).prevEpisode();
+        }
+      case BackgroundNext():
+        if (state.media?.hasNextEpisode ?? false) {
+          ref.read(remoteControllerProvider.notifier).nextEpisode();
+        }
+      case BackgroundSeek(:final positionSec):
+        if (state.media != null) {
+          ref.read(remoteControllerProvider.notifier).seek(positionSec);
+        }
+      case BackgroundDismissed():
+        // Dismissal is a service-lifecycle no-op; nothing to send.
+        break;
     }
   }
 
@@ -146,6 +185,16 @@ class BackgroundController extends Notifier<BackgroundState> {
     } catch (_) {
       // The service is still running; a failed notification refresh must not
       // tear it down or wedge the state. The next host change tries again.
+    }
+  }
+
+  Future<void> _updateMediaSession() async {
+    try {
+      await ref
+          .read(backgroundPlatformProvider)
+          .updateMediaSession(state.media);
+    } catch (_) {
+      // Best-effort anchor; the next snapshot tries again.
     }
   }
 

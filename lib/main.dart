@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app/background/background_controller.dart';
 import 'app/background/foreground_task_background_platform.dart';
+import 'app/background/media_surface_channel.dart';
 import 'app/connect/connect_controller.dart';
 import 'app/connect/host_registry.dart';
 import 'app/connect/lan_scan.dart';
@@ -99,9 +100,14 @@ void main() {
         subnetScannerProvider.overrideWithValue(TcpProbeScanner()),
         settingsStoreProvider.overrideWithValue(SharedPrefsSettingsStore()),
         // Persistent-connection foreground service (#64). The no-op default
-        // keeps unit tests off the platform.
-        backgroundPlatformProvider
-            .overrideWithValue(FlutterForegroundTaskBackgroundPlatform()),
+        // keeps unit tests off the platform. The native MediaSession surface
+        // (#66) publishes the media notification; absent it the adapter falls
+        // back to the plugin's own notification buttons.
+        backgroundPlatformProvider.overrideWithValue(
+          FlutterForegroundTaskBackgroundPlatform(
+            mediaSurface: MethodChannelMediaSurface(),
+          ),
+        ),
         // Per-rail disk cache (ADR-0004). Resolves <app-support>/home_cache on
         // first use; the in-memory store stays the provider default for tests.
         homeCacheStoreProvider.overrideWithValue(HomeCacheDiskStore()),
