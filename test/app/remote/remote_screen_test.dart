@@ -89,10 +89,11 @@ void main() {
     expect(find.textContaining('Starting Shawshank'), findsOneWidget);
   });
 
-  testWidgets('now-playing shows the Cinemascope band and transport',
+  testWidgets('now-playing shows the cover header and transport',
       (tester) async {
     await tester.pumpWidget(_wrap(_playing()));
     expect(find.byKey(const ValueKey('remoteBand')), findsOneWidget);
+    expect(find.byKey(const ValueKey('remotePoster')), findsOneWidget);
     expect(find.text('Shawshank'), findsOneWidget);
     expect(find.byIcon(Icons.pause), findsOneWidget);
     for (final icon in const [
@@ -106,7 +107,31 @@ void main() {
     }
   });
 
-  testWidgets('the band shows the episode/source ficha over the scrim',
+  testWidgets('the header shows the sharp cover, never a blur',
+      (tester) async {
+    await tester.pumpWidget(_wrap(_playing()));
+    final band = find.byKey(const ValueKey('remoteBand'));
+    expect(
+      find.descendant(
+        of: band,
+        matching: find.byKey(const ValueKey('remotePoster')),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: band, matching: find.byType(ImageFiltered)),
+      findsNothing,
+    );
+    expect(
+      find.descendant(
+        of: band,
+        matching: find.byKey(const ValueKey('heroPosterBlur')),
+      ),
+      findsNothing,
+    );
+  });
+
+  testWidgets('the header shows the episode/source ficha',
       (tester) async {
     await tester.pumpWidget(_wrap(RemoteState(
       connected: true,
@@ -177,7 +202,8 @@ void main() {
   testWidgets('volume and Navigate live below the band', (tester) async {
     await tester.pumpWidget(_wrap(_playing()));
     final band = find.byKey(const ValueKey('remoteBand'));
-    expect(tester.getBottomLeft(band).dy, kRemoteBandHeight);
+    final bandBottom = tester.getBottomLeft(band).dy;
+    expect(bandBottom, greaterThan(0));
     // The seek slider is the band's; the volume slider is the other one and
     // starts below the fold.
     expect(
@@ -187,7 +213,7 @@ void main() {
     expect(find.byType(Slider), findsNWidgets(2));
     expect(
       tester.getTopLeft(find.text('Navigate')).dy,
-      greaterThanOrEqualTo(kRemoteBandHeight),
+      greaterThanOrEqualTo(bandBottom),
     );
   });
 

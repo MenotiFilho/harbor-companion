@@ -1,12 +1,14 @@
-// Remote tab (ticket 07; Cinemascope refresh #85): the now-playing band, the
-// five-button transport, and every secondary control below the fold.
+// Remote tab (ticket 07; cover-forward header #85, revised in the device
+// pass): the now-playing Poster shown sharp, the five-button transport, and
+// every secondary control below the fold.
 //
-// The top band is full-bleed from a blur of the NowPlaying Poster (the
-// snapshot has no Backdrop): title and ficha over the scrim, seek + times and
-// the five-button transport `[prev] [-30] [play] [+30] [next]` — the transport
-// is disabled without held media and the skip works while paused. Everything
-// else (volume, subtitles, destination, Navigate — still collapsed by default —
-// and text entry) lives below the first fold.
+// The header shows the cover itself — the snapshot has no Backdrop, and the
+// first cut's blurred 2:3 Poster read as a washed-out smear on device. Below
+// the poster come the title/ficha and the five-button transport
+// `[prev] [-30] [play] [+30] [next]` — the transport is disabled without held
+// media and the skip works while paused. Everything else (volume, subtitles,
+// destination, Navigate — still collapsed by default — and text entry) lives
+// below the first fold.
 //
 // Renders the pure reducer's view. Everything host-authoritative: the controls
 // read their state from the latest snapshot (via `nowPlaying`) and the reducer
@@ -16,18 +18,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../home/poster_image.dart';
 import '../settings/settings_controller.dart';
 import '../theme.dart';
 import '../ui/glass_surface.dart';
-import '../ui/hero_band.dart';
 import '../ui/playback_position_line.dart' show formatPlaybackTime;
 import '../ws/client_reducer.dart' show CastDevice, TextEntry;
 import 'remote_controller.dart';
 import 'remote_reducer.dart';
 
-/// The Cinemascope band's height (prototype `.l2band` 456px): tall enough that
-/// the art dominates the first fold and the secondary controls fall below it.
-const double kRemoteBandHeight = 456;
+/// The now-playing cover width. The poster is 2:3, so the height follows.
+const double kRemotePosterWidth = 176;
 
 class RemoteScreen extends ConsumerStatefulWidget {
   const RemoteScreen({super.key});
@@ -94,7 +95,7 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
               child: _IdleCard(error: lastError),
             ),
-          RemotePhase.nowPlaying => _CinemascopeBand(
+          RemotePhase.nowPlaying => _NowPlayingHeader(
               nowPlaying: nowPlaying,
               connected: connected,
               seekDrag: _seekDrag,
@@ -278,19 +279,18 @@ class _IdleCard extends StatelessWidget {
   }
 }
 
-/// The Cinemascope band (issue #85): a full-bleed strip built from a blur of
-/// the NowPlaying Poster — the snapshot has no Backdrop — with the title and
-/// ficha over the bottom-up scrim, the seek slider + times and the five-button
-/// transport. Per ADR-0010 the blur is a child filter on the art, never a
-/// `BackdropFilter`, so it costs nothing for the rest of the page.
-class _CinemascopeBand extends StatelessWidget {
+/// The now-playing header (issue #85, revised): the sharp Poster on an
+/// elevated surface, with the kicker, serif title, ficha, seek slider + times
+/// and the five-button transport below it. No blur anywhere — the cover is the
+/// hero, and the earlier blurred fill was dropped after the device pass.
+class _NowPlayingHeader extends StatelessWidget {
   final NowPlaying? nowPlaying;
   final bool connected;
   final double? seekDrag;
   final ValueChanged<double> onSeekChanged;
   final ValueChanged<double> onSeekCommit;
 
-  const _CinemascopeBand({
+  const _NowPlayingHeader({
     required this.nowPlaying,
     required this.connected,
     required this.seekDrag,
@@ -313,90 +313,109 @@ class _CinemascopeBand extends StatelessWidget {
         .where((line) => line.isNotEmpty)
         .join('  ·  ');
 
-    return SizedBox(
+    return Column(
       key: const ValueKey('remoteBand'),
-      height: kRemoteBandHeight,
-      width: double.infinity,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          HeroArtwork(posterUrl: np.posterUrl),
-          DecoratedBox(decoration: BoxDecoration(gradient: tokens.heroScrim)),
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(22, 0, 22, 18),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'NOW PLAYING',
-                    style: tokens.sectionLabel.copyWith(color: tokens.accentInk),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          color: tokens.bgElev,
+          padding: const EdgeInsets.fromLTRB(22, 20, 22, 4),
+          child: Center(
+            child: Container(
+              key: const ValueKey('remotePoster'),
+              width: kRemotePosterWidth,
+              height: kRemotePosterWidth * 3 / 2,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(tokens.radiusSmall),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.45),
+                    blurRadius: 24,
+                    offset: const Offset(0, 12),
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    np.mediaTitle,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: tokens.serifTitle,
-                  ),
-                  if (ficha.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      ficha,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: text.bodySmall?.copyWith(color: tokens.inkMuted),
-                    ),
-                  ],
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Icon(
-                        np.target.isCasting ? Icons.cast : Icons.desktop_windows,
-                        size: 16,
-                        color: tokens.inkFaint,
-                      ),
-                      const SizedBox(width: 6),
-                      Flexible(
-                        child: Text(
-                          np.target.label,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: text.bodySmall?.copyWith(color: tokens.inkFaint),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Slider(
-                    value: position.toDouble(),
-                    max: duration <= 0 ? 1 : duration,
-                    onChanged: duration <= 0 ? null : onSeekChanged,
-                    onChangeEnd: duration <= 0 ? null : onSeekCommit,
-                  ),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        formatPlaybackTime(position),
-                        style: text.bodySmall?.copyWith(color: tokens.inkMuted),
-                      ),
-                      Text(
-                        formatPlaybackTime(duration),
-                        style: text.bodySmall?.copyWith(color: tokens.inkMuted),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  _TransportRow(nowPlaying: np, enabled: connected),
                 ],
+              ),
+              foregroundDecoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(tokens.radiusSmall),
+                border: Border.all(color: tokens.hair),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(tokens.radiusSmall),
+                child: PosterImage(url: np.posterUrl),
               ),
             ),
           ),
-        ],
-      ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(22, 18, 22, 18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'NOW PLAYING',
+                style: tokens.sectionLabel.copyWith(color: tokens.accentInk),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                np.mediaTitle,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: tokens.serifTitle,
+              ),
+              if (ficha.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  ficha,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: text.bodySmall?.copyWith(color: tokens.inkMuted),
+                ),
+              ],
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Icon(
+                    np.target.isCasting ? Icons.cast : Icons.desktop_windows,
+                    size: 16,
+                    color: tokens.inkFaint,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      np.target.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: text.bodySmall?.copyWith(color: tokens.inkFaint),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Slider(
+                value: position.toDouble(),
+                max: duration <= 0 ? 1 : duration,
+                onChanged: duration <= 0 ? null : onSeekChanged,
+                onChangeEnd: duration <= 0 ? null : onSeekCommit,
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    formatPlaybackTime(position),
+                    style: text.bodySmall?.copyWith(color: tokens.inkMuted),
+                  ),
+                  Text(
+                    formatPlaybackTime(duration),
+                    style: text.bodySmall?.copyWith(color: tokens.inkMuted),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              _TransportRow(nowPlaying: np, enabled: connected),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

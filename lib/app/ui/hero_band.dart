@@ -145,14 +145,18 @@ class HeroArtwork extends StatelessWidget {
   Widget _fallback(BuildContext context) {
     final poster = _nonEmpty(posterUrl);
     if (poster == null) return const _StaticGradient();
-    return ImageFiltered(
-      key: const ValueKey('heroPosterBlur'),
-      imageFilter: ImageFilter.blur(sigmaX: 32, sigmaY: 32),
-      child: Image.network(
-        poster,
-        fit: BoxFit.cover,
-        filterQuality: FilterQuality.low,
-        errorBuilder: (_, _, _) => const _StaticGradient(),
+    // The blur can paint beyond the band's bounds; clip it so the wash never
+    // bleeds onto whatever sits below the hero.
+    return ClipRect(
+      child: ImageFiltered(
+        key: const ValueKey('heroPosterBlur'),
+        imageFilter: ImageFilter.blur(sigmaX: 32, sigmaY: 32),
+        child: Image.network(
+          poster,
+          fit: BoxFit.cover,
+          filterQuality: FilterQuality.low,
+          errorBuilder: (_, _, _) => const _StaticGradient(),
+        ),
       ),
     );
   }
