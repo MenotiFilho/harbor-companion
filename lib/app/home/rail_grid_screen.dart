@@ -1,4 +1,4 @@
-// Dedicated rail grid (tickets 76, 77, ADR-0009).
+// Dedicated rail grid (tickets 76, 77, ADR-0009; restyled in issue #90).
 //
 // A rail's title or its "See more" card pushes this route with the rail already
 // snapshotted in the controller (`HomeState.activeRailGrid`): the full
@@ -14,13 +14,29 @@
 // a page loads, "End" when the source is exhausted (or the Cinemeta cap is hit),
 // and an error + "Try again" when a page fails — the already-loaded items stay
 // on screen. A `/trending/*` rail opens already ended (20-only).
+//
+// Glass budget (ADR-0010): the grid is long scrolling content, so the cards and
+// the footer are translucent fill + hairline — never a BackdropFilter.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../theme.dart';
 import 'home_controller.dart';
 import 'home_reducer.dart';
 import 'home_screen.dart' show PosterCard;
+
+/// The "See more" grid geometry (issue #90): responsive columns per ADR-0009,
+/// restyled to the editorial rhythm — 10dp gutters and `childAspectRatio`
+/// leaving room for the card's 2:3 art plus the two-line type block
+/// ([PosterCard]). On a phone this lands on the same three columns as Search.
+const SliverGridDelegateWithMaxCrossAxisExtent _gridDelegate =
+    SliverGridDelegateWithMaxCrossAxisExtent(
+  maxCrossAxisExtent: 150,
+  mainAxisSpacing: 10,
+  crossAxisSpacing: 10,
+  childAspectRatio: 0.52,
+);
 
 class RailGridScreen extends ConsumerWidget {
   const RailGridScreen({super.key});
@@ -33,7 +49,7 @@ class RailGridScreen extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(title: Text(grid?.title ?? 'Grid')),
       body: grid == null
-          ? const Center(child: Text('No rail selected'))
+          ? const _GridMessage('No rail selected')
           : _RailGrid(
               grid: grid,
               onLoadMore: controller.loadMoreRailGrid,
@@ -129,7 +145,7 @@ class _RailGridState extends State<_RailGrid> {
   Widget build(BuildContext context) {
     final items = widget.grid.items;
     if (items.isEmpty) {
-      return const Center(child: Text('Nothing to show'));
+      return const _GridMessage('Nothing to show');
     }
     return CustomScrollView(
       key: const ValueKey('railGrid'),
@@ -139,16 +155,9 @@ class _RailGridState extends State<_RailGrid> {
       physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
         SliverPadding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
           sliver: SliverGrid(
-            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-              maxCrossAxisExtent: 150,
-              crossAxisSpacing: 8,
-              mainAxisSpacing: 8,
-              // Room for the card's 2:3 art plus the two-line type block
-              // (the Home poster card, reused here).
-              childAspectRatio: 0.5,
-            ),
+            gridDelegate: _gridDelegate,
             delegate: SliverChildBuilderDelegate(
               (context, i) => PosterCard(meta: items[i], width: null),
               childCount: items.length,
@@ -163,9 +172,30 @@ class _RailGridState extends State<_RailGrid> {
   }
 }
 
+/// Sober centered copy for the grid's empty and placeholder states.
+class _GridMessage extends StatelessWidget {
+  final String message;
+  const _GridMessage(this.message);
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Text(
+        message,
+        textAlign: TextAlign.center,
+        style: Theme.of(context)
+            .textTheme
+            .bodyMedium
+            ?.copyWith(color: AppTokens.of(context).inkFaint),
+      ),
+    );
+  }
+}
+
 /// The grid's bottom edge (ticket 77): a spinner while a page is in flight, the
 /// retry affordance when the last page failed, "End" when the source is
-/// exhausted, and a small spacer while more may be requested.
+/// exhausted, and a small spacer while more may be requested. Restyled for the
+/// Editorial Cinema language (issue #90) — quiet ink, hairline vocabulary.
 class _GridFooter extends StatelessWidget {
   final RailGridSnapshot grid;
   final VoidCallback onRetry;
@@ -174,14 +204,15 @@ class _GridFooter extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final tokens = AppTokens.of(context);
+    final text = Theme.of(context).textTheme;
     if (grid.loading) {
       return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 24),
+        padding: EdgeInsets.symmetric(vertical: 28),
         child: Center(
           child: SizedBox(
-            width: 24,
-            height: 24,
+            width: 22,
+            height: 22,
             child: CircularProgressIndicator(strokeWidth: 2),
           ),
         ),
@@ -189,20 +220,18 @@ class _GridFooter extends StatelessWidget {
     }
     if (grid.error != null) {
       return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+        padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
         child: Column(
           children: [
             Text(
               "Couldn't load more.",
               textAlign: TextAlign.center,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodyMedium
-                  ?.copyWith(color: scheme.onSurfaceVariant),
+              style: text.bodySmall?.copyWith(color: tokens.inkMuted),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
             FilledButton.tonal(
               onPressed: onRetry,
+              style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
               child: const Text('Try again'),
             ),
           ],
@@ -211,14 +240,14 @@ class _GridFooter extends StatelessWidget {
     }
     if (grid.ended) {
       return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 24),
+        padding: const EdgeInsets.fromLTRB(16, 20, 16, 28),
         child: Center(
           child: Text(
             'End',
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: scheme.onSurfaceVariant),
+            style: text.bodySmall?.copyWith(
+              color: tokens.inkFaint,
+              letterSpacing: 1.4,
+            ),
           ),
         ),
       );

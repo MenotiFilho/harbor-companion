@@ -504,6 +504,10 @@ class _HostTile extends StatelessWidget {
 // Scan section
 // ---------------------------------------------------------------------------
 
+/// Candidate-only LAN scan (issue #90 restyle): one ghost scan action, a quiet
+/// probing status line while it runs, and the found hosts as hairline rows with
+/// an accent "Add" action. The reducer owns the scan lifecycle; this section
+/// only renders it and dispatches the pick.
 class _ScanSection extends StatelessWidget {
   final ConnectState state;
   final VoidCallback onScan;
@@ -518,6 +522,7 @@ class _ScanSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         OutlinedButton.icon(
+          style: OutlinedButton.styleFrom(minimumSize: const Size(0, 48)),
           onPressed: state.scanning ? null : onScan,
           icon: state.scanning
               ? const SizedBox(
@@ -525,25 +530,29 @@ class _ScanSection extends StatelessWidget {
                   height: 16,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Icon(Icons.radar),
+              : const Icon(Icons.radar, size: 18),
           label: Text(state.scanning ? 'Scanning…' : 'Scan local network'),
         ),
         if (state.scanning)
           Padding(
-            padding: const EdgeInsets.only(top: 8),
+            padding: const EdgeInsets.only(top: 10),
             child: Text(
               'Probing your subnet for :11471…',
-              style: text.bodySmall?.copyWith(color: tokens.inkMuted),
+              style: text.bodySmall?.copyWith(
+                color: tokens.inkMuted,
+                height: 1.45,
+              ),
             ),
           ),
         if (state.scanResults.isNotEmpty) ...[
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           for (final candidate in state.scanResults)
             ListRow(
-              leading: const Icon(Icons.wifi_tethering, size: 22),
+              leading: Icon(Icons.wifi_tethering, size: 22, color: tokens.inkMuted),
               title: candidate.name,
               subtitle: candidate.address,
-              trailing: FilledButton.tonal(
+              trailing: FilledButton(
+                style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
                 onPressed: () => onPick(candidate),
                 child: const Text('Add'),
               ),

@@ -135,6 +135,17 @@ class FakeBackgroundPlatform implements BackgroundPlatform {
       const Stream<BackgroundAction>.empty();
 }
 
+/// A scanner whose stream stays open until the test pushes results, so the
+/// in-flight scanning state is observable.
+class _GatedScanner implements SubnetScanner {
+  final StreamController<String> _results = StreamController<String>();
+  void found(String address) => _results.add(address);
+  Future<void> close() => _results.close();
+
+  @override
+  Stream<String> scan() => _results.stream;
+}
+
 ProviderContainer makeContainer({
   PlayerBarView? playerBar,
   FakeBackgroundPlatform? backgroundPlatform,
@@ -218,6 +229,66 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('Connected'), findsWidgets);
+  });
+
+  testWidgets('scanning shows found hosts and Add saves the picked candidate',
+      (tester) async {
+    final scanner = _GatedScanner();
+    final container = ProviderContainer(
+      overrides: [
+        wsTransportProvider.overrideWithValue(FakeTransport()),
+        wsKeyStoreProvider.overrideWithValue(FakeKeyStore()),
+        hostRegistryStoreProvider.overrideWithValue(InMemoryHostRegistryStore()),
+        settingsStoreProvider.overrideWithValue(InMemorySettingsStore()),
+        subnetScannerProvider.overrideWithValue(scanner),
+        selfUpdateVersionProvider.overrideWithValue(FakeVersionProvider()),
+        releasesClientProvider.overrideWithValue(FakeReleasesClient()),
+      ],
+    );
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    final scanButton = find.text('Scan local network');
+    await scrollTo(tester, scanButton);
+    expect(
+      tester
+          .getSize(find.widgetWithText(OutlinedButton, 'Scan local network'))
+          .height,
+      greaterThanOrEqualTo(48),
+    );
+
+    await tester.tap(scanButton);
+    await tester.pump();
+    expect(find.text('Scanning…'), findsOneWidget);
+    expect(find.textContaining('Probing your subnet'), findsOneWidget);
+
+    scanner.found('192.168.1.77:11471');
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Found host'), findsOneWidget);
+    expect(find.text('192.168.1.77:11471'), findsOneWidget);
+
+    // The scan settles; the found candidates stay on screen.
+    await scanner.close();
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Scanning…'), findsNothing);
+
+    await tester.tap(find.text('Add'));
+    await tester.pumpAndSettle();
+    expect(find.text('Save this host'), findsOneWidget);
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(
+      container.read(connectControllerProvider).hosts.map((h) => h.address),
+      contains('192.168.1.77:11471'),
+    );
+    // Saving a candidate goes through the same warning gate as a manual add.
+    expect(find.text('I understand, connect'), findsOneWidget);
+    await tester.tap(find.text('Not now'));
+    await tester.pumpAndSettle();
   });
 
   testWidgets('a connected host shows the version from its Snapshot',

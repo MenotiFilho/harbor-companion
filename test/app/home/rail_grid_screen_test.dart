@@ -22,6 +22,7 @@ import 'package:harbor_companion/app/home/rail_grid_screen.dart';
 import 'package:harbor_companion/app/routes.dart';
 import 'package:harbor_companion/app/settings/settings_controller.dart';
 import 'package:harbor_companion/app/settings/settings_store.dart';
+import 'package:harbor_companion/app/ui/glass_surface.dart';
 import 'package:harbor_companion/app/ws/client_controller.dart';
 import 'package:harbor_companion/app/ws/ws_transport.dart';
 
@@ -190,7 +191,7 @@ class _FakeTransport implements WsTransport {
 }
 
 void main() {
-  testWidgets('renders every captured item in a responsive grid',
+  testWidgets('lays every captured item out in the responsive editorial grid',
       (tester) async {
     await tester.binding.setSurfaceSize(const Size(800, 600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -200,6 +201,12 @@ void main() {
     expect(find.byType(CustomScrollView), findsOneWidget);
     final grid = tester.widget<SliverGrid>(find.byType(SliverGrid));
     expect(grid.gridDelegate, isA<SliverGridDelegateWithMaxCrossAxisExtent>());
+    final delegate =
+        grid.gridDelegate as SliverGridDelegateWithMaxCrossAxisExtent;
+    expect(delegate.maxCrossAxisExtent, 150);
+    expect(delegate.mainAxisSpacing, 10);
+    expect(delegate.crossAxisSpacing, 10);
+    expect(delegate.childAspectRatio, 0.52);
 
     // At this width the first two cards share a row (multiple columns).
     final first = tester.getTopLeft(find.byType(PosterCard).at(0));
@@ -223,6 +230,15 @@ void main() {
     final second = tester.getTopLeft(find.byType(PosterCard).at(1));
     expect(second.dx, first.dx);
     expect(second.dy, greaterThan(first.dy));
+  });
+
+  testWidgets('the grid holds the glass budget: no blur in long scrolling',
+      (tester) async {
+    await tester.pumpWidget(_app(gridState(many(12))));
+
+    // ADR-0010: long scrolling content is fill + hairline, never a blur.
+    expect(find.byType(BackdropFilter), findsNothing);
+    expect(find.byType(GlassSurface), findsNothing);
   });
 
   testWidgets('a 20-only rail opens with exactly its 20 items', (tester) async {

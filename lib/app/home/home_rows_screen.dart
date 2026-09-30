@@ -1,16 +1,22 @@
-// "Home rows" editor (ticket 41 follow-up).
+// "Home rows" editor (ticket 41 follow-up; restyled in issue #90).
 //
 // One reorderable list of every rail the Home can show — Cinemeta rows, TMDB
 // rows and the Letterboxd catalogs — so the user can drag them into any order
 // (Letterboxd first, say) and switch individual rows off. The list is driven by
 // `SettingsState.homeRowOrder`; moving or toggling persists through the settings
 // controller, and the Home controller refetches on the resulting state change.
+//
+// Presentation uses the shared row rhythm (`SwitchRow`): accent switches, soft
+// hairlines and a >= 48dp target per row. The editor is scroll content, so no
+// BackdropFilter (ADR-0010).
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../settings/settings_controller.dart';
 import '../shell/player_bar.dart';
+import '../theme.dart';
+import '../ui/rows.dart';
 import 'home_rows.dart';
 
 class HomeRowsScreen extends ConsumerWidget {
@@ -22,6 +28,7 @@ class HomeRowsScreen extends ConsumerWidget {
     final ctrl = ref.read(settingsControllerProvider.notifier);
     final order = settings.homeRowOrder;
     final hasManifest = settings.letterboxdManifestUrl.trim().isNotEmpty;
+    final tokens = AppTokens.of(context);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Home rows')),
@@ -34,6 +41,7 @@ class HomeRowsScreen extends ConsumerWidget {
           Expanded(
             child: ReorderableListView.builder(
               buildDefaultDragHandles: false,
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
               itemCount: order.length,
               onReorderItem: ctrl.moveHomeRow,
               itemBuilder: (context, index) {
@@ -46,26 +54,28 @@ class HomeRowsScreen extends ConsumerWidget {
                     ? settings.enabledLetterboxdCatalogs.contains(catalogId)
                     : !settings.disabledBuiltInRowKeys.contains(key);
                 final canToggle = !letterboxd || hasManifest;
-                return ListTile(
+                return SwitchRow(
                   key: ValueKey(key),
                   leading: ReorderableDragStartListener(
                     index: index,
-                    child: const Icon(Icons.drag_handle),
+                    child: Icon(
+                      Icons.drag_handle,
+                      size: 22,
+                      color: tokens.inkFaint,
+                    ),
                   ),
-                  title: Text(entry.label),
-                  subtitle: Text(entry.source),
-                  trailing: Switch(
-                    value: enabled,
-                    onChanged: canToggle
-                        ? (value) {
-                            if (letterboxd) {
-                              ctrl.setLetterboxdCatalogEnabled(catalogId, value);
-                            } else {
-                              ctrl.setBuiltInRowEnabled(key, value);
-                            }
+                  title: entry.label,
+                  subtitle: entry.source,
+                  value: enabled,
+                  onChanged: canToggle
+                      ? (value) {
+                          if (letterboxd) {
+                            ctrl.setLetterboxdCatalogEnabled(catalogId, value);
+                          } else {
+                            ctrl.setBuiltInRowEnabled(key, value);
                           }
-                        : null,
-                  ),
+                        }
+                      : null,
                 );
               },
             ),
@@ -84,9 +94,9 @@ class _Intro extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final tokens = AppTokens.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -94,20 +104,24 @@ class _Intro extends StatelessWidget {
             'Drag to reorder. Switch a row off to hide it from Home. The host '
             'uses your Cinemeta rows when it has no TMDB key, or your TMDB rows '
             'when it does.',
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: scheme.onSurfaceVariant),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: tokens.inkMuted,
+                  height: 1.6,
+                ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 12),
           Wrap(
-            spacing: 8,
+            spacing: 10,
             children: [
               OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(0, 48),
+                ),
                 onPressed: onHideBuiltIn,
                 child: const Text('Hide built-in rows'),
               ),
               TextButton(
+                style: TextButton.styleFrom(minimumSize: const Size(0, 48)),
                 onPressed: onShowBuiltIn,
                 child: const Text('Show built-in rows'),
               ),

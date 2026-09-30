@@ -11,6 +11,7 @@ import 'package:harbor_companion/app/home/home_rows_screen.dart';
 import 'package:harbor_companion/app/settings/settings_controller.dart';
 import 'package:harbor_companion/app/settings/settings_store.dart';
 import 'package:harbor_companion/app/shell/player_bar.dart';
+import 'package:harbor_companion/app/ui/rows.dart';
 
 ProviderContainer make() => ProviderContainer(
       overrides: [
@@ -25,7 +26,7 @@ Widget app(ProviderContainer container) => UncontrolledProviderScope(
     );
 
 Finder switchOf(String label) => find.descendant(
-      of: find.widgetWithText(ListTile, label),
+      of: find.widgetWithText(SwitchRow, label),
       matching: find.byType(Switch),
     );
 
@@ -46,6 +47,23 @@ void main() {
     );
     expect(find.text('Watchlist'), findsOneWidget);
     expect(find.text('Letterboxd'), findsWidgets);
+  });
+
+  testWidgets('rows use the shared hairline switch row with a 48dp target',
+      (tester) async {
+    final container = make();
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SwitchRow), findsWidgets);
+    expect(find.byType(ListTile), findsNothing);
+    expect(
+      tester.getSize(find.byType(SwitchRow).first).height,
+      greaterThanOrEqualTo(48),
+    );
+    // ADR-0010: the editor is scroll content — no backdrop blur.
+    expect(find.byType(BackdropFilter), findsNothing);
   });
 
   testWidgets('toggling a built-in row off persists', (tester) async {
