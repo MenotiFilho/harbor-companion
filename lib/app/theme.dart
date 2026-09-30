@@ -295,8 +295,10 @@ abstract final class AppTheme {
       inputDecorationTheme: InputDecorationThemeData(
         filled: true,
         fillColor: t.glassFill,
-        labelStyle: TextStyle(color: t.inkFaint),
-        hintStyle: TextStyle(color: t.inkFaint),
+        // Labels and hints read over the field's translucent fill, so they use
+        // the AA step (issue #91); inkFaint stays reserved for decoration.
+        labelStyle: TextStyle(color: t.inkMuted),
+        hintStyle: TextStyle(color: t.inkMuted),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(t.radiusSmall),
           borderSide: BorderSide(color: t.hair),

@@ -244,6 +244,26 @@ void main() {
     expect(back.onPressed, isNull);
   });
 
+  testWidgets('every transport button is a >= 48dp target (#91)',
+      (tester) async {
+    await tester.pumpWidget(_wrap(_playing()));
+
+    for (final icon in const [
+      Icons.skip_previous,
+      Icons.replay_30,
+      Icons.forward_30,
+      Icons.skip_next,
+      Icons.pause,
+    ]) {
+      final size = tester.getSize(find.ancestor(
+        of: find.byIcon(icon),
+        matching: find.byType(IconButton),
+      ));
+      expect(size.width, greaterThanOrEqualTo(48), reason: '$icon width');
+      expect(size.height, greaterThanOrEqualTo(48), reason: '$icon height');
+    }
+  });
+
   testWidgets('the playback-location section is hidden by default', (tester) async {
     await tester.pumpWidget(_wrap(RemoteState(connected: true)));
     expect(find.byIcon(Icons.cast), findsNothing);

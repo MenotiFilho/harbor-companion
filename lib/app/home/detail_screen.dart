@@ -35,6 +35,7 @@ import '../ui/hairline.dart';
 import '../ui/hero_band.dart';
 import '../ui/press_scale.dart';
 import '../ui/section_header.dart';
+import '../ui/segmented.dart';
 import 'detail_extras_fetcher.dart';
 import 'home_controller.dart';
 import 'home_reducer.dart';
@@ -523,7 +524,7 @@ class _SeasonSegmented extends StatelessWidget {
         borderRadius: BorderRadius.circular(tokens.radiusSmall),
         border: Border.all(color: tokens.hair),
       ),
-      padding: const EdgeInsets.all(3),
+      padding: const EdgeInsets.symmetric(horizontal: 3),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(
@@ -532,45 +533,11 @@ class _SeasonSegmented extends StatelessWidget {
             for (var i = 0; i < labels.length; i++)
               Padding(
                 padding: EdgeInsets.only(left: i == 0 ? 0 : 2),
-                child: Semantics(
-                  button: true,
+                child: SegmentPill(
+                  label: labels[i],
                   selected: i == selected,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () => onSelected(i),
-                    child: ConstrainedBox(
-                      // 42 + the pill's 3+3 padding keeps the segment a 48dp
-                      // touch target (parent #80 accessibility).
-                      constraints: const BoxConstraints(minHeight: 42),
-                      child: Container(
-                        alignment: Alignment.center,
-                        padding: const EdgeInsets.symmetric(horizontal: 14),
-                        decoration: BoxDecoration(
-                          color: i == selected
-                              ? tokens.accentFill
-                              : Colors.transparent,
-                          borderRadius:
-                              BorderRadius.circular(tokens.radiusSmall - 3),
-                          border: Border.all(
-                            color: i == selected
-                                ? tokens.accentLine
-                                : Colors.transparent,
-                          ),
-                        ),
-                        child: Text(
-                          labels[i],
-                          maxLines: 1,
-                          style: TextStyle(
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w600,
-                            color: i == selected
-                                ? tokens.accentInk
-                                : tokens.inkFaint,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
+                  onTap: () => onSelected(i),
+                  labelPadding: 14,
                 ),
               ),
           ],

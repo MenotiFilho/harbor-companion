@@ -47,8 +47,9 @@ const double kPosterGap = 10;
 
 /// One rail block's fixed vertical extent: the header, the 2:3 art, the 6dp
 /// gap and a two-line name with a little slack. A constant keeps the lazy
-/// `SliverFixedExtentList` cheap.
-const double kRailHeaderExtent = 34;
+/// `SliverFixedExtentList` cheap. The header is a 48dp target (issue #91)
+/// because the whole title is tappable (it opens the rail grid).
+const double kRailHeaderExtent = 48;
 const double kPosterNameExtent = 40;
 const double kRowExtent =
     kRailHeaderExtent + kPosterArtHeight + 6 + kPosterNameExtent;
@@ -402,7 +403,9 @@ class _RailLabel extends StatelessWidget {
     return SizedBox(
       height: kRailHeaderExtent,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+        // The header is a >= 48dp tap target (issue #91): the title opens the
+        // rail grid, so the label sits centered in the full header height.
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
         child: Row(
           children: [
             Flexible(
@@ -489,12 +492,14 @@ class HomeRailAgeBadge extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.history, size: 11, color: tokens.inkFaint),
+          // The badge reads over the glass fill, so it uses the AA ink step
+          // (issue #91) — the faint step is reserved for pure decoration.
+          Icon(Icons.history, size: 11, color: tokens.inkMuted),
           const SizedBox(width: 4),
           Text(
             homeRailAgeLabel(updatedAt),
             style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: tokens.inkFaint,
+                  color: tokens.inkMuted,
                   fontWeight: FontWeight.w600,
                   letterSpacing: 0.5,
                 ),

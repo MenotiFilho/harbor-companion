@@ -279,9 +279,11 @@ class _ShellTabBar extends StatelessWidget {
               fontSize: 11,
               fontWeight: FontWeight.w600,
               letterSpacing: 0.4,
+              // The unselected label is navigation text over the blurred glass,
+              // so it uses the AA ink step (issue #91).
               color: states.contains(WidgetState.selected)
                   ? tokens.accentInk
-                  : tokens.inkFaint,
+                  : tokens.inkMuted,
             ),
           ),
         ),

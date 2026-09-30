@@ -66,6 +66,38 @@ void main() {
     expect(find.byType(BackdropFilter), findsNothing);
   });
 
+  testWidgets('the drag handle keeps a >= 48dp square touch target (#91)',
+      (tester) async {
+    final container = make();
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ReorderableDragStartListener), findsWidgets);
+    final handle = find.byType(ReorderableDragStartListener).first;
+    final size = tester.getSize(handle);
+    expect(size.width, greaterThanOrEqualTo(48));
+    expect(size.height, greaterThanOrEqualTo(48));
+
+    // The full square is draggable, not just the 22dp glyph centered in it:
+    // start the gesture in the handle's top-left corner and reorder.
+    final first = container.read(settingsControllerProvider).homeRowOrder.first;
+    final gesture = await tester.startGesture(
+      tester.getTopLeft(handle) + const Offset(4, 4),
+    );
+    await tester.pump();
+    await gesture.moveBy(const Offset(0, 120));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      container.read(settingsControllerProvider).homeRowOrder.indexOf(first),
+      isNot(0),
+      reason: 'a drag from the expanded handle area must reorder the row',
+    );
+  });
+
   testWidgets('toggling a built-in row off persists', (tester) async {
     final container = make();
     addTearDown(container.dispose);

@@ -16,6 +16,7 @@ import 'package:harbor_companion/app/home/catalog_request.dart';
 import 'package:harbor_companion/app/home/home_controller.dart';
 import 'package:harbor_companion/app/home/home_rail.dart';
 import 'package:harbor_companion/app/home/home_reducer.dart';
+import 'package:harbor_companion/app/home/home_rows.dart';
 import 'package:harbor_companion/app/home/home_screen.dart';
 import 'package:harbor_companion/app/home/meta.dart';
 import 'package:harbor_companion/app/routes.dart';
@@ -622,6 +623,104 @@ void main() {
       expect(controller.openedRails, ['cinemeta:top-movies']);
       expect(find.text('RAIL GRID'), findsOneWidget,
           reason: 'the See more card pushes the dedicated grid route');
+    });
+  });
+
+  group('accessibility + perf guards (#91)', () {
+    List<Meta> many(int n) =>
+        [for (var i = 0; i < n; i++) movie(id: 'tt$i', name: 'Movie $i')];
+
+    testWidgets('the rail title is a >= 48dp tap target', (tester) async {
+      final state = HomeState(
+        request: const CatalogRequest(rowOrder: ['cinemeta:top-movies']),
+        rails: {
+          'cinemeta:top-movies':
+              loaded('cinemeta:top-movies', 'Top Movies', many(3)),
+        },
+      );
+      await tester.pumpWidget(_app(state));
+
+      final header = find.ancestor(
+        of: railTitle('Top Movies'),
+        matching: find.byType(InkWell),
+      );
+      expect(
+        tester.getSize(header).height,
+        greaterThanOrEqualTo(48),
+        reason: 'the tappable rail header must carry the 48dp floor',
+      );
+    });
+
+    testWidgets('no BackdropFilter anywhere in the Home scroll content',
+        (tester) async {
+      final state = HomeState(
+        request: twoRows,
+        rails: {
+          'cinemeta:top-movies':
+              loaded('cinemeta:top-movies', 'Top Movies', many(30)),
+          'cinemeta:top-series': loaded(
+              'cinemeta:top-series', 'Top Series', [movie(id: 'tt2')]),
+        },
+      );
+      await tester.pumpWidget(_app(state));
+
+      // ADR-0010: rails and cards are translucent fill + hairline only.
+      expect(find.byType(BackdropFilter), findsNothing);
+    });
+
+    testWidgets('rails stay lazy: a large Home builds only its visible window',
+        (tester) async {
+      await tester.binding.setSurfaceSize(const Size(800, 600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final state = HomeState(
+        request: const CatalogRequest(
+          rowOrder: ['cinemeta:top-movies'],
+        ),
+        rails: {
+          // A source page much larger than any screen: if the rail built its
+          // whole catalog the perf spike (#8) would regress.
+          'cinemeta:top-movies':
+              loaded('cinemeta:top-movies', 'Top Movies', many(200)),
+        },
+      );
+      await tester.pumpWidget(_app(state));
+
+      final horizontal = tester
+          .widgetList(find.byType(PosterCard, skipOffstage: false))
+          .length;
+      expect(horizontal, greaterThan(0));
+      expect(
+        horizontal,
+        lessThan(50),
+        reason: 'the rail ListView.builder must build O(visible), not O(catalog)',
+      );
+    });
+
+    testWidgets('a long Home list builds only the visible rails', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(800, 600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final state = HomeState(
+        request: CatalogRequest(
+          rowOrder: [for (final row in kCinemetaRows) row.id],
+        ),
+        rails: {
+          for (final row in kCinemetaRows)
+            row.id: loaded(row.id, row.title, [movie(id: row.id)]),
+        },
+      );
+      await tester.pumpWidget(_app(state));
+
+      final built = tester
+          .widgetList(find.byType(HomeRowRail, skipOffstage: false))
+          .length;
+      expect(built, greaterThan(0));
+      expect(
+        built,
+        lessThan(6),
+        reason: 'SliverFixedExtentList must build only the viewport window',
+      );
     });
   });
 

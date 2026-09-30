@@ -10,6 +10,7 @@ import 'package:harbor_companion/app/ui/hairline.dart';
 import 'package:harbor_companion/app/ui/press_scale.dart';
 import 'package:harbor_companion/app/ui/rows.dart';
 import 'package:harbor_companion/app/ui/section_header.dart';
+import 'package:harbor_companion/app/ui/segmented.dart';
 
 Widget host(Widget child) => MaterialApp(
       theme: AppTheme.dark,
@@ -158,6 +159,31 @@ void main() {
 
       expect(find.text('Host version'), findsOneWidget);
       expect(find.text('v0.9.118'), findsOneWidget);
+    });
+  });
+
+  group('SegmentPill', () {
+    testWidgets('carries a >= 48dp target and keeps tapping', (tester) async {
+      var taps = 0;
+      await tester.pumpWidget(host(Row(children: [
+        SegmentPill(label: 'One', selected: true, onTap: () => taps++),
+        SegmentPill(label: 'Two', selected: false, onTap: () => taps++),
+      ])));
+
+      for (final label in ['One', 'Two']) {
+        final target = find.ancestor(
+          of: find.text(label),
+          matching: find.byType(GestureDetector),
+        );
+        expect(
+          tester.getSize(target).height,
+          greaterThanOrEqualTo(48),
+          reason: '$label must keep the 48dp a11y floor',
+        );
+      }
+
+      await tester.tap(find.text('Two'));
+      expect(taps, 1);
     });
   });
 

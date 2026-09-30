@@ -90,6 +90,10 @@ class SwitchRow extends StatelessWidget {
 }
 
 /// A key/value line for host facts; the key is quieter than the value.
+///
+/// Both steps are informative text on a glass surface, so they use the AA
+/// ramp (issue #91): the key [AppTokens.inkMuted], the value
+/// [AppTokens.ink] — `inkFaint` stays reserved for decoration.
 class InfoRow extends StatelessWidget {
   const InfoRow({super.key, required this.label, required this.value});
 
@@ -105,13 +109,13 @@ class InfoRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: text?.copyWith(color: tokens.inkFaint)),
+          Text(label, style: text?.copyWith(color: tokens.inkMuted)),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
               value,
               textAlign: TextAlign.right,
-              style: text?.copyWith(color: tokens.inkMuted),
+              style: text?.copyWith(color: tokens.ink),
             ),
           ),
         ],

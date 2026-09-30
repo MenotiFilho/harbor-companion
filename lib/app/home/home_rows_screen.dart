@@ -58,10 +58,22 @@ class HomeRowsScreen extends ConsumerWidget {
                   key: ValueKey(key),
                   leading: ReorderableDragStartListener(
                     index: index,
-                    child: Icon(
-                      Icons.drag_handle,
-                      size: 22,
-                      color: tokens.inkFaint,
+                    // The handle is the drag target, so it carries a 48dp
+                    // square hit area (issue #91); the glyph stays small. The
+                    // listener defers to its child, and a bare Icon only hits
+                    // its glyph box, so the opaque Listener claims the full
+                    // square.
+                    child: SizedBox(
+                      width: 48,
+                      height: 48,
+                      child: Listener(
+                        behavior: HitTestBehavior.opaque,
+                        child: Icon(
+                          Icons.drag_handle,
+                          size: 22,
+                          color: tokens.inkFaint,
+                        ),
+                      ),
                     ),
                   ),
                   title: entry.label,

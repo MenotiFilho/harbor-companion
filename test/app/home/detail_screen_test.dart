@@ -215,6 +215,23 @@ void main() {
       expect(find.textContaining('Pilot'), findsNothing);
     });
 
+    testWidgets('season segments are >= 48dp touch targets (#91)',
+        (tester) async {
+      await tester.pumpWidget(_wrap(_ready(seriesDetail())));
+
+      for (final label in ['Season 1', 'Season 2']) {
+        final target = find.ancestor(
+          of: find.text(label),
+          matching: find.byType(GestureDetector),
+        );
+        expect(
+          tester.getSize(target).height,
+          greaterThanOrEqualTo(48),
+          reason: '$label must keep a 48dp touch target',
+        );
+      }
+    });
+
     testWidgets('episode rows carry a still, duration and overview',
         (tester) async {
       await tester.pumpWidget(_wrap(_ready(seriesDetail())));

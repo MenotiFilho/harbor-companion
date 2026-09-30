@@ -190,8 +190,35 @@ void main() {
     );
     expect(
       tester.widget<Text>(find.text('History')).style?.color,
-      tokens.inkFaint,
+      // Unselected labels are informative text over the glass fill, so they
+      // use the AA ink step (#91) — not the decorative inkFaint.
+      tokens.inkMuted,
     );
+  });
+
+  testWidgets('every section segment is a >= 48dp touch target (#91)',
+      (tester) async {
+    await tester.pumpWidget(_wrap(LibraryState(
+      connected: true,
+      view: MyStuffView(watchlist: [matrix], watchlistIds: {matrix.id}),
+    )));
+
+    for (final label in ['Watchlist', 'History', 'Favorites']) {
+      final target = find.ancestor(
+        of: find.text(label),
+        matching: find.byType(GestureDetector),
+      );
+      expect(
+        tester.getSize(target).height,
+        greaterThanOrEqualTo(48),
+        reason: '$label must keep a 48dp touch target',
+      );
+    }
+
+    // The target is real: a tap on the unselected pill still switches.
+    await tester.tap(find.text('History'));
+    await tester.pumpAndSettle();
+    expect(find.text('Nothing here yet'), findsOneWidget);
   });
 
   testWidgets('toggle chips light up in the Accent only when on', (tester) async {

@@ -25,6 +25,7 @@ import '../routes.dart';
 import '../theme.dart';
 import '../ui/glass_surface.dart';
 import '../ui/rows.dart';
+import '../ui/segmented.dart';
 import '../ws/client_reducer.dart' show LibraryItem;
 import 'library_controller.dart';
 import 'library_reducer.dart';
@@ -173,13 +174,13 @@ class _SectionSegmented extends StatelessWidget {
     final tokens = AppTokens.of(context);
     return GlassSurface(
       radius: tokens.radiusSmall,
-      padding: const EdgeInsets.all(3),
+      padding: const EdgeInsets.symmetric(horizontal: 3),
       child: Row(
         children: [
           for (var i = 0; i < _Section.values.length; i++) ...[
             if (i > 0) const SizedBox(width: 2),
             Expanded(
-              child: _Segment(
+              child: SegmentPill(
                 label: _Section.values[i].label,
                 selected: _Section.values[i] == selected,
                 onTap: () => onSelected(_Section.values[i]),
@@ -187,54 +188,6 @@ class _SectionSegmented extends StatelessWidget {
             ),
           ],
         ],
-      ),
-    );
-  }
-}
-
-/// One segment: the selected pill reads in the Accent, the rest stay quiet.
-/// 42dp tall plus the pill's 3+3 padding keeps a 48dp target (parent #80).
-class _Segment extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  const _Segment({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = AppTokens.of(context);
-    return Semantics(
-      button: true,
-      selected: selected,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: onTap,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 42),
-          child: Container(
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: selected ? tokens.accentFill : Colors.transparent,
-              borderRadius: BorderRadius.circular(tokens.radiusSmall - 3),
-              border: Border.all(
-                color: selected ? tokens.accentLine : Colors.transparent,
-              ),
-            ),
-            child: Text(
-              label,
-              maxLines: 1,
-              style: TextStyle(
-                fontSize: 12.5,
-                fontWeight: FontWeight.w600,
-                color: selected ? tokens.accentInk : tokens.inkFaint,
-              ),
-            ),
-          ),
-        ),
       ),
     );
   }

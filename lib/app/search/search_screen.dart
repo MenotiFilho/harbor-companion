@@ -138,7 +138,9 @@ class _SearchField extends ConsumerWidget {
                 style: TextStyle(fontSize: 14, color: tokens.ink),
                 decoration: InputDecoration(
                   hintText: 'Search movies, series, anime',
-                  hintStyle: TextStyle(fontSize: 14, color: tokens.inkFaint),
+                  // The hint reads over the glass fill; the AA ink step keeps
+                  // it legible (issue #91).
+                  hintStyle: TextStyle(fontSize: 14, color: tokens.inkMuted),
                   filled: false,
                   isDense: true,
                   border: InputBorder.none,
@@ -322,7 +324,9 @@ class _TopMatchCard extends ConsumerWidget {
                       Text(
                         facts,
                         style: text.bodySmall?.copyWith(
-                          color: tokens.inkFaint,
+                          // The facts line reads over the card's glass fill;
+                          // the AA ink step keeps it legible (issue #91).
+                          color: tokens.inkMuted,
                           letterSpacing: 0.2,
                         ),
                       ),
