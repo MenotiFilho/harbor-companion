@@ -17,9 +17,13 @@
 // overview. The selected season is local UI state — it never travels to the
 // host, so it stays out of the reducer.
 //
+// The Cast section (ticket #86) comes from the detail extras fetcher on its own
+// provider (ADR-0012): it settles independently — a slow or failed cast fetch
+// never delays the header or the episodes — and renders only with data.
+//
 // Honesty rule (parent #80): no affordances without data or action — no
-// "My list", no "Download", no watched marker. Cast/similar sections are
-// tickets #86/#87, not here.
+// "My list", no "Download", no watched marker. The similar-titles rail is
+// ticket #87, not here.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -30,6 +34,7 @@ import '../ui/hairline.dart';
 import '../ui/hero_band.dart';
 import '../ui/press_scale.dart';
 import '../ui/section_header.dart';
+import 'detail_extras_fetcher.dart';
 import 'home_controller.dart';
 import 'home_reducer.dart';
 import 'meta.dart';
@@ -134,6 +139,10 @@ class _DetailBody extends ConsumerWidget {
                           },
                   ),
                 ),
+                // The Cast section loads on its own provider and renders only
+                // when it has data, so it never delays or hides the rest of
+                // the page (ADR-0012).
+                CastSection(meta: meta),
                 if (error != null) ...[
                   const SizedBox(height: 24),
                   _DetailError(message: error!),
@@ -235,6 +244,129 @@ class _PosterSynopsis extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// The Cast rail (ticket #86): profile circles with the actor and the character.
+/// Watches its own provider (ADR-0012), so it appears whenever its fetch
+/// resolves — a slow cast never blocks the header or the episodes — and renders
+/// nothing while loading, on failure, without a TMDB key or without a match:
+/// no section without data, never a placeholder.
+class CastSection extends ConsumerWidget {
+  final Meta meta;
+  const CastSection({super.key, required this.meta});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final members =
+        ref.watch(castProvider((type: meta.type, id: meta.id))).value ??
+            const <CastMember>[];
+    if (members.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionHeader('Cast'),
+        SizedBox(
+          height: 116,
+          child: ListView.separated(
+            key: const ValueKey('castRail'),
+            scrollDirection: Axis.horizontal,
+            padding: EdgeInsets.zero,
+            itemCount: members.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 14),
+            itemBuilder: (context, index) => _CastCircle(member: members[index]),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// One cast circle: the avatar, the actor's name and the character. The avatar
+/// falls back to a static gradient when the source has no profile image or the
+/// image fails — the same honest fallback the posters use.
+class _CastCircle extends StatelessWidget {
+  final CastMember member;
+  const _CastCircle({required this.member});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = AppTokens.of(context);
+    final profile = member.profile;
+    final character = member.character;
+    return SizedBox(
+      width: 64,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            width: 56,
+            height: 56,
+            padding: const EdgeInsets.all(1),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: tokens.hair),
+            ),
+            child: ClipOval(
+              child: profile == null || profile.isEmpty
+                  ? const _CastFallback()
+                  : Image.network(
+                      profile,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => const _CastFallback(),
+                    ),
+            ),
+          ),
+          const SizedBox(height: 7),
+          Text(
+            member.name,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 10.5,
+              height: 1.3,
+              color: tokens.inkMuted,
+            ),
+          ),
+          if (character != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                character,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 9.5,
+                  height: 1.3,
+                  color: tokens.inkFaint,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The avatar's no-image fallback: the prototype's static dark gradient.
+class _CastFallback extends StatelessWidget {
+  const _CastFallback();
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = AppTokens.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [tokens.solidHigh, tokens.bg],
+        ),
+      ),
     );
   }
 }
