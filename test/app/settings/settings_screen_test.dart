@@ -18,6 +18,8 @@ import 'package:harbor_companion/app/settings/settings_controller.dart';
 import 'package:harbor_companion/app/settings/settings_screen.dart';
 import 'package:harbor_companion/app/settings/settings_store.dart';
 import 'package:harbor_companion/app/shell/player_bar.dart';
+import 'package:harbor_companion/app/theme.dart';
+import 'package:harbor_companion/app/ui/rows.dart';
 import 'package:harbor_companion/app/update/github_releases_client.dart';
 import 'package:harbor_companion/app/update/update_controller.dart';
 import 'package:harbor_companion/app/update/update_reducer.dart';
@@ -32,13 +34,20 @@ class FakeConnection implements WsConnection {
   Stream<String> get frames => _frames.stream;
   @override
   void send(String message) {}
+
+  /// Pushes a server frame into the client, as a real Harbor host would.
+  void emit(String frame) => _frames.add(frame);
+
   @override
   Future<void> close() async => _frames.close();
 }
 
 class FakeTransport implements WsTransport {
+  /// The most recent socket, so tests can push snapshot frames through it.
+  FakeConnection? last;
+
   @override
-  Future<WsConnection> open(String url) async => FakeConnection();
+  Future<WsConnection> open(String url) async => last = FakeConnection();
 }
 
 class FakeKeyStore implements HostKeyStore {
@@ -129,10 +138,11 @@ class FakeBackgroundPlatform implements BackgroundPlatform {
 ProviderContainer makeContainer({
   PlayerBarView? playerBar,
   FakeBackgroundPlatform? backgroundPlatform,
+  FakeTransport? transport,
 }) =>
     ProviderContainer(
       overrides: [
-        wsTransportProvider.overrideWithValue(FakeTransport()),
+        wsTransportProvider.overrideWithValue(transport ?? FakeTransport()),
         wsKeyStoreProvider.overrideWithValue(FakeKeyStore()),
         hostRegistryStoreProvider.overrideWithValue(InMemoryHostRegistryStore()),
         settingsStoreProvider.overrideWithValue(InMemorySettingsStore()),
@@ -147,14 +157,14 @@ ProviderContainer makeContainer({
 
 Widget app(ProviderContainer container) => UncontrolledProviderScope(
       container: container,
-      child: const MaterialApp(home: SettingsScreen()),
+      child: MaterialApp(theme: AppTheme.dark, home: const SettingsScreen()),
     );
 
 /// Scrolls the settings list down to the Letterboxd section (it sits below the
 /// fold, and the lazy list has not built it yet).
 Future<void> scrollToLetterboxd(WidgetTester tester) async {
   await tester.scrollUntilVisible(
-    find.text('Letterboxd'),
+    find.text('LETTERBOXD'),
     200,
     scrollable: find.byType(Scrollable).first,
   );
@@ -177,7 +187,7 @@ void main() {
     await tester.pumpWidget(app(container));
     await tester.pumpAndSettle();
 
-    expect(find.text('Saved hosts'), findsOneWidget);
+    expect(find.text('SAVED HOSTS'), findsOneWidget);
     expect(find.textContaining('No hosts yet'), findsOneWidget);
   });
 
@@ -210,6 +220,50 @@ void main() {
     expect(find.textContaining('Connected'), findsWidgets);
   });
 
+  testWidgets('a connected host shows the version from its Snapshot',
+      (tester) async {
+    final transport = FakeTransport();
+    final container = makeContainer(transport: transport);
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Add host'));
+    await tester.pumpAndSettle();
+    final dialogFields = find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(dialogFields.first, 'desk');
+    await tester.enterText(dialogFields.last, '192.168.1.50');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('I understand, connect'));
+    await tester.pumpAndSettle();
+
+    // Connected, but no snapshot yet: the version row stays absent.
+    expect(find.text('Host version'), findsNothing);
+
+    transport.last!.emit(
+      '{"t":"snapshot","snapshot":{"updatedAt":1,"hostVersion":"v0.9.118"}}',
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Host version'), findsOneWidget);
+    expect(find.text('v0.9.118'), findsOneWidget);
+  });
+
+  testWidgets('the screen holds the glass budget: no blur in scrollable content',
+      (tester) async {
+    final container = makeContainer();
+    addTearDown(container.dispose);
+    await tester.pumpWidget(app(container));
+    await tester.pumpAndSettle();
+
+    // ADR-0010: only chrome/overlays may use a real BackdropFilter.
+    expect(find.byType(BackdropFilter), findsNothing);
+  });
+
   testWidgets('"Check for updates" runs the check and reports up to date',
       (tester) async {
     final container = makeContainer();
@@ -240,15 +294,15 @@ void main() {
     await tester.pumpAndSettle();
 
     final toggle =
-        find.widgetWithText(SwitchListTile, 'Show playback location');
+        find.widgetWithText(SwitchRow, 'Show playback location');
     await scrollTo(tester, toggle);
     expect(toggle, findsOneWidget);
-    expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+    expect(tester.widget<SwitchRow>(toggle).value, isFalse);
 
     await tester.tap(toggle);
     await tester.pumpAndSettle();
 
-    expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+    expect(tester.widget<SwitchRow>(toggle).value, isTrue);
   });
 
   testWidgets('the Connection section toggle defaults on and persists',
@@ -270,17 +324,17 @@ void main() {
     await tester.pumpAndSettle();
 
     final toggle = find.widgetWithText(
-      SwitchListTile,
+      SwitchRow,
       'Keep connection in background',
     );
-    await scrollTo(tester, find.text('Connection'));
-    expect(find.text('Connection'), findsOneWidget);
-    expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+    await scrollTo(tester, find.text('CONNECTION'));
+    expect(find.text('CONNECTION'), findsOneWidget);
+    expect(tester.widget<SwitchRow>(toggle).value, isTrue);
 
     await tester.tap(toggle);
     await tester.pumpAndSettle();
 
-    expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+    expect(tester.widget<SwitchRow>(toggle).value, isFalse);
     expect(await store.loadKeepConnectionInBackground(), isFalse);
   });
 
@@ -293,7 +347,13 @@ void main() {
 
     await scrollTo(tester, find.text('Home rows'));
     expect(find.text('Home rows'), findsOneWidget);
-    expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.widgetWithText(ListRow, 'Home rows'),
+        matching: find.byIcon(Icons.chevron_right),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('the Letterboxd section shows the manifest URL field',
@@ -304,7 +364,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await scrollToLetterboxd(tester);
-    expect(find.text('Letterboxd'), findsOneWidget);
+    expect(find.text('LETTERBOXD'), findsOneWidget);
     expect(find.text('Stremboxd manifest URL'), findsOneWidget);
   });
 

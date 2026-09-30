@@ -8,14 +8,23 @@ import '../connect/connect_controller.dart';
 import '../connect/connect_reducer.dart';
 import '../routes.dart';
 import '../shell/player_bar.dart';
-import 'settings_controller.dart';
+import '../theme.dart';
+import '../ui/glass_surface.dart';
+import '../ui/hairline.dart';
+import '../ui/rows.dart';
+import '../ui/section_header.dart';
 import '../update/update_controller.dart';
 import '../update/update_reducer.dart';
+import '../ws/client_controller.dart';
+import 'settings_controller.dart';
 
 /// Connect/settings surface (ticket 03): the saved-host registry, the per-host
 /// open-LAN warning gate, the connection lifecycle, and candidate-only LAN
 /// scan. Every connect path (add, select, scan-pick, launch auto-connect) is
 /// gated by the reducer — this screen only dispatches events and renders state.
+///
+/// First consumer of the Editorial Cinema design system (#81): glass surface,
+/// hairlines, section labels and the shared list/switch row rhythm.
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
 
@@ -42,6 +51,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final settingsCtrl = ref.read(settingsControllerProvider.notifier);
     final background = ref.watch(backgroundControllerProvider);
     final backgroundCtrl = ref.read(backgroundControllerProvider.notifier);
+    // The host's version, read-only from the last Snapshot. It is only shown
+    // while actually connected — stale facts across host switches stay hidden.
+    final hostVersion = ref.watch(
+      wsClientControllerProvider.select((s) => s.hostVersion),
+    );
 
     // Show the warning gate as a blocking dialog whenever the reducer holds it.
     ref.listen(connectControllerProvider, (previous, next) {
@@ -53,34 +67,39 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 96),
         children: [
-          _StatusCard(state: state, onRetry: ctrl.retry, onConnect: ctrl.connect, onDisconnect: ctrl.disconnect),
-          const SizedBox(height: 16),
-          _sectionHeader('Saved hosts'),
+          _StatusCard(
+            state: state,
+            hostVersion: state.phase == ConnPhase.connected ? hostVersion : null,
+            onRetry: ctrl.retry,
+            onConnect: ctrl.connect,
+            onDisconnect: ctrl.disconnect,
+          ),
+          const SectionHeader('Saved hosts', topPadding: 20),
           if (state.hosts.isEmpty)
             _emptyHint('No hosts yet — add your PC’s LAN address below.')
           else
-            for (final host in state.hosts) _HostTile(
-              host: host,
-              selected: host.id == state.selectedId,
-              phase: host.id == state.selectedId ? state.phase : ConnPhase.idle,
-              onSelect: () => ctrl.selectHost(host.id),
-              onEdit: () => _editHost(ctrl, host),
-              onDelete: () => _deleteHost(ctrl, host),
-            ),
-          const SizedBox(height: 24),
-          _sectionHeader('Find hosts'),
-          _ScanSection(state: state, onScan: ctrl.startScan, onPick: (c) => _pickCandidate(ctrl, c)),
-          const SizedBox(height: 24),
-          _sectionHeader('Connection'),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Keep connection in background'),
-            subtitle: const Text(
-              'Keep the Harbor connection alive with the screen off. Shows a '
-              'persistent notification while connected.',
-            ),
+            for (final host in state.hosts)
+              _HostTile(
+                host: host,
+                selected: host.id == state.selectedId,
+                phase: host.id == state.selectedId ? state.phase : ConnPhase.idle,
+                onSelect: () => ctrl.selectHost(host.id),
+                onEdit: () => _editHost(ctrl, host),
+                onDelete: () => _deleteHost(ctrl, host),
+              ),
+          const SectionHeader('Find hosts'),
+          _ScanSection(
+            state: state,
+            onScan: ctrl.startScan,
+            onPick: (c) => _pickCandidate(ctrl, c),
+          ),
+          const SectionHeader('Connection'),
+          SwitchRow(
+            title: 'Keep connection in background',
+            subtitle: 'Keep the Harbor connection alive with the screen off. '
+                'Shows a persistent notification while connected.',
             value: settings.keepConnectionInBackground,
             onChanged: settingsCtrl.setKeepConnectionInBackground,
           ),
@@ -96,30 +115,25 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 backgroundCtrl.openBatteryOptimizationSettings,
             onOpenBatterySettings: backgroundCtrl.openBatterySettings,
           ),
-          const SizedBox(height: 24),
-          _sectionHeader('Playback'),
+          const SectionHeader('Playback'),
           _PlaybackSection(
             showPlaybackLocation: settings.showPlaybackLocation,
             onShowPlaybackLocationChanged: settingsCtrl.setShowPlaybackLocation,
           ),
-          const SizedBox(height: 24),
-          _sectionHeader('Home'),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.view_list_outlined),
-            title: const Text('Home rows'),
-            subtitle: const Text('Choose which rails show and their order.'),
+          const SectionHeader('Home'),
+          ListRow(
+            leading: const Icon(Icons.view_list_outlined, size: 22),
+            title: 'Home rows',
+            subtitle: 'Choose which rails show and their order.',
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).pushNamed(AppRoutes.homeRows),
           ),
-          const SizedBox(height: 8),
-          _sectionHeader('Letterboxd'),
+          const SectionHeader('Letterboxd'),
           _LetterboxdSection(
             manifestUrl: settings.letterboxdManifestUrl,
             onUrlChanged: settingsCtrl.setLetterboxdManifestUrl,
           ),
-          const SizedBox(height: 24),
-          _sectionHeader('Updates'),
+          const SectionHeader('Updates'),
           _UpdatesSection(state: updateState, onCheck: updateCtrl.checkNow),
         ],
       ),
@@ -132,11 +146,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  Widget _sectionHeader(String title) => Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Text(title, style: Theme.of(context).textTheme.titleMedium),
-      );
-
   Widget _emptyHint(String text) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
         child: Text(
@@ -144,7 +153,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           style: Theme.of(context)
               .textTheme
               .bodyMedium
-              ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+              ?.copyWith(color: AppTokens.of(context).inkMuted),
         ),
       );
 
@@ -223,7 +232,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               controller: name,
               decoration: const InputDecoration(labelText: 'Name'),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
             TextField(
               controller: address,
               decoration: const InputDecoration(
@@ -324,11 +333,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
 class _StatusCard extends StatelessWidget {
   final ConnectState state;
+
+  /// Last known host version; only passed while connected.
+  final String? hostVersion;
   final VoidCallback onRetry;
   final VoidCallback onConnect;
   final VoidCallback onDisconnect;
   const _StatusCard({
     required this.state,
+    required this.hostVersion,
     required this.onRetry,
     required this.onConnect,
     required this.onDisconnect,
@@ -336,8 +349,10 @@ class _StatusCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tokens = AppTokens.of(context);
     final scheme = Theme.of(context).colorScheme;
-    final (label, icon, color) = _phasePresentation(state.phase);
+    final text = Theme.of(context).textTheme;
+    final (label, icon, color) = _phasePresentation(context, state.phase);
     final host = state.selected;
 
     final actions = <Widget>[];
@@ -354,57 +369,73 @@ class _StatusCard extends StatelessWidget {
       actions.add(TextButton(onPressed: onDisconnect, child: const Text('Disconnect')));
     }
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(icon, color: color),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    host == null ? label : '$label ${host.name}',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(color: color),
-                  ),
+    return GlassSurface(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: color, size: 22),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  host == null ? label : '$label ${host.name}',
+                  style: text.titleMedium?.copyWith(color: tokens.ink),
                 ),
-                ...actions,
-              ],
+              ),
+              ...actions,
+            ],
+          ),
+          if (host != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              host.address,
+              style: text.bodySmall?.copyWith(color: tokens.inkMuted),
             ),
-            if (host != null) ...[
-              const SizedBox(height: 4),
-              Text(
-                host.address,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
-              ),
-            ],
-            if (state.notice != null) ...[
-              const SizedBox(height: 8),
-              Text(state.notice!, style: Theme.of(context).textTheme.bodyMedium),
-            ],
-            if (state.lastError != null) ...[
-              const SizedBox(height: 4),
-              Text(
-                state.lastError!,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.error),
-              ),
-            ],
           ],
-        ),
+          if (hostVersion != null) ...[
+            const Padding(
+              padding: EdgeInsets.only(top: 12),
+              child: Hairline(),
+            ),
+            InfoRow(label: 'Host version', value: hostVersion!),
+          ],
+          if (state.notice != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              state.notice!,
+              style: text.bodyMedium?.copyWith(color: tokens.inkMuted),
+            ),
+          ],
+          if (state.lastError != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              state.lastError!,
+              style: text.bodySmall?.copyWith(color: scheme.error),
+            ),
+          ],
+        ],
       ),
     );
   }
 
-  static (String, IconData, Color) _phasePresentation(ConnPhase phase) {
-    final base = const Color(0xFFB0BEC5);
+  static (String, IconData, Color) _phasePresentation(
+    BuildContext context,
+    ConnPhase phase,
+  ) {
+    final tokens = AppTokens.of(context);
+    final scheme = Theme.of(context).colorScheme;
     return switch (phase) {
-      ConnPhase.idle => ('Disconnected', Icons.cloud_off, base),
-      ConnPhase.connecting => ('Connecting…', Icons.sync, Colors.amber),
-      ConnPhase.connected => ('Connected to', Icons.check_circle, Colors.green),
-      ConnPhase.reconnecting => ('Reconnecting…', Icons.sync_problem, Colors.orange),
-      ConnPhase.failed => ('Failed', Icons.error_outline, Colors.red),
+      ConnPhase.idle => ('Disconnected', Icons.cloud_off, tokens.inkMuted),
+      ConnPhase.connecting => ('Connecting…', Icons.sync, tokens.accent),
+      ConnPhase.connected => ('Connected to', Icons.check_circle, tokens.accent),
+      ConnPhase.reconnecting => (
+          'Reconnecting…',
+          Icons.sync_problem,
+          const Color(0xFFFFB74D),
+        ),
+      ConnPhase.failed => ('Failed', Icons.error_outline, scheme.error),
     };
   }
 }
@@ -431,7 +462,7 @@ class _HostTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final tokens = AppTokens.of(context);
     final icon = switch (phase) {
       ConnPhase.connected => Icons.check_circle,
       ConnPhase.connecting => Icons.sync,
@@ -439,17 +470,30 @@ class _HostTile extends StatelessWidget {
       ConnPhase.failed => Icons.error_outline,
       ConnPhase.idle => Icons.computer,
     };
-    return ListTile(
-      leading: Icon(icon, color: selected ? scheme.primary : scheme.onSurfaceVariant),
-      title: Text(host.name),
-      subtitle: Text(host.address),
-      selected: selected,
+    return ListRow(
+      leading: Icon(
+        icon,
+        size: 22,
+        color: selected ? tokens.accent : tokens.inkMuted,
+      ),
+      title: host.name,
+      subtitle: host.address,
       onTap: onSelect,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(icon: const Icon(Icons.edit_outlined), onPressed: onEdit),
-          IconButton(icon: const Icon(Icons.delete_outline), onPressed: onDelete),
+          IconButton(
+            icon: const Icon(Icons.edit_outlined),
+            tooltip: 'Edit host',
+            color: tokens.inkMuted,
+            onPressed: onEdit,
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline),
+            tooltip: 'Remove host',
+            color: tokens.inkMuted,
+            onPressed: onDelete,
+          ),
         ],
       ),
     );
@@ -468,7 +512,8 @@ class _ScanSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final tokens = AppTokens.of(context);
+    final text = Theme.of(context).textTheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -488,16 +533,16 @@ class _ScanSection extends StatelessWidget {
             padding: const EdgeInsets.only(top: 8),
             child: Text(
               'Probing your subnet for :11471…',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+              style: text.bodySmall?.copyWith(color: tokens.inkMuted),
             ),
           ),
         if (state.scanResults.isNotEmpty) ...[
           const SizedBox(height: 8),
           for (final candidate in state.scanResults)
-            ListTile(
-              leading: const Icon(Icons.wifi_tethering),
-              title: Text(candidate.name),
-              subtitle: Text(candidate.address),
+            ListRow(
+              leading: const Icon(Icons.wifi_tethering, size: 22),
+              title: candidate.name,
+              subtitle: candidate.address,
               trailing: FilledButton.tonal(
                 onPressed: () => onPick(candidate),
                 child: const Text('Add'),
@@ -523,11 +568,12 @@ class _NotificationAccessTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final tokens = AppTokens.of(context);
+    final granted = status == NotificationPermissionStatus.granted;
     final (subtitle, trailing) = switch (status) {
       NotificationPermissionStatus.granted => (
           'Allowed — the connection notification is shown.',
-          Icon(Icons.check_circle, color: Colors.green),
+          Icon(Icons.check_circle, color: tokens.accent),
         ),
       NotificationPermissionStatus.denied => (
           'Not allowed. Tap to ask Android again.',
@@ -538,18 +584,16 @@ class _NotificationAccessTile extends StatelessWidget {
           const Icon(Icons.chevron_right),
         ),
     };
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
+    return ListRow(
       leading: Icon(
         Icons.notifications_outlined,
-        color: status == NotificationPermissionStatus.granted
-            ? scheme.primary
-            : scheme.onSurfaceVariant,
+        size: 22,
+        color: granted ? tokens.accent : tokens.inkMuted,
       ),
-      title: const Text('Notification access'),
-      subtitle: Text(subtitle),
+      title: 'Notification access',
+      subtitle: subtitle,
       trailing: trailing,
-      onTap: status == NotificationPermissionStatus.granted ? null : onTap,
+      onTap: granted ? null : onTap,
     );
   }
 }
@@ -577,30 +621,27 @@ class _BatterySection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final tokens = AppTokens.of(context);
+    final text = Theme.of(context).textTheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SizedBox(height: 8),
-        ListTile(
-          contentPadding: EdgeInsets.zero,
+        ListRow(
           leading: Icon(
             Icons.battery_saver_outlined,
-            color: exempt ? scheme.primary : scheme.onSurfaceVariant,
+            size: 22,
+            color: exempt ? tokens.accent : tokens.inkMuted,
           ),
-          title: const Text('Battery optimization'),
-          subtitle: Text(
-            exempt
-                ? 'Exempt — Android will not optimize the connection while the '
-                    'screen is off.'
-                : 'Not exempt — Android may kill the connection while the '
-                    'screen is off.',
-          ),
-          trailing: exempt
-              ? const Icon(Icons.check_circle, color: Colors.green)
-              : null,
+          title: 'Battery optimization',
+          subtitle: exempt
+              ? 'Exempt — Android will not optimize the connection while the '
+                  'screen is off.'
+              : 'Not exempt — Android may kill the connection while the '
+                  'screen is off.',
+          trailing: exempt ? Icon(Icons.check_circle, color: tokens.accent) : null,
         ),
-        if (!exempt)
+        if (!exempt) ...[
+          const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             crossAxisAlignment: WrapCrossAlignment.center,
@@ -616,10 +657,11 @@ class _BatterySection extends StatelessWidget {
               ),
             ],
           ),
-        const SizedBox(height: 12),
+        ],
+        const SizedBox(height: 16),
         Text(
           'If the connection still drops',
-          style: Theme.of(context).textTheme.titleSmall,
+          style: text.titleSmall?.copyWith(color: tokens.ink),
         ),
         const SizedBox(height: 4),
         Text(
@@ -628,12 +670,9 @@ class _BatterySection extends StatelessWidget {
           'Samsung, remove it from “Sleeping apps” and turn off “Put unused '
           'apps to sleep”. On Xiaomi, allow Autostart and set the battery saver '
           'to “No restrictions”.',
-          style: Theme.of(context)
-              .textTheme
-              .bodySmall
-              ?.copyWith(color: scheme.onSurfaceVariant),
+          style: text.bodySmall?.copyWith(color: tokens.inkMuted),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 12),
         OutlinedButton.icon(
           onPressed: onOpenBatterySettings,
           icon: const Icon(Icons.settings_power_outlined),
@@ -658,12 +697,9 @@ class _PlaybackSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SwitchListTile(
-      contentPadding: EdgeInsets.zero,
-      title: const Text('Show playback location'),
-      subtitle: const Text(
-        'Show the playback target ("This PC" / cast) on the Remote.',
-      ),
+    return SwitchRow(
+      title: 'Show playback location',
+      subtitle: 'Show the playback target ("This PC" / cast) on the Remote.',
       value: showPlaybackLocation,
       onChanged: onShowPlaybackLocationChanged,
     );
@@ -721,7 +757,7 @@ class _LetterboxdSectionState extends State<_LetterboxdSection> {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final tokens = AppTokens.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -740,17 +776,14 @@ class _LetterboxdSectionState extends State<_LetterboxdSection> {
           ),
           onSubmitted: (_) => _commit(),
         ),
-        const SizedBox(height: 4),
-        Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: Text(
-            'Pick which Letterboxd catalogs show in Home rows. Leave the URL '
-            'empty to hide Letterboxd.',
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: scheme.onSurfaceVariant),
-          ),
+        const SizedBox(height: 8),
+        Text(
+          'Pick which Letterboxd catalogs show in Home rows. Leave the URL '
+          'empty to hide Letterboxd.',
+          style: Theme.of(context)
+              .textTheme
+              .bodySmall
+              ?.copyWith(color: tokens.inkMuted),
         ),
       ],
     );
@@ -768,7 +801,7 @@ class _UpdatesSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final (label, color) = _statusPresentation(state);
+    final (label, color) = _statusPresentation(context, state);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -789,32 +822,39 @@ class _UpdatesSection extends StatelessWidget {
             padding: const EdgeInsets.only(top: 8),
             child: Text(
               label,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: color),
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: color),
             ),
           ),
       ],
     );
   }
 
-  (String?, Color?) _statusPresentation(SelfUpdateState state) {
-    final scheme = const Color(0xFFB0BEC5);
+  (String?, Color) _statusPresentation(BuildContext context, SelfUpdateState state) {
+    final tokens = AppTokens.of(context);
+    final scheme = Theme.of(context).colorScheme;
     switch (state.status) {
       case UpdateStatus.idle:
         final name = state.localVersionName;
-        return (name == null ? null : 'Version $name', scheme);
+        return (name == null ? null : 'Version $name', tokens.inkMuted);
       case UpdateStatus.checking:
-        return ('Checking for updates…', scheme);
+        return ('Checking for updates…', tokens.inkMuted);
       case UpdateStatus.upToDate:
-        return (state.notice ?? 'You’re up to date', scheme);
+        return (state.notice ?? 'You’re up to date', tokens.inkMuted);
       case UpdateStatus.hasUpdate:
         final update = state.update;
-        return (update == null ? null : 'Update available: ${update.versionName}', Colors.green);
+        return (
+          update == null ? null : 'Update available: ${update.versionName}',
+          tokens.accent,
+        );
       case UpdateStatus.failed:
-        return (state.notice ?? 'Could not check for updates', Colors.orange);
+        return (state.notice ?? 'Could not check for updates', scheme.error);
       case UpdateStatus.installing:
-        return ('Downloading update…', scheme);
+        return ('Downloading update…', tokens.inkMuted);
       case UpdateStatus.installFailed:
-        return (state.notice ?? 'Update failed', Colors.orange);
+        return (state.notice ?? 'Update failed', scheme.error);
     }
   }
 }
