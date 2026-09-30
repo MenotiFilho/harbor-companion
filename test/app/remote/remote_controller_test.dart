@@ -60,6 +60,8 @@ Map<String, dynamic> snapshotFrame({
   bool idle = true,
   String? mediaTitle = 'Movie',
   bool hasNext = false,
+  double positionSec = 0,
+  double durationSec = 100,
 }) {
   return {
     't': 'snapshot',
@@ -71,8 +73,8 @@ Map<String, dynamic> snapshotFrame({
       'posterUrl': null,
       'episode': null,
       'source': idle ? null : {'label': null, 'resolution': null, 'quality': '1080p', 'releaseGroup': 'WEB-DL'},
-      'positionSec': 0,
-      'durationSec': 100,
+      'positionSec': positionSec,
+      'durationSec': durationSec,
       'playing': true,
       'volume': 1,
       'muted': false,
@@ -343,6 +345,28 @@ void main() {
 
     final sent = transport.connections.single.sent.single;
     expect(sent, contains('pause')); // snapshot reported playing
+    addTearDown(container.dispose);
+  });
+
+  test('skipBy drains the absolute seek through the WS client', () async {
+    container = makeContainer();
+    container.read(wsClientControllerProvider.notifier).connect('192.168.1.50');
+    await Future<void>.delayed(Duration.zero);
+    container.read(remoteControllerProvider);
+    transport.connections.single.emit(jsonEncode(snapshotFrame(
+      idle: false,
+      updatedAt: 1000,
+      positionSec: 100,
+      durationSec: 1000,
+    )));
+    await Future<void>.delayed(Duration.zero);
+    transport.connections.single.sent.clear();
+
+    container.read(remoteControllerProvider.notifier).skipBy(30);
+
+    final sent = transport.connections.single.sent.single;
+    expect(sent, contains('"action":"seek"'));
+    expect(sent, contains('"positionSec":130'));
     addTearDown(container.dispose);
   });
 }

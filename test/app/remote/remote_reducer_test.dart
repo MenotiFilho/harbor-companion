@@ -363,6 +363,7 @@ void main() {
       for (final event in [
         const TogglePlay(),
         const Seek(10),
+        const SkipBy(30),
         const SetVolume(0.5),
         const ToggleMute(),
         const PrevEpisode(),
@@ -378,6 +379,105 @@ void main() {
     test('transport is rejected while connected but nothing playing', () {
       final s = remoteReduce(connected(), const TogglePlay());
       expect(s.notice, contains('Nothing playing'));
+      expect(drain(s), isEmpty);
+    });
+  });
+
+  group('skip by ±30s (ADR-0011)', () {
+    test('SkipBy derives the absolute seek from the latest snapshot', () {
+      final s = remoteReduce(
+        connected(),
+        SnapshotArrived(snap(idle: false, positionSec: 100, durationSec: 1000)),
+      );
+      final fwd = remoteReduce(s, const SkipBy(30));
+      expect(fwd.pendingCommand!.action, 'seek');
+      expect(fwd.pendingCommand!.payload['positionSec'], 130.0);
+      expect(drain(fwd), ['command']);
+
+      final back = remoteReduce(s, const SkipBy(-30));
+      expect(back.pendingCommand!.payload['positionSec'], 70.0);
+    });
+
+    test('clamps at 0 and at the known duration', () {
+      var s = remoteReduce(
+        connected(),
+        SnapshotArrived(snap(idle: false, positionSec: 10, durationSec: 1000)),
+      );
+      expect(
+        remoteReduce(s, const SkipBy(-30)).pendingCommand!.payload['positionSec'],
+        0.0,
+      );
+
+      s = remoteReduce(
+        connected(),
+        SnapshotArrived(snap(idle: false, positionSec: 990, durationSec: 1000)),
+      );
+      expect(
+        remoteReduce(s, const SkipBy(30)).pendingCommand!.payload['positionSec'],
+        1000.0,
+      );
+    });
+
+    test('an unknown duration only clamps at 0', () {
+      final s = remoteReduce(
+        connected(),
+        SnapshotArrived(snap(idle: false, positionSec: 100, durationSec: 0)),
+      );
+      expect(
+        remoteReduce(s, const SkipBy(30)).pendingCommand!.payload['positionSec'],
+        130.0,
+      );
+      expect(
+        remoteReduce(s, const SkipBy(-130)).pendingCommand!.payload['positionSec'],
+        0.0,
+      );
+    });
+
+    test('skip works while paused', () {
+      final s = remoteReduce(
+        connected(),
+        SnapshotArrived(snap(
+          idle: false,
+          playing: false,
+          positionSec: 100,
+          durationSec: 1000,
+        )),
+      );
+      final after = remoteReduce(s, const SkipBy(30));
+      expect(after.pendingCommand!.action, 'seek');
+      expect(after.pendingCommand!.payload['positionSec'], 130.0);
+    });
+
+    test('two taps inside one snapshot window coalesce (ADR-0011)', () {
+      var s = remoteReduce(
+        connected(),
+        SnapshotArrived(snap(idle: false, positionSec: 100, durationSec: 1000)),
+      );
+      s = remoteReduce(s, const SkipBy(30));
+      expect(s.pendingCommand!.payload['positionSec'], 130.0);
+      // No snapshot landed yet: both taps read the same position and compute
+      // the same target. There is no pending local offset.
+      s = remoteReduce(s, const SkipBy(30));
+      expect(s.pendingCommand!.payload['positionSec'], 130.0,
+          reason: 'the second tap coalesces inside the snapshot window');
+      // After the next snapshot the host position is authoritative again.
+      s = remoteReduce(
+        s,
+        SnapshotArrived(snap(idle: false, positionSec: 130, durationSec: 1000)),
+      );
+      s = remoteReduce(s, const SkipBy(30));
+      expect(s.pendingCommand!.payload['positionSec'], 160.0);
+    });
+
+    test('skip without held media is rejected', () {
+      final s = remoteReduce(connected(), const SkipBy(30));
+      expect(s.notice, contains('Nothing playing'));
+      expect(drain(s), isEmpty);
+    });
+
+    test('skip while disconnected is rejected', () {
+      final s = remoteReduce(RemoteState(), const SkipBy(30));
+      expect(s.notice, contains('Not connected'));
       expect(drain(s), isEmpty);
     });
   });

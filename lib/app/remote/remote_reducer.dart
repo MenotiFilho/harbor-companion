@@ -21,6 +21,10 @@
 //   - **host-authoritative transport**: play/pause/seek/volume/mute/prev/next
 //     derive their wire payloads from the last snapshot; rejected with a notice
 //     while disconnected; the next snapshot reflects them (no optimistic state).
+//   - **skip-by-30**: `SkipBy(seconds)` derives an absolute `seek` from the
+//     latest snapshot position, clamped to `[0, duration]` (unknown duration
+//     clamps at 0 only); taps inside one ~400ms snapshot window coalesce —
+//     there is no pending local offset (ADR-0011).
 //   - **manual renderer picker** — `castDiscover` only ever on user action,
 //     never on connect/reconnect.
 //
@@ -349,6 +353,17 @@ class Seek extends RemoteEvent {
   const Seek(this.positionSec);
 }
 
+/// Relative skip of [seconds] (ADR-0011): reads the latest Playback position
+/// and duration from state, clamps the target to `[0, duration]` (duration
+/// unknown/zero clamps at 0 only) and emits the existing absolute `seek`.
+/// Two taps inside the same ~400 ms snapshot window compute from the same
+/// position and coalesce — no pending local offset, the host stays
+/// authoritative.
+class SkipBy extends RemoteEvent {
+  final double seconds;
+  const SkipBy(this.seconds);
+}
+
 class SetVolume extends RemoteEvent {
   final double volume;
   const SetVolume(this.volume);
@@ -467,6 +482,9 @@ RemoteState remoteReduce(RemoteState s, RemoteEvent e) {
     case Seek(positionSec: final pos):
       return _transport(s, 'seek', {'positionSec': pos < 0 ? 0 : pos});
 
+    case SkipBy(seconds: final seconds):
+      return _onSkipBy(s, seconds);
+
     case SetVolume(volume: final v):
       final volume = v.clamp(0.0, 1.0).toDouble();
       final next = _transport(s, 'setVolume', {'volume': volume});
@@ -556,6 +574,19 @@ RemoteState _command(RemoteState s, String action,
     [Map<String, dynamic> payload = const {}]) {
   if (!s.connected) return _rejectDisconnected(s);
   return _emit(s, action, payload);
+}
+
+/// Skip → absolute seek (ADR-0011): the target is the last snapshot position
+/// plus [seconds], clamped to `[0, duration]` when the duration is known.
+/// Guards mirror the other transport commands: rejected without a connection
+/// or held media, and the skip works while paused (position is still valid).
+RemoteState _onSkipBy(RemoteState s, double seconds) {
+  final np = s.nowPlaying;
+  if (!s.connected) return _rejectDisconnected(s);
+  if (np == null) return _rejectNothingPlaying(s);
+  final duration = np.durationSec > 0 ? np.durationSec : double.infinity;
+  final target = (np.positionSec + seconds).clamp(0.0, duration).toDouble();
+  return _transport(s, 'seek', {'positionSec': target});
 }
 
 RemoteState _onSnapshot(RemoteState s, Snapshot snap) {

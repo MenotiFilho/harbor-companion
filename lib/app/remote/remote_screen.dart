@@ -1,19 +1,33 @@
-// Remote tab (ticket 07): now-playing + transport + cast picker + d-pad + text.
+// Remote tab (ticket 07; Cinemascope refresh #85): the now-playing band, the
+// five-button transport, and every secondary control below the fold.
 //
-// Renders the pure reducer's view. Everything host-authoritative: the transport
-// controls read their state from the latest snapshot (via `nowPlaying`) and the
-// reducer sends host wire commands — the phone never optimistically flips a
-// toggle. Progress comes straight from `positionSec` (never interpolated).
+// The top band is full-bleed from a blur of the NowPlaying Poster (the
+// snapshot has no Backdrop): title and ficha over the scrim, seek + times and
+// the five-button transport `[prev] [-30] [play] [+30] [next]` — the transport
+// is disabled without held media and the skip works while paused. Everything
+// else (volume, subtitles, destination, Navigate — still collapsed by default —
+// and text entry) lives below the first fold.
+//
+// Renders the pure reducer's view. Everything host-authoritative: the controls
+// read their state from the latest snapshot (via `nowPlaying`) and the reducer
+// sends host wire commands — the phone never optimistically flips a toggle.
+// Progress comes straight from `positionSec` (never interpolated).
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../home/poster_image.dart';
 import '../settings/settings_controller.dart';
+import '../theme.dart';
+import '../ui/glass_surface.dart';
+import '../ui/hero_band.dart';
 import '../ui/playback_position_line.dart' show formatPlaybackTime;
 import '../ws/client_reducer.dart' show CastDevice, TextEntry;
 import 'remote_controller.dart';
 import 'remote_reducer.dart';
+
+/// The Cinemascope band's height (prototype `.l2band` 456px): tall enough that
+/// the art dominates the first fold and the secondary controls fall below it.
+const double kRemoteBandHeight = 456;
 
 class RemoteScreen extends ConsumerStatefulWidget {
   const RemoteScreen({super.key});
@@ -24,7 +38,6 @@ class RemoteScreen extends ConsumerStatefulWidget {
 
 class _RemoteScreenState extends ConsumerState<RemoteScreen> {
   double? _seekDrag;
-  double? _volumeDrag;
   final TextEditingController _textController = TextEditingController();
   final FocusNode _textFocusNode = FocusNode();
   TextEntry? _lastTextEntry;
@@ -60,44 +73,82 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
       _lastTextEntry = textEntry;
     }
 
+    final awaiting = phase == RemotePhase.awaitingStart;
     return ListView(
-      padding: const EdgeInsets.all(16),
+      key: const ValueKey('remoteList'),
+      // Zero padding: the Cinemascope band bleeds edge to edge; every other
+      // block carries its own inset.
+      padding: EdgeInsets.zero,
       children: [
-        if (!connected) const _DisconnectedBanner(),
+        if (!connected)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 16, 16, 0),
+            child: _DisconnectedBanner(),
+          ),
         switch (phase) {
-          RemotePhase.awaitingStart => _AwaitingCard(title: awaitingTitle),
-          RemotePhase.idle => _IdleCard(error: lastError),
-          RemotePhase.nowPlaying => _NowPlayingCard(
+          RemotePhase.awaitingStart => Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              child: _AwaitingCard(title: awaitingTitle),
+            ),
+          RemotePhase.idle => Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              child: _IdleCard(error: lastError),
+            ),
+          RemotePhase.nowPlaying => _CinemascopeBand(
               nowPlaying: nowPlaying,
+              connected: connected,
               seekDrag: _seekDrag,
               onSeekChanged: (v) => setState(() => _seekDrag = v),
               onSeekCommit: (v) {
                 ref.read(remoteControllerProvider.notifier).seek(v);
                 setState(() => _seekDrag = null);
               },
-              volumeDrag: _volumeDrag,
-              onVolumeChanged: (v) => setState(() => _volumeDrag = v),
-              onVolumeCommit: (v) {
-                ref.read(remoteControllerProvider.notifier).setVolume(v);
-                setState(() => _volumeDrag = null);
-              },
             ),
         },
-        if (phase != RemotePhase.awaitingStart) ...[
-          const SizedBox(height: 16),
-          _TransportBar(nowPlaying: nowPlaying, enabled: connected),
-        ],
-        const SizedBox(height: 16),
-        if (showPlaybackLocation) ...[
-          _CastSection(enabled: connected),
-          const SizedBox(height: 16),
-        ],
-        _NavSection(enabled: connected),
-        const SizedBox(height: 16),
-        _TextSection(
-          enabled: connected,
-          textController: _textController,
-          focusNode: _textFocusNode,
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // With held media the transport lives in the band. Without it —
+              // or while awaiting a start — the row stays visible but disabled.
+              if (nowPlaying == null && !awaiting) ...[
+                _TransportRow(nowPlaying: null, enabled: connected),
+                const SizedBox(height: 16),
+              ],
+              if (!awaiting) ...[
+                _VolumeRow(nowPlaying: nowPlaying, enabled: connected),
+                if (nowPlaying?.canToggleSubtitles == true)
+                  Center(
+                    child: TextButton.icon(
+                      icon: Icon(nowPlaying!.subtitlesOn
+                          ? Icons.subtitles
+                          : Icons.subtitles_off),
+                      label: Text(nowPlaying.subtitlesOn
+                          ? 'Subtitles on'
+                          : 'Subtitles off'),
+                      onPressed: connected
+                          ? () => ref
+                              .read(remoteControllerProvider.notifier)
+                              .toggleSubtitles()
+                          : null,
+                    ),
+                  ),
+                if (showPlaybackLocation) ...[
+                  const SizedBox(height: 16),
+                  _CastSection(enabled: connected),
+                ],
+              ],
+              const SizedBox(height: 16),
+              _NavSection(enabled: connected),
+              const SizedBox(height: 16),
+              _TextSection(
+                enabled: connected,
+                textController: _textController,
+                focusNode: _textFocusNode,
+              ),
+            ],
+          ),
         ),
       ],
     );
@@ -227,191 +278,237 @@ class _IdleCard extends StatelessWidget {
   }
 }
 
-class _NowPlayingCard extends StatelessWidget {
+/// The Cinemascope band (issue #85): a full-bleed strip built from a blur of
+/// the NowPlaying Poster — the snapshot has no Backdrop — with the title and
+/// ficha over the bottom-up scrim, the seek slider + times and the five-button
+/// transport. Per ADR-0010 the blur is a child filter on the art, never a
+/// `BackdropFilter`, so it costs nothing for the rest of the page.
+class _CinemascopeBand extends StatelessWidget {
   final NowPlaying? nowPlaying;
+  final bool connected;
   final double? seekDrag;
   final ValueChanged<double> onSeekChanged;
   final ValueChanged<double> onSeekCommit;
-  final double? volumeDrag;
-  final ValueChanged<double> onVolumeChanged;
-  final ValueChanged<double> onVolumeCommit;
 
-  const _NowPlayingCard({
+  const _CinemascopeBand({
     required this.nowPlaying,
+    required this.connected,
     required this.seekDrag,
     required this.onSeekChanged,
     required this.onSeekCommit,
-    required this.volumeDrag,
-    required this.onVolumeChanged,
-    required this.onVolumeCommit,
   });
 
   @override
   Widget build(BuildContext context) {
     final np = nowPlaying;
     if (np == null) return const SizedBox.shrink();
+    final tokens = AppTokens.of(context);
     final text = Theme.of(context).textTheme;
-    final scheme = Theme.of(context).colorScheme;
 
     final duration = np.durationSec;
-    final position = (seekDrag ?? np.positionSec).clamp(0.0, duration <= 0 ? double.infinity : duration);
+    final position = (seekDrag ?? np.positionSec)
+        .clamp(0.0, duration <= 0 ? double.infinity : duration);
+    final ficha = [np.episodeLine, np.sourceLine]
+        .whereType<String>()
+        .where((line) => line.isNotEmpty)
+        .join('  ·  ');
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: SizedBox(
-                    width: 88,
-                    height: 132,
-                    child: PosterImage(url: np.posterUrl),
+    return SizedBox(
+      key: const ValueKey('remoteBand'),
+      height: kRemoteBandHeight,
+      width: double.infinity,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          HeroArtwork(posterUrl: np.posterUrl),
+          DecoratedBox(decoration: BoxDecoration(gradient: tokens.heroScrim)),
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(22, 0, 22, 18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'NOW PLAYING',
+                    style: tokens.sectionLabel.copyWith(color: tokens.accentInk),
                   ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  const SizedBox(height: 8),
+                  Text(
+                    np.mediaTitle,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: tokens.serifTitle,
+                  ),
+                  if (ficha.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      ficha,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: text.bodySmall?.copyWith(color: tokens.inkMuted),
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  Row(
                     children: [
-                      Text(
-                        np.mediaTitle,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: text.titleLarge,
+                      Icon(
+                        np.target.isCasting ? Icons.cast : Icons.desktop_windows,
+                        size: 16,
+                        color: tokens.inkFaint,
                       ),
-                      if (np.episodeLine != null) ...[
-                        const SizedBox(height: 4),
-                        Text(
-                          np.episodeLine!,
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          np.target.label,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: text.bodyMedium
-                              ?.copyWith(color: scheme.onSurfaceVariant),
+                          style: text.bodySmall?.copyWith(color: tokens.inkFaint),
                         ),
-                      ],
-                      if (np.sourceLine != null) ...[
-                        const SizedBox(height: 4),
-                        Text(
-                          np.sourceLine!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: text.bodySmall?.copyWith(color: scheme.outline),
-                        ),
-                      ],
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Icon(
-                            np.target.isCasting ? Icons.cast : Icons.desktop_windows,
-                            size: 16,
-                            color: scheme.onSurfaceVariant,
-                          ),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: Text(
-                              np.target.label,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: text.bodySmall
-                                  ?.copyWith(color: scheme.onSurfaceVariant),
-                            ),
-                          ),
-                        ],
                       ),
                     ],
                   ),
-                ),
-              ],
+                  const SizedBox(height: 4),
+                  Slider(
+                    value: position.toDouble(),
+                    max: duration <= 0 ? 1 : duration,
+                    onChanged: duration <= 0 ? null : onSeekChanged,
+                    onChangeEnd: duration <= 0 ? null : onSeekCommit,
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        formatPlaybackTime(position),
+                        style: text.bodySmall?.copyWith(color: tokens.inkMuted),
+                      ),
+                      Text(
+                        formatPlaybackTime(duration),
+                        style: text.bodySmall?.copyWith(color: tokens.inkMuted),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  _TransportRow(nowPlaying: np, enabled: connected),
+                ],
+              ),
             ),
-            const SizedBox(height: 16),
-            Slider(
-              value: position.toDouble(),
-              max: duration <= 0 ? 1 : duration,
-              onChanged: duration <= 0 ? null : onSeekChanged,
-              onChangeEnd: duration <= 0 ? null : onSeekCommit,
-            ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(formatPlaybackTime(position), style: text.bodySmall),
-                Text(formatPlaybackTime(duration), style: text.bodySmall),
-              ],
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 }
 
-class _TransportBar extends ConsumerWidget {
+/// The five-button transport `[prev] [-30] [play] [+30] [next]` (ADR-0011).
+///
+/// Every button is disabled without held media. Play follows the snapshot's
+/// playing flag; prev/next additionally require the host to report a
+/// neighbouring episode (kept from ticket 07), and the ±30 skips only need
+/// held media — they work while paused (the reducer clamps the seek).
+class _TransportRow extends ConsumerWidget {
   final NowPlaying? nowPlaying;
   final bool enabled;
-  const _TransportBar({required this.nowPlaying, required this.enabled});
+  const _TransportRow({required this.nowPlaying, required this.enabled});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final np = nowPlaying;
     final ctrl = ref.read(remoteControllerProvider.notifier);
+    final tokens = AppTokens.of(context);
     final playing = np?.playing ?? false;
+    final mediaHeld = enabled && np != null;
+
+    Widget side(IconData icon, String tooltip, VoidCallback? onPressed) {
+      return IconButton(
+        iconSize: 26,
+        icon: Icon(icon),
+        tooltip: tooltip,
+        onPressed: onPressed,
+        style: IconButton.styleFrom(
+          foregroundColor: tokens.inkMuted,
+          disabledForegroundColor: tokens.inkFaint,
+          side: BorderSide(color: tokens.hair),
+          shape: const CircleBorder(),
+          fixedSize: const Size(48, 48),
+        ),
+      );
+    }
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        side(
+          Icons.skip_previous,
+          'Previous episode',
+          (mediaHeld && np.hasPrevEpisode) ? ctrl.prevEpisode : null,
+        ),
+        side(
+          Icons.replay_30,
+          'Back 30 seconds',
+          mediaHeld ? () => ctrl.skipBy(-30) : null,
+        ),
+        IconButton.filled(
+          iconSize: 34,
+          icon: Icon(playing ? Icons.pause : Icons.play_arrow),
+          tooltip: playing ? 'Pause' : 'Play',
+          onPressed: mediaHeld ? ctrl.togglePlay : null,
+          style: IconButton.styleFrom(
+            fixedSize: const Size(70, 70),
+            backgroundColor: tokens.accent,
+            foregroundColor: tokens.onAccent,
+            disabledBackgroundColor: tokens.glassFill,
+            disabledForegroundColor: tokens.inkFaint,
+          ),
+        ),
+        side(
+          Icons.forward_30,
+          'Forward 30 seconds',
+          mediaHeld ? () => ctrl.skipBy(30) : null,
+        ),
+        side(
+          Icons.skip_next,
+          'Next episode',
+          (mediaHeld && np.hasNextEpisode) ? ctrl.nextEpisode : null,
+        ),
+      ],
+    );
+  }
+}
+
+/// Volume slider + mute, below the fold (issue #85). The slider keeps sending
+/// the host-authoritative `setVolume` on every drag tick, as before.
+class _VolumeRow extends ConsumerWidget {
+  final NowPlaying? nowPlaying;
+  final bool enabled;
+  const _VolumeRow({required this.nowPlaying, required this.enabled});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final np = nowPlaying;
+    final ctrl = ref.read(remoteControllerProvider.notifier);
+    final tokens = AppTokens.of(context);
     final muted = np?.muted ?? false;
 
-    return Column(
+    return Row(
       children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            IconButton(
-              iconSize: 32,
-              icon: const Icon(Icons.skip_previous),
-              tooltip: 'Previous episode',
-              onPressed:
-                  (enabled && np?.hasPrevEpisode == true) ? ctrl.prevEpisode : null,
-            ),
-            IconButton.filled(
-              iconSize: 48,
-              icon: Icon(playing ? Icons.pause : Icons.play_arrow),
-              tooltip: playing ? 'Pause' : 'Play',
-              onPressed: enabled && np != null ? ctrl.togglePlay : null,
-            ),
-            IconButton(
-              iconSize: 32,
-              icon: const Icon(Icons.skip_next),
-              tooltip: 'Next episode',
-              onPressed:
-                  (enabled && np?.hasNextEpisode == true) ? ctrl.nextEpisode : null,
-            ),
-          ],
+        Icon(
+          muted ? Icons.volume_off : Icons.volume_up,
+          color: tokens.inkFaint,
         ),
-        Row(
-          children: [
-            Icon(muted ? Icons.volume_off : Icons.volume_up),
-            Expanded(
-              child: Slider(
-                value: (np?.volume ?? 1).clamp(0.0, 1.0),
-                onChanged: (enabled && np != null)
-                    ? (v) => ctrl.setVolume(v)
-                    : null,
-              ),
-            ),
-            IconButton(
-              icon: Icon(muted ? Icons.volume_off : Icons.volume_up),
-              tooltip: muted ? 'Unmute' : 'Mute',
-              onPressed: enabled && np != null ? ctrl.toggleMute : null,
-            ),
-          ],
-        ),
-        if (np?.canToggleSubtitles == true)
-          TextButton.icon(
-            icon: Icon(np!.subtitlesOn ? Icons.subtitles : Icons.subtitles_off),
-            label: Text(np.subtitlesOn ? 'Subtitles on' : 'Subtitles off'),
-            onPressed: enabled ? ctrl.toggleSubtitles : null,
+        Expanded(
+          child: Slider(
+            value: (np?.volume ?? 1).clamp(0.0, 1.0),
+            onChanged:
+                (enabled && np != null) ? (v) => ctrl.setVolume(v) : null,
           ),
+        ),
+        IconButton(
+          icon: Icon(muted ? Icons.volume_off : Icons.volume_up),
+          tooltip: muted ? 'Unmute' : 'Mute',
+          onPressed: enabled && np != null ? ctrl.toggleMute : null,
+        ),
       ],
     );
   }
@@ -525,60 +622,65 @@ class _NavSection extends ConsumerWidget {
           onPressed: enabled ? () => ctrl.nav(k) : null,
         );
 
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: ExpansionTile(
-        // Local view state only (ticket 39): collapsed by default, header
-        // always toggles so the d-pad is reachable even while disconnected.
-        initiallyExpanded: false,
-        shape: const Border(),
-        collapsedShape: const Border(),
-        title: Text('Navigate', style: Theme.of(context).textTheme.titleSmall),
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            child: Column(
-              children: [
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [key('up', Icons.keyboard_arrow_up)],
-                ),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    key('left', Icons.keyboard_arrow_left),
-                    const SizedBox(width: 8),
-                    key('select', Icons.check),
-                    const SizedBox(width: 8),
-                    key('right', Icons.keyboard_arrow_right),
-                  ],
-                ),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [key('down', Icons.keyboard_arrow_down)],
-                ),
-                const SizedBox(height: 4),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    TextButton.icon(
-                      icon: const Icon(Icons.search),
-                      label: const Text('Open search'),
-                      onPressed: enabled ? ctrl.openSearch : null,
-                    ),
-                    const SizedBox(width: 8),
-                    TextButton.icon(
-                      icon: const Icon(Icons.arrow_back),
-                      label: const Text('Back'),
-                      onPressed: enabled ? () => ctrl.nav('back') : null,
-                    ),
-                  ],
-                ),
-              ],
+    return GlassSurface(
+      // A translucent fill + hairline (ADR-0010 — cards never blur); clipped
+      // so the ExpansionTile's ink stays inside the rounded corners.
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(AppTokens.of(context).radius),
+        child: ExpansionTile(
+          // Local view state only (ticket 39): collapsed by default, header
+          // always toggles so the d-pad is reachable even while disconnected.
+          initiallyExpanded: false,
+          shape: const Border(),
+          collapsedShape: const Border(),
+          title:
+              Text('Navigate', style: Theme.of(context).textTheme.titleSmall),
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                children: [
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [key('up', Icons.keyboard_arrow_up)],
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      key('left', Icons.keyboard_arrow_left),
+                      const SizedBox(width: 8),
+                      key('select', Icons.check),
+                      const SizedBox(width: 8),
+                      key('right', Icons.keyboard_arrow_right),
+                    ],
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [key('down', Icons.keyboard_arrow_down)],
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      TextButton.icon(
+                        icon: const Icon(Icons.search),
+                        label: const Text('Open search'),
+                        onPressed: enabled ? ctrl.openSearch : null,
+                      ),
+                      const SizedBox(width: 8),
+                      TextButton.icon(
+                        icon: const Icon(Icons.arrow_back),
+                        label: const Text('Back'),
+                        onPressed: enabled ? () => ctrl.nav('back') : null,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -607,42 +709,40 @@ class _TextSection extends ConsumerWidget {
       textController.text = textEntry.value;
     }
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            TextField(
-              controller: textController,
-              focusNode: focusNode,
-              enabled: enabled,
-              decoration: InputDecoration(
-                labelText: textEntry.placeholder.isEmpty
-                    ? 'Type here'
-                    : textEntry.placeholder,
-                border: const OutlineInputBorder(),
+    return GlassSurface(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          TextField(
+            controller: textController,
+            focusNode: focusNode,
+            enabled: enabled,
+            decoration: InputDecoration(
+              labelText: textEntry.placeholder.isEmpty
+                  ? 'Type here'
+                  : textEntry.placeholder,
+              border: const OutlineInputBorder(),
+            ),
+            onChanged: enabled ? ctrl.setText : null,
+            onSubmitted: enabled ? (_) => ctrl.submitText() : null,
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: enabled ? ctrl.blurText : null,
+                child: const Text('Done'),
               ),
-              onChanged: enabled ? ctrl.setText : null,
-              onSubmitted: enabled ? (_) => ctrl.submitText() : null,
-            ),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                TextButton(
-                  onPressed: enabled ? ctrl.blurText : null,
-                  child: const Text('Done'),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  onPressed:
-                      enabled ? () => ctrl.submitText(textController.text) : null,
-                  child: const Text('Submit'),
-                ),
-              ],
-            ),
-          ],
-        ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed:
+                    enabled ? () => ctrl.submitText(textController.text) : null,
+                child: const Text('Submit'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

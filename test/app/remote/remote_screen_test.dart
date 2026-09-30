@@ -12,14 +12,18 @@ import 'package:harbor_companion/app/remote/remote_controller.dart';
 import 'package:harbor_companion/app/remote/remote_reducer.dart';
 import 'package:harbor_companion/app/remote/remote_screen.dart';
 import 'package:harbor_companion/app/settings/settings_controller.dart';
-import 'package:harbor_companion/app/ws/client_reducer.dart' show TextEntry;
+import 'package:harbor_companion/app/ws/client_reducer.dart'
+    show EpisodeRef, SourceInfo, TextEntry;
 
 class _StubRemoteController extends RemoteController {
   @override
   final RemoteState state;
+  final List<double> skips = [];
   _StubRemoteController(this.state);
   @override
   RemoteState build() => state;
+  @override
+  void skipBy(double seconds) => skips.add(seconds);
 }
 
 class _StubSettingsController extends SettingsController {
@@ -31,15 +35,39 @@ class _StubSettingsController extends SettingsController {
 }
 
 Widget _wrap(RemoteState state,
-        {SettingsState settings = const SettingsState()}) =>
+        {SettingsState settings = const SettingsState(),
+        _StubRemoteController? controller}) =>
     ProviderScope(
       overrides: [
-        remoteControllerProvider
-            .overrideWith(() => _StubRemoteController(state)),
+        remoteControllerProvider.overrideWith(
+            () => controller ?? _StubRemoteController(state)),
         settingsControllerProvider
             .overrideWith(() => _StubSettingsController(settings)),
       ],
       child: const MaterialApp(home: Scaffold(body: RemoteScreen())),
+    );
+
+/// A now-playing state with held media, the shape every transport assertion
+/// starts from.
+RemoteState _playing({
+  bool playing = true,
+  double positionSec = 100,
+  double durationSec = 1000,
+  bool hasPrev = true,
+  bool hasNext = true,
+}) =>
+    RemoteState(
+      connected: true,
+      phase: RemotePhase.nowPlaying,
+      nowPlaying: NowPlaying(
+        mediaId: 'tt1',
+        mediaTitle: 'Shawshank',
+        positionSec: positionSec,
+        durationSec: durationSec,
+        playing: playing,
+        hasPrevEpisode: hasPrev,
+        hasNextEpisode: hasNext,
+      ),
     );
 
 void main() {
@@ -61,25 +89,110 @@ void main() {
     expect(find.textContaining('Starting Shawshank'), findsOneWidget);
   });
 
-  testWidgets('now-playing shows the title and transport', (tester) async {
+  testWidgets('now-playing shows the Cinemascope band and transport',
+      (tester) async {
+    await tester.pumpWidget(_wrap(_playing()));
+    expect(find.byKey(const ValueKey('remoteBand')), findsOneWidget);
+    expect(find.text('Shawshank'), findsOneWidget);
+    expect(find.byIcon(Icons.pause), findsOneWidget);
+    for (final icon in const [
+      Icons.skip_previous,
+      Icons.replay_30,
+      Icons.pause,
+      Icons.forward_30,
+      Icons.skip_next,
+    ]) {
+      expect(find.byIcon(icon), findsOneWidget, reason: '$icon');
+    }
+  });
+
+  testWidgets('the band shows the episode/source ficha over the scrim',
+      (tester) async {
     await tester.pumpWidget(_wrap(RemoteState(
       connected: true,
       phase: RemotePhase.nowPlaying,
       nowPlaying: const NowPlaying(
         mediaId: 'tt1',
         mediaTitle: 'Shawshank',
+        episode: EpisodeRef(1, 2, 'Winterfell'),
+        source: SourceInfo(null, null, '1080p', 'WEB-DL'),
+        positionSec: 100,
+        durationSec: 1000,
         playing: true,
-        hasPrevEpisode: true,
-        hasNextEpisode: true,
       ),
     )));
-    expect(find.text('Shawshank'), findsOneWidget);
-    expect(find.byIcon(Icons.pause), findsOneWidget);
-    expect(find.byIcon(Icons.skip_previous), findsOneWidget);
-    expect(find.byIcon(Icons.skip_next), findsOneWidget);
+    expect(find.text('S1 · E2  Winterfell  ·  1080p · WEB-DL'), findsOneWidget);
   });
 
-  testWidgets('a disconnected banner renders while not connected', (tester) async {
+  testWidgets('the transport is disabled without held media', (tester) async {
+    await tester.pumpWidget(_wrap(RemoteState(connected: true)));
+    for (final icon in const [
+      Icons.skip_previous,
+      Icons.replay_30,
+      Icons.play_arrow,
+      Icons.forward_30,
+      Icons.skip_next,
+    ]) {
+      final button =
+          tester.widget<IconButton>(find.widgetWithIcon(IconButton, icon));
+      expect(button.onPressed, isNull, reason: '$icon stays disabled');
+    }
+  });
+
+  testWidgets('the five transport buttons are enabled with held media',
+      (tester) async {
+    await tester.pumpWidget(_wrap(_playing()));
+    for (final icon in const [
+      Icons.skip_previous,
+      Icons.replay_30,
+      Icons.pause,
+      Icons.forward_30,
+      Icons.skip_next,
+    ]) {
+      final button =
+          tester.widget<IconButton>(find.widgetWithIcon(IconButton, icon));
+      expect(button.onPressed, isNotNull, reason: '$icon is enabled');
+    }
+  });
+
+  testWidgets('tapping ±30 calls the reducer skip path', (tester) async {
+    final ctrl = _StubRemoteController(_playing());
+    await tester.pumpWidget(_wrap(ctrl.state, controller: ctrl));
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.forward_30));
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.replay_30));
+    expect(ctrl.skips, [30, -30]);
+  });
+
+  testWidgets('skip stays enabled while paused', (tester) async {
+    final ctrl = _StubRemoteController(_playing(playing: false));
+    await tester.pumpWidget(_wrap(ctrl.state, controller: ctrl));
+    expect(find.byIcon(Icons.play_arrow), findsOneWidget);
+    final forward =
+        tester.widget<IconButton>(find.widgetWithIcon(IconButton, Icons.forward_30));
+    expect(forward.onPressed, isNotNull);
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.forward_30));
+    expect(ctrl.skips, [30]);
+  });
+
+  testWidgets('volume and Navigate live below the band', (tester) async {
+    await tester.pumpWidget(_wrap(_playing()));
+    final band = find.byKey(const ValueKey('remoteBand'));
+    expect(tester.getBottomLeft(band).dy, kRemoteBandHeight);
+    // The seek slider is the band's; the volume slider is the other one and
+    // starts below the fold.
+    expect(
+      find.descendant(of: band, matching: find.byType(Slider)),
+      findsOneWidget,
+    );
+    expect(find.byType(Slider), findsNWidgets(2));
+    expect(
+      tester.getTopLeft(find.text('Navigate')).dy,
+      greaterThanOrEqualTo(kRemoteBandHeight),
+    );
+  });
+
+  testWidgets('a disconnected banner renders while not connected',
+      (tester) async {
     await tester.pumpWidget(_wrap(RemoteState()));
     expect(find.textContaining('Not connected'), findsOneWidget);
   });

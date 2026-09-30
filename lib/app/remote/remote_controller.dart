@@ -53,6 +53,9 @@ class RemoteController extends Notifier<RemoteState> {
 
   void seek(double positionSec) => _dispatch(Seek(positionSec));
 
+  /// Relative ±30 s skip; the reducer derives the absolute seek (ADR-0011).
+  void skipBy(double seconds) => _dispatch(SkipBy(seconds));
+
   void setVolume(double volume) => _dispatch(SetVolume(volume));
 
   void toggleMute() => _dispatch(const ToggleMute());
