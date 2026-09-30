@@ -202,6 +202,8 @@ List<Season> _seasonsFromVideos(Object? videos) {
     final season = (v['season'] as num?)?.toInt();
     final episode = (v['episode'] as num?)?.toInt();
     if (season == null || episode == null) continue;
+    // No `duration`: the live Cinemeta `videos[]` shape (ticket 84) carries
+    // name/season/episode/overview/thumbnail — and no runtime field at all.
     bySeason.putIfAbsent(season, () => []).add(Episode(
           season: season,
           episode: episode,
@@ -244,8 +246,19 @@ List<Episode> parseTmdbSeasonEpisodes(String raw, int seasonNumber) {
           name: e['name'] as String? ?? 'Episode ${e['episode_number']}',
           overview: e['overview'] as String?,
           still: tmdbPoster(e['still_path'] as String?),
+          // TMDB episodes carry `runtime` in minutes, 0 when unknown — never
+          // render a made-up duration (ticket 84).
+          duration: _tmdbRuntime(e['runtime']),
         ),
   ]..sort((a, b) => a.episode.compareTo(b.episode));
+}
+
+/// TMDB's episode `runtime` (minutes) as a [Duration], or null when absent,
+/// zero or negative — the honest "no duration" cases.
+Duration? _tmdbRuntime(Object? runtime) {
+  final minutes = (runtime as num?)?.toInt();
+  if (minutes == null || minutes <= 0) return null;
+  return Duration(minutes: minutes);
 }
 
 /// Loads episodes for each season shell concurrently and returns the seasons

@@ -68,12 +68,20 @@ class Episode {
   final String name;
   final String? overview;
   final String? still;
+
+  /// Episode runtime when the source reports one. TMDB's season episodes carry
+  /// `runtime` (minutes, 0 when unknown — mapped to null); Cinemeta's
+  /// `videos[]` carry none, so an imdb detail honestly has no duration
+  /// (ticket 84). Null renders no duration — never a guess.
+  final Duration? duration;
+
   const Episode({
     required this.season,
     required this.episode,
     required this.name,
     this.overview,
     this.still,
+    this.duration,
   });
 }
 

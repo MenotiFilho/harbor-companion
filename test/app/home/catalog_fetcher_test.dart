@@ -121,6 +121,9 @@ void main() {
       expect(detail.seasons[0].episodes, hasLength(2));
       expect(detail.seasons[0].firstEpisode!.name, 'Pilot');
       expect(detail.seasons[1].episodes.single.name, 'Seven Thirty-Seven');
+      // The live Cinemeta videos[] shape carries no runtime (ticket 84), so an
+      // imdb detail honestly has no episode duration to render.
+      expect(detail.seasons[0].episodes.first.duration, isNull);
     });
 
     test('a movie detail has no seasons', () {
@@ -173,6 +176,20 @@ void main() {
       expect(episodes, hasLength(2));
       expect(episodes.first.episode, 1);
       expect(episodes.first.still, 'https://image.tmdb.org/t/p/w342/s.jpg');
+    });
+
+    test('episode runtime maps to a duration; 0/absent stay null', () {
+      final raw = jsonEncode({
+        'episodes': [
+          {'episode_number': 1, 'name': 'Pilot', 'runtime': 48},
+          {'episode_number': 2, 'name': 'Cat', 'runtime': 0},
+          {'episode_number': 3, 'name': 'Unknown'},
+        ],
+      });
+      final episodes = parseTmdbSeasonEpisodes(raw, 1);
+      expect(episodes[0].duration, const Duration(minutes: 48));
+      expect(episodes[1].duration, isNull, reason: '0 is TMDB for unknown');
+      expect(episodes[2].duration, isNull);
     });
 
     test('movie detail parses as a movie meta', () {
