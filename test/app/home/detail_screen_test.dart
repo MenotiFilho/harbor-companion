@@ -21,6 +21,7 @@ import 'package:harbor_companion/app/home/home_reducer.dart';
 import 'package:harbor_companion/app/home/meta.dart';
 import 'package:harbor_companion/app/remote/remote_controller.dart';
 import 'package:harbor_companion/app/remote/remote_reducer.dart';
+import 'package:harbor_companion/app/routes.dart';
 import 'package:harbor_companion/app/shell/player_bar.dart';
 
 /// A HomeController pinned to [initial]. Unlike a field override, the base
@@ -40,6 +41,18 @@ class _RecordingRemoteController extends RemoteController {
   RemoteState build() => RemoteState();
   @override
   void playMeta(PlayMetaCommand command) => played.add(command);
+}
+
+/// Records `openDetail` calls (the similar-rail tap seam) instead of
+/// dispatching, so a tap can be pinned without a second Detail render.
+class _RecordingHomeController extends HomeController {
+  _RecordingHomeController(this.initial);
+  final HomeState initial;
+  final opened = <Meta>[];
+  @override
+  HomeState build() => initial;
+  @override
+  void openDetail(Meta meta) => opened.add(meta);
 }
 
 Meta seriesMeta() => Meta(
@@ -87,17 +100,23 @@ Widget _wrap(
   HomeState state, {
   PlayerBarView? playerBar,
   _RecordingRemoteController? remote,
+  HomeController Function()? home,
+  Map<String, WidgetBuilder>? routes,
   List<Override> overrides = const [],
 }) =>
     ProviderScope(
       overrides: [
-        homeControllerProvider.overrideWith(() => _StubHomeController(state)),
+        homeControllerProvider
+            .overrideWith(home ?? () => _StubHomeController(state)),
         playerBarViewProvider.overrideWithValue(playerBar),
         remoteControllerProvider
             .overrideWith(() => remote ?? _RecordingRemoteController()),
         ...overrides,
       ],
-      child: const MaterialApp(home: DetailScreen()),
+      child: MaterialApp(
+        home: const DetailScreen(),
+        routes: routes ?? const {},
+      ),
     );
 
 Finder _inHero(Finder matching) => find.descendant(
@@ -337,6 +356,109 @@ void main() {
       // The rail is not series-only: it renders wherever there is data.
       expect(find.text('CAST'), findsOneWidget);
       expect(find.text('Bryan Cranston'), findsOneWidget);
+    });
+  });
+
+  group('similar', () {
+    const similar = [
+      Meta(
+        id: 'tmdb:movie:604',
+        type: 'movie',
+        name: 'The Matrix Reloaded',
+        poster: 'https://img/reloaded.jpg',
+      ),
+      Meta(id: 'tmdb:movie:605', type: 'movie', name: 'The Matrix Revolutions'),
+    ];
+
+    testWidgets('renders poster cards when there is data', (tester) async {
+      await tester.pumpWidget(_wrap(
+        _ready(seriesDetail()),
+        overrides: [
+          similarProvider.overrideWith((ref, title) async => similar),
+        ],
+      ));
+      await tester.pump();
+
+      expect(find.text('SIMILAR'), findsOneWidget);
+      expect(find.byKey(const ValueKey('similarRail')), findsOneWidget);
+      expect(find.text('The Matrix Reloaded'), findsOneWidget);
+      expect(find.text('The Matrix Revolutions'), findsOneWidget);
+    });
+
+    testWidgets('a pending similar never delays header, cast or episodes',
+        (tester) async {
+      final pending = Completer<List<Meta>>();
+      await tester.pumpWidget(_wrap(
+        _ready(seriesDetail()),
+        overrides: [
+          similarProvider.overrideWith((ref, title) => pending.future),
+        ],
+      ));
+
+      expect(_inHero(find.text('Breaking Bad')), findsOneWidget);
+      expect(find.text('Pilot'), findsOneWidget);
+      expect(find.text('SIMILAR'), findsNothing);
+      expect(find.byKey(const ValueKey('similarRail')), findsNothing);
+      // The section's own loading never adds a spinner to the page.
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+    });
+
+    testWidgets('an empty similar list renders nothing', (tester) async {
+      await tester.pumpWidget(_wrap(
+        _ready(seriesDetail()),
+        overrides: [
+          similarProvider.overrideWith((ref, title) async => const <Meta>[]),
+        ],
+      ));
+      await tester.pump();
+
+      expect(find.text('SIMILAR'), findsNothing);
+      expect(find.byKey(const ValueKey('similarRail')), findsNothing);
+      expect(find.text('Pilot'), findsOneWidget);
+    });
+
+    testWidgets('a failed similar fetch renders nothing and keeps the page',
+        (tester) async {
+      await tester.pumpWidget(_wrap(
+        _ready(seriesDetail()),
+        overrides: [
+          similarProvider
+              .overrideWith((ref, title) async => throw Exception('boom')),
+        ],
+      ));
+      await tester.pump();
+
+      expect(find.text('SIMILAR'), findsNothing);
+      expect(find.byKey(const ValueKey('similarRail')), findsNothing);
+      expect(find.text('CAST'), findsNothing);
+      expect(_inHero(find.text('Breaking Bad')), findsOneWidget);
+      expect(find.text('Pilot'), findsOneWidget);
+    });
+
+    testWidgets('tapping a similar card opens that title\'s Detail',
+        (tester) async {
+      final home = _RecordingHomeController(_ready(seriesDetail()));
+      await tester.pumpWidget(_wrap(
+        _ready(seriesDetail()),
+        home: () => home,
+        overrides: [
+          similarProvider.overrideWith((ref, title) async => similar),
+        ],
+        routes: {
+          AppRoutes.detail: (_) =>
+              const Scaffold(body: Text('similar detail route')),
+        },
+      ));
+      await tester.pump();
+
+      await tester.ensureVisible(find.text('The Matrix Reloaded'));
+      await tester.pump();
+      await tester.tap(find.text('The Matrix Reloaded'));
+      await tester.pumpAndSettle();
+
+      expect(home.opened.single.id, 'tmdb:movie:604');
+      expect(home.opened.single.type, 'movie');
+      expect(find.text('similar detail route'), findsOneWidget);
     });
   });
 

@@ -1,8 +1,9 @@
 // Tests for the detail extras fetcher
 // (lib/app/home/detail_extras_fetcher.dart).
 //
-// Pins the TMDB credits and `/find` wire shapes as top-level mappers and the
-// narrow fetcher's keyless/no-match/cache behavior, all without network.
+// Pins the TMDB credits, recommendations and `/find` wire shapes as top-level
+// mappers and the narrow fetcher's keyless/no-match/cache behavior, all
+// without network.
 
 import 'dart:convert';
 
@@ -11,6 +12,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:harbor_companion/app/home/detail_extras_fetcher.dart';
 
 String credits(List<Map<String, Object?>> cast) => jsonEncode({'cast': cast});
+
+String recommendations(List<Map<String, Object?>> results) =>
+    jsonEncode({'results': results});
 
 void main() {
   group('parseTmdbCredits', () {
@@ -109,6 +113,73 @@ void main() {
     });
   });
 
+  group('parseTmdbRecommendations', () {
+    test('a movie result maps to the catalog Meta shape a card takes', () {
+      final items = parseTmdbRecommendations(
+        recommendations([
+          {
+            'id': 604,
+            'title': 'The Matrix Reloaded',
+            'overview': 'Neo returns.',
+            'poster_path': '/reloaded.jpg',
+            'backdrop_path': '/reloaded-bg.jpg',
+            'release_date': '2003-05-15',
+          },
+        ]),
+        'movie',
+      );
+
+      final meta = items.single;
+      expect(meta.id, 'tmdb:movie:604');
+      expect(meta.type, 'movie');
+      expect(meta.name, 'The Matrix Reloaded');
+      expect(meta.poster, 'https://image.tmdb.org/t/p/w342/reloaded.jpg');
+      expect(meta.background, 'https://image.tmdb.org/t/p/w780/reloaded-bg.jpg');
+      expect(meta.description, 'Neo returns.');
+      expect(meta.releaseInfo, '2003');
+    });
+
+    test('a tv result uses name and first_air_date', () {
+      final items = parseTmdbRecommendations(
+        recommendations([
+          {
+            'id': 1396,
+            'name': 'Breaking Bad',
+            'poster_path': '/bb.jpg',
+            'first_air_date': '2008-01-20',
+          },
+        ]),
+        'tv',
+      );
+
+      expect(items.single.id, 'tmdb:tv:1396');
+      expect(items.single.type, 'series');
+      expect(items.single.name, 'Breaking Bad');
+      expect(items.single.releaseInfo, '2008');
+    });
+
+    test('entries without an id or a name are skipped, not invented', () {
+      final items = parseTmdbRecommendations(
+        recommendations([
+          {'title': 'No id'},
+          {'id': 7},
+          {'id': 8, 'title': 'Kept'},
+        ]),
+        'movie',
+      );
+
+      expect(items.map((m) => m.name), ['Kept']);
+    });
+
+    test('a missing results array is no data, not a crash', () {
+      expect(parseTmdbRecommendations('{}', 'movie'), isEmpty);
+      expect(
+        parseTmdbRecommendations(jsonEncode({'results': 'nope'}), 'movie'),
+        isEmpty,
+      );
+    });
+  });
+
   group('fetchCast', () {
     test('without a key nothing is requested and nothing is returned', () async {
       var gets = 0;
@@ -202,6 +273,110 @@ void main() {
 
       await expectLater(
         fetcher.fetchCast('movie', 'tmdb:movie:603', 'key'),
+        throwsA(isA<Exception>()),
+      );
+    });
+  });
+
+  group('fetchRecommendations', () {
+    test('without a key nothing is requested and nothing is returned', () async {
+      var gets = 0;
+      final fetcher = HttpDetailExtrasFetcher(get: (url) async {
+        gets++;
+        return recommendations([]);
+      });
+
+      expect(await fetcher.fetchRecommendations('movie', 'tmdb:movie:603', null),
+          isEmpty);
+      expect(await fetcher.fetchRecommendations('series', 'tt0903747', ''),
+          isEmpty);
+      expect(gets, 0);
+    });
+
+    test('a tmdb: id fetches its recommendations endpoint', () async {
+      final urls = <String>[];
+      final fetcher = HttpDetailExtrasFetcher(get: (url) async {
+        urls.add(url.toString());
+        return recommendations([
+          {'id': 604, 'title': 'The Matrix Reloaded'},
+        ]);
+      });
+
+      final items =
+          await fetcher.fetchRecommendations('movie', 'tmdb:movie:603', 'key');
+
+      expect(items.single.name, 'The Matrix Reloaded');
+      expect(
+        urls.single,
+        'https://api.themoviedb.org/3/movie/603/recommendations?api_key=key',
+      );
+    });
+
+    test('a tt id resolves through /find, then fetches that target', () async {
+      final urls = <String>[];
+      final fetcher = HttpDetailExtrasFetcher(get: (url) async {
+        urls.add(url.toString());
+        if (url.path.contains('/find/')) {
+          return jsonEncode({'tv_results': [{'id': 1396}]});
+        }
+        return recommendations([
+          {'id': 1397, 'name': 'Better Call Saul'},
+        ]);
+      });
+
+      final items =
+          await fetcher.fetchRecommendations('series', 'tt0903747', 'key');
+
+      expect(items.single.name, 'Better Call Saul');
+      expect(urls[0], contains('/find/tt0903747'));
+      expect(
+        urls[1],
+        'https://api.themoviedb.org/3/tv/1396/recommendations?api_key=key',
+      );
+    });
+
+    test('a no-match resolved for cast is reused, never asked twice', () async {
+      var gets = 0;
+      final fetcher = HttpDetailExtrasFetcher(get: (url) async {
+        gets++;
+        return jsonEncode({'movie_results': [], 'tv_results': []});
+      });
+
+      expect(await fetcher.fetchCast('series', 'tt0000', 'key'), isEmpty);
+      expect(await fetcher.fetchRecommendations('series', 'tt0000', 'key'),
+          isEmpty);
+      expect(gets, 1, reason: 'both sections share resolveTarget\'s cache');
+    });
+
+    test('a second fetch is served by the session cache', () async {
+      var gets = 0;
+      final fetcher = HttpDetailExtrasFetcher(get: (url) async {
+        gets++;
+        return recommendations([
+          {'id': 604, 'title': 'The Matrix Reloaded'},
+        ]);
+      });
+
+      await fetcher.fetchRecommendations('movie', 'tmdb:movie:603', 'key');
+      await fetcher.fetchRecommendations('movie', 'tmdb:movie:603', 'key');
+
+      expect(gets, 1);
+    });
+
+    test('an empty result list is a legitimate empty result', () async {
+      final fetcher =
+          HttpDetailExtrasFetcher(get: (url) async => recommendations([]));
+      expect(await fetcher.fetchRecommendations('movie', 'tmdb:movie:1', 'key'),
+          isEmpty);
+    });
+
+    test('an HTTP failure propagates to the section provider', () async {
+      final fetcher = HttpDetailExtrasFetcher(
+        get: (url) async => throw Exception('down'),
+      );
+
+      await expectLater(
+        fetcher.fetchRecommendations('movie', 'tmdb:movie:603', 'key'),
         throwsA(isA<Exception>()),
       );
     });

@@ -17,13 +17,14 @@
 // overview. The selected season is local UI state — it never travels to the
 // host, so it stays out of the reducer.
 //
-// The Cast section (ticket #86) comes from the detail extras fetcher on its own
-// provider (ADR-0012): it settles independently — a slow or failed cast fetch
-// never delays the header or the episodes — and renders only with data.
+// The Cast (ticket #86) and Similar (ticket #87) sections come from the detail
+// extras fetcher on their own providers (ADR-0012): each settles independently —
+// a slow or failed extras fetch never delays the header or the episodes — and
+// renders only with data. Similar reuses the Home's poster card, so tapping one
+// runs the same `openDetail` + Detail route flow the Home uses.
 //
 // Honesty rule (parent #80): no affordances without data or action — no
-// "My list", no "Download", no watched marker. The similar-titles rail is
-// ticket #87, not here.
+// "My list", no "Download", no watched marker.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -37,6 +38,7 @@ import '../ui/section_header.dart';
 import 'detail_extras_fetcher.dart';
 import 'home_controller.dart';
 import 'home_reducer.dart';
+import 'home_screen.dart';
 import 'meta.dart';
 import 'poster_image.dart';
 
@@ -46,6 +48,11 @@ const double kDetailHeroHeight = 306;
 /// The poster geometry just below the band (prototype `.poster-sm` 98×147).
 const double kDetailPosterWidth = 98;
 const double kDetailPosterHeight = 147;
+
+/// The Similar rail's fixed height: exactly one shared [PosterCard] tall — the
+/// Home rail's row extent without its header — so the horizontal list keeps a
+/// stable extent.
+const double kSimilarRailHeight = kRowExtent - kRailHeaderExtent;
 
 class DetailScreen extends ConsumerWidget {
   const DetailScreen({super.key});
@@ -139,10 +146,11 @@ class _DetailBody extends ConsumerWidget {
                           },
                   ),
                 ),
-                // The Cast section loads on its own provider and renders only
-                // when it has data, so it never delays or hides the rest of
-                // the page (ADR-0012).
+                // The Cast and Similar sections load on their own providers
+                // and render only when they have data, so neither ever delays
+                // or hides the rest of the page (ADR-0012).
                 CastSection(meta: meta),
+                SimilarSection(meta: meta),
                 if (error != null) ...[
                   const SizedBox(height: 24),
                   _DetailError(message: error!),
@@ -367,6 +375,45 @@ class _CastFallback extends StatelessWidget {
           colors: [tokens.solidHigh, tokens.bg],
         ),
       ),
+    );
+  }
+}
+
+/// The Similar rail (ticket #87): TMDB recommendations as the shared Home
+/// poster cards. Watches its own provider (ADR-0012), like the cast — a slow or
+/// failed recommendations request never delays the header, cast or episodes —
+/// and renders nothing while loading, on failure, without a TMDB key or
+/// without a match: no section without data, never a placeholder. Tapping a
+/// card opens the recommended title's Detail through the same `openDetail` +
+/// route flow the Home's cards use ([PosterCard]).
+class SimilarSection extends ConsumerWidget {
+  final Meta meta;
+  const SimilarSection({super.key, required this.meta});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final items = ref
+            .watch(similarProvider((type: meta.type, id: meta.id)))
+            .value ??
+        const <Meta>[];
+    if (items.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionHeader('Similar'),
+        SizedBox(
+          height: kSimilarRailHeight,
+          child: ListView.separated(
+            key: const ValueKey('similarRail'),
+            scrollDirection: Axis.horizontal,
+            padding: EdgeInsets.zero,
+            itemCount: items.length,
+            separatorBuilder: (_, _) => const SizedBox(width: kPosterGap),
+            itemBuilder: (context, index) => PosterCard(meta: items[index]),
+          ),
+        ),
+      ],
     );
   }
 }

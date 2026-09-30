@@ -1,15 +1,13 @@
-// Detail extras HTTP seam (ticket 86; ADR-0012).
+// Detail extras HTTP seam (tickets 86, 87; ADR-0012).
 //
-// The detail page's Cast section is fetched on its own provider, never joined
-// to the detail round: credits come from TMDB `/{kind}/{id}/credits`, and a
-// Cinemeta `tt…` id first resolves through TMDB
-// `/find/{imdb_id}?external_source=imdb_id`. Without a TMDB key — or with no
-// match, an empty list or a failure — the section simply has no data and does
-// not render (ADR-0012). Results are cached in memory for the session only.
-//
-// Ticket #87's similar-titles rail reuses this path: the same
-// [DetailExtrasFetcher] seam, [HttpDetailExtrasFetcher.resolveTarget] and
-// [DetailExtrasCache]; it only adds a `recommendations` endpoint and provider.
+// The detail page's extra sections are fetched on their own providers, never
+// joined to the detail round: credits come from TMDB
+// `/{kind}/{id}/credits` (Cast, #86) and similar titles from
+// `/{kind}/{id}/recommendations` (Similar, #87). A Cinemeta `tt…` id first
+// resolves through TMDB `/find/{imdb_id}?external_source=imdb_id`. Without a
+// TMDB key — or with no match, an empty list or a failure — a section simply
+// has no data and does not render (ADR-0012). Results are cached in memory for
+// the session only, and both sections share the `/find` resolution.
 //
 // Wire contract: docs/wire-contract.md §5.2 (TMDB).
 
@@ -19,7 +17,8 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../ws/client_controller.dart';
-import 'catalog_fetcher.dart' show tmdbBase, tmdbImageBase;
+import 'catalog_fetcher.dart' show parseTmdbMeta, tmdbBase, tmdbImageBase;
+import 'meta.dart';
 
 /// Top-billed cast cap. The detail page's cast row is a rail; twelve fills it
 /// without paging (TMDB returns every credit, so an uncapped list would ship a
@@ -115,6 +114,32 @@ TmdbTarget? parseTmdbFind(String raw, String type) {
   return null;
 }
 
+/// Parses a TMDB recommendations response `{ "results": [...] }` for a target
+/// of [kind] (`movie`/`tv`) into catalog [Meta]s. The endpoint is kind-specific,
+/// so every result carries that kind; the ids and image sizes match the
+/// catalog's own TMDB mapping, so a similar title opens its Detail through the
+/// normal path. Entries without a numeric id or a name are skipped — a card
+/// that cannot open or is labelled nothing would lie; an absent `results` array
+/// is no data, never a crash.
+List<Meta> parseTmdbRecommendations(String raw, String kind) {
+  final decoded = jsonDecode(raw);
+  if (decoded is! Map<String, dynamic>) return const [];
+  final results = decoded['results'];
+  if (results is! List) return const [];
+
+  final type = kind == 'tv' ? 'series' : 'movie';
+  final items = <Meta>[];
+  for (final r in results) {
+    if (r is! Map<String, dynamic>) continue;
+    final id = (r['id'] as num?)?.toInt();
+    if (id == null) continue;
+    final meta = parseTmdbMeta({...r, 'id': id}, type);
+    if (meta.name.isEmpty) continue;
+    items.add(meta);
+  }
+  return items;
+}
+
 /// The TMDB target a `tmdb:<kind>:<id>` detail id already names, or null for a
 /// Cinemeta `tt…` id (which needs `/find`).
 TmdbTarget? tmdbTargetFromId(String id) {
@@ -135,12 +160,13 @@ String? _nonEmpty(String? value) =>
 
 /// Session-only in-memory cache for detail extras (ADR-0012): the `/find`
 /// resolution per title identity — including a resolved "no match", so a `tt…`
-/// id never asks `/find` twice — and the parsed credits per TMDB target. No
-/// disk, no TTL; the whole point is that re-opening a title in the same session
-/// is instant.
+/// id never asks `/find` twice — and the parsed section results per TMDB
+/// target. No disk, no TTL; the whole point is that re-opening a title in the
+/// same session is instant.
 class DetailExtrasCache {
   final Map<String, TmdbTarget?> _targets = {};
   final Map<String, List<CastMember>> _cast = {};
+  final Map<String, List<Meta>> _recommendations = {};
 
   /// Whether [identity] has already been resolved, so "resolved to no match"
   /// (a null [targetFor]) is distinguishable from "not asked yet".
@@ -157,6 +183,12 @@ class DetailExtrasCache {
 
   void saveCast(String targetKey, List<CastMember> members) =>
       _cast[targetKey] = members;
+
+  List<Meta>? recommendationsFor(String targetKey) =>
+      _recommendations[targetKey];
+
+  void saveRecommendations(String targetKey, List<Meta> items) =>
+      _recommendations[targetKey] = items;
 }
 
 /// Narrow fetcher for the detail page's extra sections (ADR-0012). Injected via
@@ -165,6 +197,15 @@ abstract interface class DetailExtrasFetcher {
   /// Top-billed cast for a title. Empty when [tmdbKey] is absent or the id has
   /// no TMDB match; throws on an HTTP/parse failure.
   Future<List<CastMember>> fetchCast(String type, String id, String? tmdbKey);
+
+  /// Similar titles for a title, from TMDB recommendations. Empty when
+  /// [tmdbKey] is absent or the id has no TMDB match; throws on an
+  /// HTTP/parse failure.
+  Future<List<Meta>> fetchRecommendations(
+    String type,
+    String id,
+    String? tmdbKey,
+  );
 }
 
 /// Real extras fetcher over dart:io HTTP. No `/api-proxy` — the phone hits TMDB
@@ -209,6 +250,33 @@ class HttpDetailExtrasFetcher implements DetailExtrasFetcher {
     );
     cache.saveCast(targetKey, members);
     return members;
+  }
+
+  @override
+  Future<List<Meta>> fetchRecommendations(
+    String type,
+    String id,
+    String? tmdbKey,
+  ) async {
+    final key = _usableKey(tmdbKey);
+    if (key == null) return const [];
+    final target = await resolveTarget(type, id, key);
+    if (target == null) return const [];
+
+    final targetKey = _targetKey(target);
+    final cached = cache.recommendationsFor(targetKey);
+    if (cached != null) return cached;
+
+    final items = parseTmdbRecommendations(
+      await _get(
+        Uri.parse(
+          '$tmdbBase/${target.kind}/${target.id}/recommendations?api_key=$key',
+        ),
+      ),
+      target.kind,
+    );
+    cache.saveRecommendations(targetKey, items);
+    return items;
   }
 
   /// Resolves a detail id to the numeric TMDB target the section endpoints
@@ -275,7 +343,7 @@ final detailExtrasFetcherProvider = Provider<DetailExtrasFetcher>(
 );
 
 /// The family key of a detail section: the title identity the route carries.
-/// Ticket #87's recommendations provider uses the same key type.
+/// Both section providers ([castProvider], [similarProvider]) take it.
 typedef DetailTitle = ({String type, String id});
 
 /// The Cast section's own provider (ADR-0012): it fetches and settles
@@ -291,6 +359,21 @@ final castProvider = FutureProvider.family<List<CastMember>, DetailTitle>(
     return ref
         .read(detailExtrasFetcherProvider)
         .fetchCast(title.type, title.id, key);
+  },
+  retry: (_, _) => null,
+);
+
+/// The Similar section's own provider (ticket #87, ADR-0012): the same
+/// independent settling as [castProvider] — the `/find` resolution and the
+/// parsed results are already session-cached, but a pending or failed
+/// recommendations request never touches the header, cast or episodes, and a
+/// keyless/no-match/failed result is simply absent from the page.
+final similarProvider = FutureProvider.family<List<Meta>, DetailTitle>(
+  (ref, title) async {
+    final key = ref.watch(wsClientControllerProvider.select((s) => s.tmdbKey));
+    return ref
+        .read(detailExtrasFetcherProvider)
+        .fetchRecommendations(title.type, title.id, key);
   },
   retry: (_, _) => null,
 );
