@@ -136,6 +136,17 @@ void main() {
 
       expect(find.byType(Hairline), findsNothing);
     });
+
+    testWidgets('caps the title when asked', (tester) async {
+      await tester.pumpWidget(host(const SizedBox(
+        width: 120,
+        child: ListRow(title: 'A very long row title', titleMaxLines: 1),
+      )));
+
+      final title = tester.widget<Text>(find.text('A very long row title'));
+      expect(title.maxLines, 1);
+      expect(title.overflow, TextOverflow.ellipsis);
+    });
   });
 
   group('InfoRow', () {

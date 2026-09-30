@@ -2,7 +2,9 @@
 // Verifies the derived empty states (needConnect / emptyLibrary), the section
 // selector switching between Watchlist / History /
 // Favorites, the host-authoritative toggle chips routing to their own kind,
-// and row tap opening the shared detail page.
+// row tap opening the shared detail page, and the editorial restyle pins
+// (#89): the Accent-lit segmented control and toggles, hairline rows, and no
+// watch-progress bar (the wire has none).
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -15,6 +17,9 @@ import 'package:harbor_companion/app/library/library_controller.dart';
 import 'package:harbor_companion/app/library/library_reducer.dart';
 import 'package:harbor_companion/app/library/library_screen.dart';
 import 'package:harbor_companion/app/routes.dart';
+import 'package:harbor_companion/app/theme.dart';
+import 'package:harbor_companion/app/ui/hairline.dart';
+import 'package:harbor_companion/app/ui/progress_bar.dart';
 import 'package:harbor_companion/app/ws/client_reducer.dart' show LibraryItem;
 
 class _StubLibraryController extends LibraryController {
@@ -163,5 +168,71 @@ void main() {
     expect(home.opened.single.id, 'tt1');
     expect(home.opened.single.type, 'movie');
     expect(find.text('DETAIL'), findsOneWidget);
+  });
+
+  testWidgets('the segmented control is unblurred with the selected section lit',
+      (tester) async {
+    await tester.pumpWidget(_wrap(LibraryState(
+      connected: true,
+      view: MyStuffView(
+        watchlist: [matrix],
+        watchlistIds: {matrix.id},
+      ),
+    )));
+
+    const tokens = AppTokens();
+    // ADR-0010: the segmented control and the rows are fill + hairline only.
+    expect(find.byType(BackdropFilter), findsNothing);
+    expect(
+      tester.widget<Text>(find.text('Watchlist')).style?.color,
+      tokens.accentInk,
+      reason: 'the selected segment reads in the Accent family',
+    );
+    expect(
+      tester.widget<Text>(find.text('History')).style?.color,
+      tokens.inkFaint,
+    );
+  });
+
+  testWidgets('toggle chips light up in the Accent only when on', (tester) async {
+    await tester.pumpWidget(_wrap(LibraryState(
+      connected: true,
+      view: MyStuffView(
+        watchlist: [matrix],
+        watchlistIds: {matrix.id},
+        historyIds: const {},
+        favoriteIds: const {},
+      ),
+    )));
+
+    const tokens = AppTokens();
+    expect(
+      tester.widget<Icon>(find.byIcon(Icons.bookmark)).color,
+      tokens.accent,
+    );
+    expect(
+      tester.widget<Icon>(find.byIcon(Icons.check_circle_outline)).color,
+      tokens.inkFaint,
+    );
+    expect(
+      tester.widget<Icon>(find.byIcon(Icons.favorite_border)).color,
+      tokens.inkFaint,
+    );
+  });
+
+  testWidgets('rows are hairline-separated and carry no watch-progress bar',
+      (tester) async {
+    await tester.pumpWidget(_wrap(LibraryState(
+      connected: true,
+      view: MyStuffView(
+        watchlist: [matrix, got],
+        watchlistIds: {matrix.id, got.id},
+      ),
+    )));
+
+    // Honesty rule (#80): LibraryItem has no Watch progress, so no bar renders.
+    expect(find.byType(ProgressBar), findsNothing);
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(find.byType(Hairline), findsNWidgets(2));
   });
 }

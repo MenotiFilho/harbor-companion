@@ -1,14 +1,20 @@
-// Profile / who's-watching tab (ticket 08).
+// Profile / who's-watching tab (ticket 08; editorial refresh ticket 89).
 //
-// Renders the pure reducer's view: the host's profile list with the active
-// profile highlighted, derived empty states (needConnect / noProfiles), and
-// tap-to-switch. Everything derives from the snapshot — the phone never
-// optimistically flips who's watching, and there is no account/Stremio linking
-// surface.
+// Renders the pure reducer's view: the host's profiles as hairline rows with
+// the active one marked in the Accent, derived empty states (needConnect /
+// noProfiles), and tap-to-switch. Everything derives from the snapshot — the
+// phone never optimistically flips who's watching, and there is no account or
+// Stremio linking surface. There is also no add/edit-profile affordance: the
+// Host API has no such action, so the UI does not pretend it has one.
+//
+// Glass budget (ADR-0010): the list rows are translucent fill + hairline,
+// never BackdropFilter.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../theme.dart';
+import '../ui/rows.dart';
 import '../ws/client_reducer.dart' show Profile;
 import 'profile_controller.dart';
 import 'profile_reducer.dart';
@@ -48,10 +54,9 @@ class _ProfileList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListView.separated(
-      padding: const EdgeInsets.symmetric(vertical: 12),
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       itemCount: profiles.length,
-      separatorBuilder: (_, _) => const Divider(height: 1, indent: 72),
       itemBuilder: (context, i) {
         final profile = profiles[i];
         return _ProfileTile(
@@ -64,6 +69,10 @@ class _ProfileList extends StatelessWidget {
   }
 }
 
+/// One profile row. The active profile is marked twice in the same family —
+/// the 'Watching' subtitle and the trailing check, both in the Accent — while
+/// the rest of the list stays quiet. The whole row is the switch affordance;
+/// there is deliberately no add/edit button.
 class _ProfileTile extends StatelessWidget {
   final Profile profile;
   final bool active;
@@ -76,24 +85,14 @@ class _ProfileTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final name = profile.displayName;
-    return ListTile(
-      onTap: onTap,
+    final tokens = AppTokens.of(context);
+    return ListRow(
       leading: _ProfileAvatar(profile: profile),
-      title: Text(name),
-      subtitle: active
-          ? Text(
-              'Watching',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: scheme.primary),
-            )
-          : null,
-      trailing: active
-          ? Icon(Icons.check_circle, color: scheme.primary)
-          : const Icon(Icons.person_outline, color: Colors.transparent),
+      title: profile.displayName,
+      subtitle: active ? 'Watching' : null,
+      subtitleColor: active ? tokens.accentInk : null,
+      trailing: active ? Icon(Icons.check_circle, color: tokens.accent) : null,
+      onTap: onTap,
     );
   }
 }
@@ -104,6 +103,7 @@ class _ProfileAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tokens = AppTokens.of(context);
     final scheme = Theme.of(context).colorScheme;
     final color = _parseHexColor(profile.color) ?? scheme.primaryContainer;
     final display = profile.displayName;
@@ -115,12 +115,18 @@ class _ProfileAvatar extends StatelessWidget {
     if (avatar != null && avatar.isNotEmpty) {
       return CircleAvatar(
         backgroundColor: color,
+        // The initial sits on a saturated profile color: dark ink holds AA.
+        foregroundColor: tokens.onAccent,
         backgroundImage: NetworkImage(avatar),
         onBackgroundImageError: (_, _) {},
         child: Text(initial),
       );
     }
-    return CircleAvatar(backgroundColor: color, child: Text(initial));
+    return CircleAvatar(
+      backgroundColor: color,
+      foregroundColor: tokens.onAccent,
+      child: Text(initial),
+    );
   }
 }
 

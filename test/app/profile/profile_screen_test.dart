@@ -1,7 +1,8 @@
 // Thin widget test for the Profile screen (the reducer is the real seam).
 // Verifies the derived empty states (needConnect / noProfiles), the profile list
-// rendering with the active profile highlighted, tap-to-switch routing to the
-// controller, and the absence of any account/Stremio linking surface.
+// rendering with the active profile marked in the Accent, tap-to-switch routing
+// to the controller, and the absence of any account/Stremio linking or
+// add/edit-profile surface (#89 honesty rule).
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,6 +11,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:harbor_companion/app/profile/profile_controller.dart';
 import 'package:harbor_companion/app/profile/profile_reducer.dart';
 import 'package:harbor_companion/app/profile/profile_screen.dart';
+import 'package:harbor_companion/app/theme.dart';
+import 'package:harbor_companion/app/ui/hairline.dart';
 import 'package:harbor_companion/app/ws/client_reducer.dart' show Profile;
 
 class _StubProfileController extends ProfileController {
@@ -63,6 +66,20 @@ void main() {
     expect(find.text('Kid'), findsOneWidget);
     expect(find.text('Watching'), findsOneWidget);
     expect(find.byIcon(Icons.check_circle), findsOneWidget);
+
+    const tokens = AppTokens();
+    // The active marker is the Accent family: the subtitle and the check.
+    expect(
+      tester.widget<Text>(find.text('Watching')).style?.color,
+      tokens.accentInk,
+    );
+    expect(
+      tester.widget<Icon>(find.byIcon(Icons.check_circle)).color,
+      tokens.accent,
+    );
+    // ADR-0010: rows are fill + hairline, never blurred.
+    expect(find.byType(BackdropFilter), findsNothing);
+    expect(find.byType(Hairline), findsNWidgets(2));
   });
 
   testWidgets('tapping a profile routes to select(id)', (tester) async {
@@ -90,5 +107,18 @@ void main() {
     expect(find.text('Stremio'), findsNothing);
     expect(find.text('Link account'), findsNothing);
     expect(find.byType(TextButton), findsNothing);
+  });
+
+  testWidgets('there is no add/edit-profile affordance', (tester) async {
+    await tester.pumpWidget(_wrap(ProfileState(
+      connected: true,
+      view: ProfileView(profiles: [dad, kid], activeId: 'dad'),
+    )));
+
+    // The Host API has no add/edit action, so the UI offers none.
+    expect(find.text('Add profile'), findsNothing);
+    expect(find.text('Edit profile'), findsNothing);
+    expect(find.byIcon(Icons.add), findsNothing);
+    expect(find.byIcon(Icons.edit_outlined), findsNothing);
   });
 }

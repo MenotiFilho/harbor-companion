@@ -11,7 +11,9 @@ class ListRow extends StatelessWidget {
     super.key,
     this.leading,
     required this.title,
+    this.titleMaxLines,
     this.subtitle,
+    this.subtitleColor,
     this.trailing,
     this.onTap,
     this.divider = true,
@@ -19,7 +21,15 @@ class ListRow extends StatelessWidget {
 
   final Widget? leading;
   final String title;
+
+  /// Caps the title to this many lines with an ellipsis; null lets it wrap.
+  final int? titleMaxLines;
+
   final String? subtitle;
+
+  /// Overrides the subtitle ink (e.g. the Accent for an active state).
+  final Color? subtitleColor;
+
   final Widget? trailing;
   final VoidCallback? onTap;
 
@@ -31,7 +41,9 @@ class ListRow extends StatelessWidget {
     return _RowFrame(
       leading: leading,
       title: title,
+      titleMaxLines: titleMaxLines,
       subtitle: subtitle,
+      subtitleColor: subtitleColor,
       trailing: trailing,
       onTap: onTap,
       divider: divider,
@@ -113,7 +125,9 @@ class _RowFrame extends StatelessWidget {
   const _RowFrame({
     this.leading,
     required this.title,
+    this.titleMaxLines,
     this.subtitle,
+    this.subtitleColor,
     this.trailing,
     this.onTap,
     required this.divider,
@@ -122,7 +136,9 @@ class _RowFrame extends StatelessWidget {
 
   final Widget? leading;
   final String title;
+  final int? titleMaxLines;
   final String? subtitle;
+  final Color? subtitleColor;
   final Widget? trailing;
   final VoidCallback? onTap;
   final bool divider;
@@ -139,7 +155,14 @@ class _RowFrame extends StatelessWidget {
           child: Row(
             children: [
               if (leading != null) ...[leading!, const SizedBox(width: 14)],
-              Expanded(child: _RowText(title: title, subtitle: subtitle)),
+              Expanded(
+                child: _RowText(
+                  title: title,
+                  titleMaxLines: titleMaxLines,
+                  subtitle: subtitle,
+                  subtitleColor: subtitleColor,
+                ),
+              ),
               if (trailing != null) ...[
                 const SizedBox(width: 12),
                 trailing!,
@@ -161,10 +184,17 @@ class _RowFrame extends StatelessWidget {
 
 /// Title/subtitle stack shared by [ListRow] and [SwitchRow].
 class _RowText extends StatelessWidget {
-  const _RowText({required this.title, this.subtitle});
+  const _RowText({
+    required this.title,
+    this.titleMaxLines,
+    this.subtitle,
+    this.subtitleColor,
+  });
 
   final String title;
+  final int? titleMaxLines;
   final String? subtitle;
+  final Color? subtitleColor;
 
   @override
   Widget build(BuildContext context) {
@@ -176,6 +206,9 @@ class _RowText extends StatelessWidget {
       children: [
         Text(
           title,
+          maxLines: titleMaxLines,
+          overflow:
+              titleMaxLines == null ? null : TextOverflow.ellipsis,
           style: text.bodyMedium?.copyWith(
             color: tokens.ink,
             fontWeight: FontWeight.w500,
@@ -187,7 +220,7 @@ class _RowText extends StatelessWidget {
             child: Text(
               subtitle!,
               style: text.bodySmall?.copyWith(
-                color: tokens.inkMuted,
+                color: subtitleColor ?? tokens.inkMuted,
                 height: 1.45,
               ),
             ),
