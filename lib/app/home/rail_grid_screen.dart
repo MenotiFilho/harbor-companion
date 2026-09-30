@@ -145,7 +145,9 @@ class _RailGridState extends State<_RailGrid> {
               maxCrossAxisExtent: 150,
               crossAxisSpacing: 8,
               mainAxisSpacing: 8,
-              childAspectRatio: 0.58,
+              // Room for the card's 2:3 art plus the two-line type block
+              // (the Home poster card, reused here).
+              childAspectRatio: 0.5,
             ),
             delegate: SliverChildBuilderDelegate(
               (context, i) => PosterCard(meta: items[i], width: null),

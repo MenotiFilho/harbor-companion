@@ -1,8 +1,10 @@
-// Widget tests for the Home screen's per-rail render (ticket 71). Thin coverage
-// over a stub controller: the reducer is the real seam. Verifies skeleton for a
-// pending rail, the user's order preserved, a loaded-empty rail removed, a local
-// retry card that leaves the other rails on screen, and the derived empty /
-// everything-failed screens.
+// Widget tests for the Home screen's Hero + per-rail render (tickets 71, 83).
+// Thin coverage over a stub controller: the reducer is the real seam. Verifies
+// the hero source (first rail in order, no resume semantics), the artwork
+// fallbacks, skeleton for a pending rail, the user's order preserved, a
+// loaded-empty rail removed, a local retry card that leaves the other rails on
+// screen, the derived empty / everything-failed screens, and that no
+// Watch-progress bar exists anywhere (the data does not).
 
 import 'dart:async';
 
@@ -17,6 +19,8 @@ import 'package:harbor_companion/app/home/home_reducer.dart';
 import 'package:harbor_companion/app/home/home_screen.dart';
 import 'package:harbor_companion/app/home/meta.dart';
 import 'package:harbor_companion/app/routes.dart';
+import 'package:harbor_companion/app/ui/hero_band.dart';
+import 'package:harbor_companion/app/ui/progress_bar.dart';
 
 class _StubHomeController extends HomeController {
   @override
@@ -30,6 +34,9 @@ class _StubHomeController extends HomeController {
 
   /// Rail keys whose title / "See more" card was tapped (ticket 75 seam).
   final List<String> openedRails = [];
+
+  /// Titles opened through the detail seam (hero / poster cards).
+  final List<Meta> openedDetails = [];
   _StubHomeController(this.state);
 
   @override
@@ -52,6 +59,9 @@ class _StubHomeController extends HomeController {
 
   @override
   void openRailGrid(String rowKey) => openedRails.add(rowKey);
+
+  @override
+  void openDetail(Meta meta) => openedDetails.add(meta);
 }
 
 const twoRows = CatalogRequest(
@@ -61,8 +71,21 @@ const seriesFirst = CatalogRequest(
   rowOrder: ['cinemeta:top-series', 'cinemeta:top-movies'],
 );
 
-Meta movie({String id = 'tt1', String name = 'The Matrix'}) =>
-    Meta(id: id, type: 'movie', name: name);
+Meta movie({
+  String id = 'tt1',
+  String name = 'The Matrix',
+  String? poster,
+  String? background,
+  String? releaseInfo,
+}) =>
+    Meta(
+      id: id,
+      type: 'movie',
+      name: name,
+      poster: poster,
+      background: background,
+      releaseInfo: releaseInfo,
+    );
 
 RailState loaded(String rowKey, String title, List<Meta> items) =>
     RailState(rowKey: rowKey, title: title, items: items, status: RailStatus.loaded);
@@ -74,6 +97,16 @@ RailState failed(String rowKey, {String title = ''}) => RailState(
     error: 'boom',
   );
 
+/// The rail header title, scoped to the loaded rail so the hero's kicker (the
+/// same words, at the top of the screen) never matches. [skipOffstage] is for
+/// rails inside the viewport's cache area, which the bigger hero + cards pushed
+/// below the test surface's fold.
+Finder railTitle(String title, {bool skipOffstage = true}) => find.descendant(
+      of: find.byType(HomeRowRail, skipOffstage: skipOffstage),
+      matching: find.text(title.toUpperCase(), skipOffstage: skipOffstage),
+      skipOffstage: skipOffstage,
+    );
+
 Widget _app(HomeState state, {_StubHomeController? controller}) {
   controller ??= _StubHomeController(state);
   return ProviderScope(
@@ -81,6 +114,7 @@ Widget _app(HomeState state, {_StubHomeController? controller}) {
     child: MaterialApp(
       routes: {
         AppRoutes.railGrid: (_) => const Scaffold(body: Text('RAIL GRID')),
+        AppRoutes.detail: (_) => const Scaffold(body: Text('DETAIL')),
       },
       home: const Scaffold(body: HomeScreen()),
     ),
@@ -88,13 +122,97 @@ Widget _app(HomeState state, {_StubHomeController? controller}) {
 }
 
 void main() {
+  group('hero (issue #83)', () {
+    testWidgets('takes the first item of the first rail with content, in order',
+        (tester) async {
+      final state = HomeState(
+        request: seriesFirst,
+        rails: {
+          'cinemeta:top-movies': loaded('cinemeta:top-movies', 'Top Movies', [movie()]),
+          'cinemeta:top-series': loaded('cinemeta:top-series', 'Top Series',
+              [movie(id: 'tt2', name: 'Breaking Bad')]),
+        },
+      );
+      await tester.pumpWidget(_app(state));
+
+      final hero = tester.widget<HeroBand>(find.byType(HeroBand));
+      expect(hero.title, 'Breaking Bad',
+          reason: 'the first planned rail wins, not arrival or progress');
+      expect(hero.kicker, 'Top Series');
+      expect(hero.height, kHomeHeroHeight);
+    });
+
+    testWidgets('is absent while no rail has content', (tester) async {
+      await tester.pumpWidget(_app(HomeState(request: twoRows)));
+
+      expect(find.byType(HeroBand), findsNothing);
+      expect(find.byType(HomeRailSkeleton), findsNWidgets(2));
+    });
+
+    testWidgets('carries the item backdrop, poster and release info',
+        (tester) async {
+      final item = movie(
+        poster: 'https://img/poster.jpg',
+        background: 'https://img/backdrop.jpg',
+        releaseInfo: '1999',
+      );
+      await tester.pumpWidget(_app(HomeState(
+        request: twoRows,
+        rails: {
+          'cinemeta:top-movies':
+              loaded('cinemeta:top-movies', 'Top Movies', [item]),
+        },
+      )));
+
+      final hero = tester.widget<HeroBand>(find.byKey(const ValueKey('homeHero')));
+      expect(hero.backdropUrl, 'https://img/backdrop.jpg');
+      expect(hero.posterUrl, 'https://img/poster.jpg');
+      expect(hero.meta, '1999');
+    });
+
+    testWidgets('tapping the hero opens the Detail route', (tester) async {
+      final controller = _StubHomeController(HomeState(
+        request: twoRows,
+        rails: {
+          'cinemeta:top-movies':
+              loaded('cinemeta:top-movies', 'Top Movies', [movie()]),
+        },
+      ));
+      await tester.pumpWidget(_app(controller.state, controller: controller));
+
+      await tester.tap(find.byType(HeroBand));
+      await tester.pumpAndSettle();
+
+      expect(controller.openedDetails, hasLength(1));
+      expect(controller.openedDetails.single.id, 'tt1');
+      expect(find.text('DETAIL'), findsOneWidget);
+    });
+
+    testWidgets('a failed rail with no copy never becomes the hero',
+        (tester) async {
+      final state = HomeState(
+        request: twoRows,
+        rails: {
+          'cinemeta:top-movies': failed('cinemeta:top-movies', title: 'Top Movies'),
+          'cinemeta:top-series': loaded('cinemeta:top-series', 'Top Series',
+              [movie(id: 'tt2', name: 'Breaking Bad')]),
+        },
+      );
+      await tester.pumpWidget(_app(state));
+
+      final hero = tester.widget<HeroBand>(find.byType(HeroBand));
+      expect(hero.title, 'Breaking Bad');
+      expect(hero.kicker, 'Top Series');
+    });
+  });
+
   testWidgets('a pending rail renders its title + a skeleton, no global spinner',
       (tester) async {
     await tester.pumpWidget(_app(HomeState(request: twoRows)));
 
     expect(find.byType(HomeRailSkeleton), findsNWidgets(2));
-    expect(find.text('Top Movies'), findsOneWidget);
-    expect(find.text('Top Series'), findsOneWidget);
+    expect(find.text('TOP MOVIES'), findsOneWidget);
+    expect(find.text('TOP SERIES'), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsNothing);
   });
 
@@ -110,8 +228,8 @@ void main() {
     );
     await tester.pumpWidget(_app(state));
 
-    final moviesY = tester.getTopLeft(find.text('Top Movies')).dy;
-    final seriesY = tester.getTopLeft(find.text('Top Series')).dy;
+    final moviesY = tester.getTopLeft(railTitle('Top Movies', skipOffstage: false)).dy;
+    final seriesY = tester.getTopLeft(railTitle('Top Series', skipOffstage: false)).dy;
     expect(seriesY, lessThan(moviesY));
     expect(find.byType(HomeRailSkeleton), findsNothing);
   });
@@ -127,13 +245,18 @@ void main() {
     );
     await tester.pumpWidget(_app(state));
 
-    expect(find.text('Top Movies'), findsOneWidget);
-    expect(find.text('The Matrix'), findsOneWidget);
-    expect(find.text('Top Series'), findsNothing);
+    expect(railTitle('Top Movies'), findsOneWidget);
+    expect(find.text('The Matrix'), findsWidgets,
+        reason: 'the hero and the poster card both show the title');
+    expect(railTitle('Top Series'), findsNothing);
   });
 
   testWidgets('a failed rail without a copy shows a local retry card; others stay',
       (tester) async {
+    // Taller than the fold: the hero + the first rail push the failed rail into
+    // the cache area, and the retry card must still be reachable by scrolling.
+    await tester.binding.setSurfaceSize(const Size(800, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
     final controller = _StubHomeController(
       HomeState(
         request: twoRows,
@@ -145,9 +268,9 @@ void main() {
     );
     await tester.pumpWidget(_app(controller.state, controller: controller));
 
-    expect(find.text('Top Movies'), findsOneWidget);
-    expect(find.text('The Matrix'), findsOneWidget);
-    expect(find.text('Top Series'), findsOneWidget);
+    expect(railTitle('Top Movies'), findsOneWidget);
+    expect(find.text('The Matrix'), findsWidgets);
+    expect(find.text('TOP SERIES'), findsOneWidget);
     expect(find.textContaining("Couldn't load"), findsOneWidget);
 
     await tester.tap(find.text('Retry'));
@@ -168,7 +291,7 @@ void main() {
     );
     await tester.pumpWidget(_app(state));
 
-    expect(find.text('Breaking Bad'), findsOneWidget);
+    expect(find.text('Breaking Bad', skipOffstage: false), findsOneWidget);
     expect(find.text('Retry'), findsNothing);
   });
 
@@ -187,6 +310,7 @@ void main() {
 
     expect(find.text('No catalogs to show'), findsOneWidget);
     expect(find.byType(HomeRailSkeleton), findsNothing);
+    expect(find.byType(HeroBand), findsNothing);
   });
 
   testWidgets(
@@ -281,6 +405,21 @@ void main() {
     await tester.pumpWidget(_app(fresh));
 
     expect(find.byType(HomeRailAgeBadge), findsNothing);
+  });
+
+  testWidgets('no Watch-progress bar renders anywhere (the data does not exist)',
+      (tester) async {
+    final state = HomeState(
+      request: twoRows,
+      rails: {
+        'cinemeta:top-movies': loaded('cinemeta:top-movies', 'Top Movies', [movie()]),
+        'cinemeta:top-series':
+            loaded('cinemeta:top-series', 'Top Series', [movie(id: 'tt2')]),
+      },
+    );
+    await tester.pumpWidget(_app(state));
+
+    expect(find.byType(ProgressBar), findsNothing);
   });
 
   group('pull-to-refresh (ticket 74)', () {
@@ -428,10 +567,10 @@ void main() {
 
       await tester.pumpWidget(_app(oneRail(many(25))));
 
-      expect(find.byType(PosterCard), findsNWidgets(20));
-      expect(find.text('See more'), findsOneWidget);
+      expect(find.byType(PosterCard, skipOffstage: false), findsNWidgets(20));
+      expect(find.text('See more', skipOffstage: false), findsOneWidget);
       expect(find.text('Movie 24'), findsNothing, reason: 'capped out of the rail');
-      expect(find.text('Movie 19'), findsOneWidget);
+      expect(find.text('Movie 19', skipOffstage: false), findsOneWidget);
     });
 
     testWidgets('a short rail with no source continuation hides the card',
@@ -446,8 +585,8 @@ void main() {
       await tester.binding.setSurfaceSize(const Size(2600, 600));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(_app(oneRail(many(20))));
-      expect(find.byType(PosterCard), findsNWidgets(20));
-      expect(find.text('See more'), findsNothing);
+      expect(find.byType(PosterCard, skipOffstage: false), findsNWidgets(20));
+      expect(find.text('See more', skipOffstage: false), findsNothing);
     });
 
     testWidgets('exactly 20 items with a source continuation shows the card',
@@ -455,8 +594,8 @@ void main() {
       await tester.binding.setSurfaceSize(const Size(2600, 600));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(_app(oneRail(many(20), hasMore: true)));
-      expect(find.byType(PosterCard), findsNWidgets(20));
-      expect(find.text('See more'), findsOneWidget);
+      expect(find.byType(PosterCard, skipOffstage: false), findsNWidgets(20));
+      expect(find.text('See more', skipOffstage: false), findsOneWidget);
     });
 
     testWidgets('the rail title is always tappable, even without the card',
@@ -465,7 +604,7 @@ void main() {
       await tester.pumpWidget(_app(controller.state, controller: controller));
 
       expect(find.text('See more'), findsNothing);
-      await tester.tap(find.text('Top Movies'));
+      await tester.tap(railTitle('Top Movies'));
       await tester.pumpAndSettle();
 
       expect(controller.openedRails, ['cinemeta:top-movies']);
@@ -509,5 +648,23 @@ void main() {
           now: now),
       '4d',
     );
+  });
+
+  test('homeHeroPick takes the first rail with items, in order', () {
+    final first = movie(id: 'a', name: 'A');
+    final second = movie(id: 'b', name: 'B');
+    final state = HomeState(
+      request: seriesFirst,
+      rails: {
+        'cinemeta:top-movies': loaded('cinemeta:top-movies', 'Top Movies', [
+          first,
+        ]),
+        'cinemeta:top-series':
+            loaded('cinemeta:top-series', 'Top Series', [second]),
+      },
+    );
+    expect(homeHeroPick(state), (second, 'Top Series'));
+
+    expect(homeHeroPick(HomeState(request: seriesFirst)), isNull);
   });
 }

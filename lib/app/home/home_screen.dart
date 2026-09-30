@@ -1,15 +1,19 @@
-// Home tab (tickets 04, 71): virtualized poster rails + detail navigation.
+// Home tab (tickets 04, 71; editorial refresh #83): a Hero band over
+// virtualized poster rails + detail navigation.
 //
-// A vertical `ListView.builder` of one block per **planned rail** (ticket 71):
-// each block is the loaded rail, a skeleton while its outcome is pending, or a
-// local retry card when it failed without a previous copy. There is no global
-// spinner hiding available content, and the global empty / everything-failed
-// screens are derived from the per-rail state, not a blocking status.
+// A vertical `CustomScrollView` opens with the Hero (issue #83) — the first
+// item of the first rail, in the user's rail order, that has content — and then
+// renders one block per **planned rail** (ticket 71): the loaded rail, a
+// skeleton while its outcome is pending, or a local retry card when it failed
+// without a previous copy. There is no global spinner hiding available content,
+// and the global empty / everything-failed screens are derived from the
+// per-rail state, not a blocking status.
 //
-// Each rail is a horizontal `ListView.builder` of poster cards — build cost is
+// Each rail is a horizontal `ListView` of poster cards — build cost is
 // O(visible), not O(catalog). This is the rendering architecture the Home perf
 // spike (#8) proved: sustained 60fps via lazy rails + raised `ImageCache` limits
-// (set app-wide in main()).
+// (set app-wide in main()). The rails live in a `SliverFixedExtentList` so the
+// hero can have its own height without giving up the fixed-extent laziness.
 //
 // Each rail renders at most `kHomeRailCap` (20) items (ticket 75, ADR-0009): a
 // render-time slice over the full source page, which stays in state/cache for
@@ -17,13 +21,17 @@
 // more" card appears, and the rail title is always tappable; both open the
 // dedicated grid route (#76).
 //
-// Tapping a poster opens the detail page via the reducer's `openDetail`, then
-// pushes the detail route.
+// Tapping the Hero or a poster opens the detail page via the reducer's
+// `openDetail`, then pushes the detail route.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../routes.dart';
+import '../theme.dart';
+import '../ui/glass_surface.dart';
+import '../ui/hero_band.dart';
+import '../ui/press_scale.dart';
 import 'home_controller.dart';
 import 'home_rail.dart';
 import 'home_reducer.dart';
@@ -31,13 +39,44 @@ import 'home_rows.dart';
 import 'meta.dart';
 import 'poster_image.dart';
 
-const double kRowExtent = 176;
+/// Rail poster geometry (issue #83): bigger cards than the pre-refresh 110,
+/// with the art kept at the source's 2:3 shape and the type block under it.
+const double kPosterCardWidth = 126;
+const double kPosterArtHeight = kPosterCardWidth * 3 / 2;
+const double kPosterGap = 10;
+
+/// One rail block's fixed vertical extent: the header, the 2:3 art, the 6dp
+/// gap and a two-line name with a little slack. A constant keeps the lazy
+/// `SliverFixedExtentList` cheap.
+const double kRailHeaderExtent = 34;
+const double kPosterNameExtent = 40;
+const double kRowExtent =
+    kRailHeaderExtent + kPosterArtHeight + 6 + kPosterNameExtent;
+
+/// The Home Hero band's editorial height (prototype `hhero` 344px).
+const double kHomeHeroHeight = 344;
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
   @override
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
+}
+
+/// The Hero's source (issue #83): the first item of the first rail, in the
+/// user's normal rail order, that has content. Presentation only — the item is
+/// not consumed, no resume/watch-progress semantics are implied, and a rail
+/// with nothing in it never produces a hero. A failed rail keeping its previous
+/// copy still counts: its content is on screen. Returns the item and the rail's
+/// display title for the kicker.
+(Meta, String)? homeHeroPick(HomeState state) {
+  for (final key in state.renderKeys) {
+    final rail = state.rails[key];
+    if (rail == null || rail.items.isEmpty) continue;
+    final title = rail.title.isNotEmpty ? rail.title : homeRowLabel(key);
+    return (rail.items.first, title);
+  }
+  return null;
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
@@ -56,6 +95,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   void _retryRail(String rowKey) =>
       ref.read(homeControllerProvider.notifier).retryRail(rowKey);
+
+  /// Opens the Detail route for [meta]; shared by the Hero and the rail cards.
+  void _openDetail(Meta meta) {
+    ref.read(homeControllerProvider.notifier).openDetail(meta);
+    Navigator.of(context).pushNamed(AppRoutes.detail);
+  }
 
   /// Opens the dedicated rail grid (tickets 75, 76): the reducer snapshots the
   /// rail (items + source + request + cursor) and the widget pushes the route,
@@ -102,21 +147,41 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       return _ScrollableMessage(child: _EmptyCatalog(onRefresh: _reload));
     }
     final keys = state.renderKeys;
-    return ListView.builder(
+    final hero = homeHeroPick(state);
+    return CustomScrollView(
       key: const ValueKey('homeList'),
       // Always accepts overscroll so a short Home still pulls to refresh.
       physics: const AlwaysScrollableScrollPhysics(),
-      itemCount: keys.length,
-      itemExtent: kRowExtent,
-      itemBuilder: (context, i) {
-        final rowKey = keys[i];
-        return _RailBlock(
-          rail: state.rails[rowKey],
-          rowKey: rowKey,
-          onRetry: () => _retryRail(rowKey),
-          onOpen: () => _openRail(rowKey),
-        );
-      },
+      slivers: [
+        if (hero != null)
+          SliverToBoxAdapter(
+            child: HeroBand(
+              key: const ValueKey('homeHero'),
+              height: kHomeHeroHeight,
+              backdropUrl: hero.$1.background,
+              posterUrl: hero.$1.poster,
+              kicker: hero.$2,
+              title: hero.$1.name,
+              meta: hero.$1.releaseInfo,
+              onTap: () => _openDetail(hero.$1),
+            ),
+          ),
+        SliverFixedExtentList(
+          delegate: SliverChildBuilderDelegate(
+            (context, i) {
+              final rowKey = keys[i];
+              return _RailBlock(
+                rail: state.rails[rowKey],
+                rowKey: rowKey,
+                onRetry: () => _retryRail(rowKey),
+                onOpen: () => _openRail(rowKey),
+              );
+            },
+            childCount: keys.length,
+          ),
+          itemExtent: kRowExtent,
+        ),
+      ],
     );
   }
 }
@@ -189,14 +254,14 @@ class _EmptyCatalog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final tokens = AppTokens.of(context);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.video_library_outlined, size: 48, color: scheme.onSurfaceVariant),
+            Icon(Icons.video_library_outlined, size: 48, color: tokens.inkFaint),
             const SizedBox(height: 12),
             Text('No catalogs to show', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
@@ -207,7 +272,7 @@ class _EmptyCatalog extends StatelessWidget {
               style: Theme.of(context)
                   .textTheme
                   .bodyMedium
-                  ?.copyWith(color: scheme.onSurfaceVariant),
+                  ?.copyWith(color: tokens.inkMuted),
             ),
             const SizedBox(height: 16),
             Wrap(
@@ -239,14 +304,14 @@ class _CatalogError extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final tokens = AppTokens.of(context);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.cloud_off, size: 48, color: scheme.onSurfaceVariant),
+            Icon(Icons.cloud_off, size: 48, color: tokens.inkFaint),
             const SizedBox(height: 12),
             Text(message, textAlign: TextAlign.center),
             const SizedBox(height: 16),
@@ -297,21 +362,9 @@ class HomeRowRail extends StatelessWidget {
         children: [
           InkWell(
             onTap: onOpen,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-              child: Row(
-                children: [
-                  Flexible(
-                    child: Text(
-                      row.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                  ),
-                  if (fromCache) HomeRailAgeBadge(updatedAt: updatedAt),
-                ],
-              ),
+            child: _RailLabel(
+              row.title,
+              trailing: fromCache ? HomeRailAgeBadge(updatedAt: updatedAt) : null,
             ),
           ),
           Expanded(
@@ -319,12 +372,50 @@ class HomeRowRail extends StatelessWidget {
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
               itemCount: visible.length + (showSeeMore ? 1 : 0),
-              itemBuilder: (context, j) => j < visible.length
-                  ? PosterCard(meta: visible[j])
-                  : _SeeMoreCard(onTap: onOpen),
+              itemBuilder: (context, j) => Padding(
+                padding: const EdgeInsets.only(right: kPosterGap),
+                child: j < visible.length
+                    ? PosterCard(meta: visible[j])
+                    : _SeeMoreCard(onTap: onOpen),
+              ),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The rail header label style (issue #83): uppercase, letter-spaced via
+/// [AppTokens.sectionLabel]. Shared by the loaded, pending and failed rail
+/// blocks so all three keep one rhythm; [trailing] carries the cache-age badge
+/// on a loaded rail.
+class _RailLabel extends StatelessWidget {
+  const _RailLabel(this.title, {this.trailing});
+
+  final String title;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = AppTokens.of(context);
+    return SizedBox(
+      height: kRailHeaderExtent,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+        child: Row(
+          children: [
+            Flexible(
+              child: Text(
+                title.toUpperCase(),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: tokens.sectionLabel.copyWith(color: tokens.inkMuted),
+              ),
+            ),
+            if (trailing != null) ?trailing,
+          ],
+        ),
       ),
     );
   }
@@ -339,31 +430,35 @@ class _SeeMoreCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return SizedBox(
-      width: 110,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(8),
+    final tokens = AppTokens.of(context);
+    return PressScale(
+      onTap: onTap,
+      child: SizedBox(
+        width: kPosterCardWidth,
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(
-              child: Container(
-                width: double.infinity,
+            AspectRatio(
+              aspectRatio: 2 / 3,
+              child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: scheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(8),
+                  color: tokens.glassFill,
+                  borderRadius: BorderRadius.circular(tokens.radiusSmall),
+                  border: Border.all(color: tokens.hair),
                 ),
-                child: Icon(Icons.more_horiz, color: scheme.onSurfaceVariant),
+                child: Icon(Icons.more_horiz, color: tokens.inkMuted),
               ),
             ),
-            const SizedBox(height: 2),
+            const SizedBox(height: 6),
             Text(
               'See more',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: tokens.inkMuted),
             ),
           ],
         ),
@@ -382,25 +477,27 @@ class HomeRailAgeBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final tokens = AppTokens.of(context);
     return Container(
       margin: const EdgeInsets.only(left: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(6),
+        color: tokens.glassFill,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: tokens.hair),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.history, size: 12, color: scheme.onSurfaceVariant),
+          Icon(Icons.history, size: 11, color: tokens.inkFaint),
           const SizedBox(width: 4),
           Text(
             homeRailAgeLabel(updatedAt),
-            style: Theme.of(context)
-                .textTheme
-                .labelSmall
-                ?.copyWith(color: scheme.onSurfaceVariant),
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: tokens.inkFaint,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.5,
+                ),
           ),
         ],
       ),
@@ -420,8 +517,8 @@ String homeRailAgeLabel(int? updatedAt, {DateTime? now}) {
   return '${age.inDays}d';
 }
 
-/// The pending block for a planned rail: its known title plus placeholder
-/// posters, so a slow rail holds its place without hiding the others.
+/// The pending block for a planned rail: its known title plus poster-shaped
+/// placeholders, so a slow rail holds its place without hiding the others.
 class HomeRailSkeleton extends StatelessWidget {
   final String rowKey;
   final String title;
@@ -429,21 +526,13 @@ class HomeRailSkeleton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final tokens = AppTokens.of(context);
     return SizedBox(
       height: kRowExtent,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-          ),
+          _RailLabel(title),
           Expanded(
             child: ListView.builder(
               key: ValueKey('railSkeleton:$rowKey'),
@@ -452,12 +541,18 @@ class HomeRailSkeleton extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               itemCount: 4,
               itemBuilder: (context, _) => Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: Container(
-                  width: 110,
-                  decoration: BoxDecoration(
-                    color: scheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(8),
+                padding: const EdgeInsets.only(right: kPosterGap),
+                child: SizedBox(
+                  width: kPosterCardWidth,
+                  child: AspectRatio(
+                    aspectRatio: 2 / 3,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: tokens.glassFill,
+                        borderRadius: BorderRadius.circular(tokens.radiusSmall),
+                        border: Border.all(color: tokens.hair),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -478,34 +573,22 @@ class _RailErrorCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final tokens = AppTokens.of(context);
     return SizedBox(
       height: kRowExtent,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-          ),
+          _RailLabel(title),
           Expanded(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Container(
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  color: scheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(8),
-                ),
+              child: GlassSurface(
+                radius: tokens.radiusSmall,
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 child: Row(
                   children: [
-                    Icon(Icons.cloud_off, size: 20, color: scheme.onSurfaceVariant),
+                    Icon(Icons.cloud_off, size: 18, color: tokens.inkFaint),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -515,7 +598,7 @@ class _RailErrorCard extends StatelessWidget {
                         style: Theme.of(context)
                             .textTheme
                             .bodySmall
-                            ?.copyWith(color: scheme.onSurfaceVariant),
+                            ?.copyWith(color: tokens.inkMuted),
                       ),
                     ),
                     TextButton(onPressed: onRetry, child: const Text('Retry')),
@@ -530,19 +613,23 @@ class _RailErrorCard extends StatelessWidget {
   }
 }
 
+/// A rail poster card (issue #83): 2:3 artwork with corner, hairline and a soft
+/// shadow, the name under it, and a subtle press-scale feedback.
 class PosterCard extends ConsumerWidget {
   final Meta meta;
 
-  /// Fixed card width — the Home rail's 110. Null lets the parent define it:
-  /// the rail grid's delegate supplies the tile width, so the card fills it
-  /// (ticket 76). One card, no fork.
+  /// Fixed card width — the Home rail's [kPosterCardWidth]. Null lets the
+  /// parent define it: the rail grid's delegate supplies the tile width, so the
+  /// card fills it (ticket 76). One card, no fork.
   final double? width;
 
-  const PosterCard({super.key, required this.meta, this.width = 110});
+  const PosterCard({super.key, required this.meta, this.width = kPosterCardWidth});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return GestureDetector(
+    final tokens = AppTokens.of(context);
+    final radius = BorderRadius.circular(tokens.radiusSmall);
+    return PressScale(
       onTap: () {
         ref.read(homeControllerProvider.notifier).openDetail(meta);
         Navigator.of(context).pushNamed(AppRoutes.detail);
@@ -550,23 +637,44 @@ class PosterCard extends ConsumerWidget {
       child: SizedBox(
         width: width,
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: PosterImage(url: meta.poster),
+            AspectRatio(
+              aspectRatio: 2 / 3,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  borderRadius: radius,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.38),
+                      blurRadius: 12,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: radius,
+                  child: Container(
+                    // The hairline rides above the art, not behind it.
+                    foregroundDecoration: BoxDecoration(
+                      borderRadius: radius,
+                      border: Border.all(color: tokens.hair),
+                    ),
+                    child: PosterImage(url: meta.poster),
+                  ),
                 ),
               ),
             ),
-            const SizedBox(height: 2),
+            const SizedBox(height: 6),
             Text(
               meta.name,
-              maxLines: 1,
+              maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: tokens.inkMuted,
+                    height: 1.35,
+                  ),
             ),
           ],
         ),

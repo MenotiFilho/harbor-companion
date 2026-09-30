@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:harbor_companion/app/theme.dart';
 import 'package:harbor_companion/app/ui/glass_surface.dart';
 import 'package:harbor_companion/app/ui/hairline.dart';
+import 'package:harbor_companion/app/ui/press_scale.dart';
 import 'package:harbor_companion/app/ui/rows.dart';
 import 'package:harbor_companion/app/ui/section_header.dart';
 
@@ -146,6 +147,50 @@ void main() {
 
       expect(find.text('Host version'), findsOneWidget);
       expect(find.text('v0.9.118'), findsOneWidget);
+    });
+  });
+
+  group('PressScale', () {
+    testWidgets('scales down while pressed and back on release, tapping once',
+        (tester) async {
+      var taps = 0;
+      await tester.pumpWidget(host(PressScale(
+        onTap: () => taps++,
+        child: const SizedBox(width: 60, height: 60),
+      )));
+
+      AnimatedScale scale() =>
+          tester.widget<AnimatedScale>(find.byType(AnimatedScale));
+      expect(scale().scale, 1.0);
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byType(PressScale)),
+      );
+      await tester.pump();
+      expect(scale().scale, lessThan(1.0),
+          reason: 'the card acknowledges the touch');
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(scale().scale, 1.0);
+      expect(taps, 1);
+    });
+
+    testWidgets('is inert without onTap', (tester) async {
+      await tester.pumpWidget(host(const PressScale(
+        child: SizedBox(width: 60, height: 60),
+      )));
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byType(PressScale)),
+      );
+      await tester.pump();
+      expect(
+        tester.widget<AnimatedScale>(find.byType(AnimatedScale)).scale,
+        1.0,
+      );
+      await gesture.up();
+      await tester.pumpAndSettle();
     });
   });
 }
