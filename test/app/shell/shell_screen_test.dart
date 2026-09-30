@@ -233,6 +233,62 @@ void main() {
     expect(find.text('Search'), findsWidgets);
   });
 
+  testWidgets('the app bar shows the active tab title and keeps Settings',
+      (tester) async {
+    final container = _connectedContainer(title: 'Shawshank');
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const HarborCompanionApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(AppBar, 'Home'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AppBar),
+        matching: find.byIcon(Icons.settings),
+      ),
+      findsOneWidget,
+    );
+
+    for (final label in ['Search', 'Remote', 'My Stuff', 'Profile']) {
+      await tester.tap(find.descendant(
+        of: find.byType(NavigationBar),
+        matching: find.text(label),
+      ));
+      await tester.pumpAndSettle();
+      expect(
+        find.widgetWithText(AppBar, label),
+        findsOneWidget,
+        reason: 'app bar missing the $label title',
+      );
+    }
+  });
+
+  testWidgets('the tab bar renders as a real glass surface', (tester) async {
+    final container = _connectedContainer(title: 'Shawshank');
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const HarborCompanionApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(NavigationBar), findsOneWidget);
+    expect(
+      find.ancestor(
+        of: find.byType(NavigationBar),
+        matching: find.byType(BackdropFilter),
+      ),
+      findsOneWidget,
+    );
+    final bar = tester.widget<NavigationBar>(find.byType(NavigationBar));
+    expect(bar.destinations.length, 5);
+  });
+
   testWidgets('the player bar shows on every tab except Remote',
       (tester) async {
     final container = _connectedContainer(title: 'Shawshank');

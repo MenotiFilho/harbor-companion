@@ -49,6 +49,15 @@ void main() {
     });
   });
 
+  group('contextual titles', () {
+    test('every tab exposes the label the shell shows in the app bar', () {
+      expect(
+        ShellTab.values.map((tab) => tab.meta.label).toList(),
+        ['Remote', 'Search', 'Home', 'My Stuff', 'Profile'],
+      );
+    });
+  });
+
   group('ConnectionChanged', () {
     test('moving to connected un-gates the body but keeps the active tab', () {
       final s = shellReduce(

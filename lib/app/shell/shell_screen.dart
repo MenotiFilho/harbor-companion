@@ -10,6 +10,8 @@ import '../profile/profile_screen.dart';
 import '../remote/remote_screen.dart';
 import '../routes.dart';
 import '../search/search_screen.dart';
+import '../theme.dart';
+import '../ui/glass_surface.dart';
 import '../update/update_controller.dart';
 import '../update/update_reducer.dart';
 import 'connect_first_view.dart';
@@ -101,7 +103,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Harbor Companion'),
+        // Contextual title: the active tab's name, not the app name.
+        title: Text(tab.meta.label),
         actions: [
           IconButton(
             icon: const Icon(Icons.settings),
@@ -119,19 +122,20 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
           // The floating mini-player rides above the nav bar on every tab
           // except Remote (where the full transport already lives).
           if (tab != ShellTab.remote) const PlayerBar(safeArea: false),
-          NavigationBar(
-            selectedIndex: tab.index,
-            onDestinationSelected: (index) => ref
-                .read(shellControllerProvider.notifier)
-                .selectTab(ShellTab.values[index]),
-            destinations: [
-              for (final tab in ShellTab.values)
-                NavigationDestination(
-                  icon: Icon(tab.meta.icon),
-                  selectedIcon: Icon(tab.meta.selectedIcon),
-                  label: tab.meta.label,
-                ),
-            ],
+          // The tab bar floats above the system inset: the SafeArea wraps the
+          // glass pill (so the inset stays outside it) and the NavigationBar
+          // inside sees no bottom padding to re-add.
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              child: _ShellTabBar(
+                active: tab,
+                onSelected: (tab) => ref
+                    .read(shellControllerProvider.notifier)
+                    .selectTab(tab),
+              ),
+            ),
           ),
         ],
       ),
@@ -232,4 +236,68 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
         ShellTab.myStuff => const LibraryScreen(),
         ShellTab.profile => const ProfileScreen(),
       };
+}
+
+/// The floating glass tab bar.
+///
+/// Real backdrop blur is allowed here: the tab bar is one of the fixed
+/// ADR-0010 chrome surfaces, and it never scrolls. The active destination
+/// reads in the Accent family — icon, label and the pill indicator — over the
+/// rest of the ramp. [NavigationBar] stays the widget under the skin so the
+/// destination behavior and the shell tests' seam survive.
+class _ShellTabBar extends StatelessWidget {
+  const _ShellTabBar({required this.active, required this.onSelected});
+
+  final ShellTab active;
+  final ValueChanged<ShellTab> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = AppTokens.of(context);
+    return GlassSurface(
+      blurred: true,
+      radius: tokens.radius,
+      child: NavigationBarTheme(
+        data: NavigationBarThemeData(
+          height: 64,
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          shadowColor: Colors.transparent,
+          surfaceTintColor: Colors.transparent,
+          indicatorColor: tokens.accentFill,
+          indicatorShape: const StadiumBorder(),
+          iconTheme: WidgetStateProperty.resolveWith(
+            (states) => IconThemeData(
+              size: 22,
+              color: states.contains(WidgetState.selected)
+                  ? tokens.accentInk
+                  : tokens.inkMuted,
+            ),
+          ),
+          labelTextStyle: WidgetStateProperty.resolveWith(
+            (states) => TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.4,
+              color: states.contains(WidgetState.selected)
+                  ? tokens.accentInk
+                  : tokens.inkFaint,
+            ),
+          ),
+        ),
+        child: NavigationBar(
+          selectedIndex: active.index,
+          onDestinationSelected: (index) => onSelected(ShellTab.values[index]),
+          destinations: [
+            for (final tab in ShellTab.values)
+              NavigationDestination(
+                icon: Icon(tab.meta.icon),
+                selectedIcon: Icon(tab.meta.selectedIcon),
+                label: tab.meta.label,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }

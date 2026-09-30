@@ -1,21 +1,27 @@
 // Persistent now-playing bar (issue #42).
 //
-// A floating mini-player rendered on every screen except the Remote tab:
+// A floating glass mini-player rendered on every screen except the Remote tab:
 // the shell tabs (Home / Search / My Stuff / Profile) and the pushed detail
 // and settings routes. It reuses the Remote reducer's already-derived
-// `NowPlaying` view model for the poster, title, episode line and playing
-// state, so the bar and the Remote tab never disagree.
+// `NowPlaying` view model for the poster, title, episode line, Playback
+// position and playing state, so the bar and the Remote tab never disagree.
 //
 // Play/pause taps go through the same host-authoritative transport path as the
 // Remote tab (`RemoteController.togglePlay`) — no optimistic state. Tapping the
 // rest of the bar opens the Remote tab (popping any pushed route first). The
 // bar never renders without a host or without held media.
+//
+// Real backdrop blur is allowed here: the bar is persistent chrome, one of the
+// fixed ADR-0010 glass surfaces. There is no blur inside scrollable content.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../home/poster_image.dart';
 import '../remote/remote_controller.dart';
+import '../theme.dart';
+import '../ui/glass_surface.dart';
+import '../ui/playback_position_line.dart';
 import 'shell_controller.dart';
 import 'shell_reducer.dart';
 import 'shell_tab.dart';
@@ -28,12 +34,16 @@ class PlayerBarView {
   final String? episodeLine;
   final String? posterUrl;
   final bool playing;
+  final double positionSec;
+  final double durationSec;
 
   const PlayerBarView({
     required this.title,
     this.episodeLine,
     this.posterUrl,
     required this.playing,
+    this.positionSec = 0,
+    this.durationSec = 0,
   });
 }
 
@@ -52,6 +62,8 @@ final playerBarViewProvider = Provider<PlayerBarView?>((ref) {
         episodeLine: s.nowPlaying?.episodeLine,
         posterUrl: s.nowPlaying?.posterUrl,
         playing: s.nowPlaying?.playing ?? false,
+        positionSec: s.nowPlaying?.positionSec ?? 0.0,
+        durationSec: s.nowPlaying?.durationSec ?? 0.0,
       ),
     ),
   );
@@ -61,6 +73,8 @@ final playerBarViewProvider = Provider<PlayerBarView?>((ref) {
     episodeLine: data.episodeLine,
     posterUrl: data.posterUrl,
     playing: data.playing,
+    positionSec: data.positionSec,
+    durationSec: data.durationSec,
   );
 });
 
@@ -76,63 +90,68 @@ class PlayerBar extends ConsumerWidget {
     final view = ref.watch(playerBarViewProvider);
     if (view == null) return const SizedBox.shrink();
 
-    final scheme = Theme.of(context).colorScheme;
+    final tokens = AppTokens.of(context);
     final text = Theme.of(context).textTheme;
 
     Widget bar = Padding(
       padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-      child: Material(
-        color: scheme.surfaceContainerHigh,
-        elevation: 6,
-        shadowColor: Colors.black,
-        borderRadius: BorderRadius.circular(16),
-        clipBehavior: Clip.antiAlias,
-        // The whole card opens Remote; the nested play/pause button wins the
-        // tap for itself, so the button never also navigates.
-        child: InkWell(
-          onTap: () => _openRemote(context, ref),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-            child: Row(
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: SizedBox(
-                    width: 40,
-                    height: 56,
-                    child: PosterImage(url: view.posterUrl),
+      child: GlassSurface(
+        blurred: true,
+        radius: 16,
+        fill: tokens.glassFillStrong,
+        child: Material(
+          type: MaterialType.transparency,
+          // The whole card opens Remote; the nested play/pause button wins the
+          // tap for itself, so the button never also navigates.
+          child: InkWell(
+            onTap: () => _openRemote(context, ref),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              child: Row(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: SizedBox(
+                      width: 34,
+                      height: 48,
+                      child: PosterImage(url: view.posterUrl),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        view.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: text.titleSmall,
-                      ),
-                      if (view.episodeLine != null)
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
                         Text(
-                          view.episodeLine!,
+                          view.title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: text.bodySmall
-                              ?.copyWith(color: scheme.onSurfaceVariant),
+                          style: text.titleSmall,
                         ),
-                    ],
+                        if (view.episodeLine != null)
+                          Text(
+                            view.episodeLine!,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: text.bodySmall
+                                ?.copyWith(color: tokens.inkMuted),
+                          ),
+                        PlaybackPositionLine(
+                          positionSec: view.positionSec,
+                          durationSec: view.durationSec,
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                IconButton(
-                  icon: Icon(view.playing ? Icons.pause : Icons.play_arrow),
-                  tooltip: view.playing ? 'Pause' : 'Play',
-                  onPressed: () =>
-                      ref.read(remoteControllerProvider.notifier).togglePlay(),
-                ),
-              ],
+                  IconButton(
+                    icon: Icon(view.playing ? Icons.pause : Icons.play_arrow),
+                    tooltip: view.playing ? 'Pause' : 'Play',
+                    onPressed: () =>
+                        ref.read(remoteControllerProvider.notifier).togglePlay(),
+                  ),
+                ],
+              ),
             ),
           ),
         ),

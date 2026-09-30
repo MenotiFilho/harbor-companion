@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../home/poster_image.dart';
 import '../settings/settings_controller.dart';
+import '../ui/playback_position_line.dart' show formatPlaybackTime;
 import '../ws/client_reducer.dart' show CastDevice, TextEntry;
 import 'remote_controller.dart';
 import 'remote_reducer.dart';
@@ -337,24 +338,14 @@ class _NowPlayingCard extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(_fmt(position), style: text.bodySmall),
-                Text(_fmt(duration), style: text.bodySmall),
+                Text(formatPlaybackTime(position), style: text.bodySmall),
+                Text(formatPlaybackTime(duration), style: text.bodySmall),
               ],
             ),
           ],
         ),
       ),
     );
-  }
-
-  static String _fmt(double sec) {
-    final s = sec.round();
-    final h = s ~/ 3600;
-    final m = (s % 3600) ~/ 60;
-    final r = s % 60;
-    final mm = m.toString().padLeft(2, '0');
-    final rr = r.toString().padLeft(2, '0');
-    return h > 0 ? '$h:$mm:$rr' : '$mm:$rr';
   }
 }
 

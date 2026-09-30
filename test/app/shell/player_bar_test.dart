@@ -39,7 +39,12 @@ class _StubShellController extends ShellController {
   ShellState build() => initialState;
 }
 
-const _view = PlayerBarView(title: 'Shawshank', playing: true);
+const _view = PlayerBarView(
+  title: 'Shawshank',
+  playing: true,
+  positionSec: 62,
+  durationSec: 150,
+);
 
 ProviderContainer _container({
   PlayerBarView? view = _view,
@@ -106,6 +111,59 @@ void main() {
     expect(find.textContaining('Breakage'), findsOneWidget);
   });
 
+  testWidgets('shows the playback position line as position / duration',
+      (tester) async {
+    await _pump(
+      tester,
+      _container(
+        view: const PlayerBarView(
+          title: 'Shawshank',
+          playing: true,
+          positionSec: 62,
+          durationSec: 150,
+        ),
+      ),
+    );
+    expect(find.text('01:02 / 02:30'), findsOneWidget);
+  });
+
+  testWidgets('formats playback position past an hour as h:mm:ss',
+      (tester) async {
+    await _pump(
+      tester,
+      _container(
+        view: const PlayerBarView(
+          title: 'Shawshank',
+          playing: true,
+          positionSec: 3661,
+          durationSec: 7200,
+        ),
+      ),
+    );
+    expect(find.text('1:01:01 / 2:00:00'), findsOneWidget);
+  });
+
+  testWidgets('hides the playback position line without position data',
+      (tester) async {
+    await _pump(
+      tester,
+      _container(view: const PlayerBarView(title: 'Shawshank', playing: true)),
+    );
+    expect(find.textContaining(RegExp(r'\d+:\d+')), findsNothing);
+  });
+
+  testWidgets('renders as a real glass surface (backdrop blur)',
+      (tester) async {
+    await _pump(tester, _container());
+    expect(
+      find.descendant(
+        of: find.byType(PlayerBar),
+        matching: find.byType(BackdropFilter),
+      ),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('shows a play control when the media is paused', (tester) async {
     await _pump(
       tester,
@@ -155,6 +213,8 @@ void main() {
             mediaId: 'tt1',
             mediaTitle: 'Shawshank',
             playing: true,
+            positionSec: 62,
+            durationSec: 150,
           ),
         );
 
@@ -191,6 +251,8 @@ void main() {
       final view = container.read(playerBarViewProvider);
       expect(view?.title, 'Shawshank');
       expect(view?.playing, isTrue);
+      expect(view?.positionSec, 62);
+      expect(view?.durationSec, 150);
     });
   });
 }
